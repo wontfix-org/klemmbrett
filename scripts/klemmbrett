@@ -1,0 +1,166 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import weakref
+import collections
+import ConfigParser
+
+
+import pygtk
+pygtk.require('2.0')
+import gtk
+import gobject
+import keybinder
+
+
+undefined = object()
+
+
+class Config(ConfigParser.SafeConfigParser):
+
+    def get(self, section, option, default = undefined):
+        try:
+            return ConfigParser.SafeConfigParser.get(self, section, option)
+        except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
+            if default is not undefined:
+                return default
+            raise
+
+
+class Plugin(object):
+
+    def __init__(self, klemmbrett):
+        self._kb = weakref.proxy(klemmbrett)
+
+    def config(self, key, default = undefined):
+        return self._kb.config.get(self._SECTION, key, default)
+
+    def set(self, widget = None, text = None):
+        #print "setting new content: %r" % (buf,)
+        self._kb.set(text)
+
+
+class PopupPlugin(Plugin):
+
+    def binding(self):
+        return (self.config('shortcut', self._DEFAULT_BINDING), self.popup)
+
+    def popup(self):
+        menu = gtk.Menu()
+        for label, value in self.items():
+            item = gtk.MenuItem(label)
+            item.connect("activate", self.set, value)
+            menu.append(item)
+
+        menu.show_all()
+        menu.popup(
+            None,
+            None,
+            None,
+            1,
+            gtk.get_current_event_time(),
+        )
+        return True
+
+
+class HistoryPicker(PopupPlugin):
+
+    _SECTION = 'plugin history'
+
+    _DEFAULT_BINDING = "<Ctrl><Alt>C"
+
+    def items(self):
+        for text in self._kb.history:
+            yield (
+                text.replace('\n', ' ')[
+                    :min(
+                        len(text),
+                        self.config('line-length', 30),
+                    )
+                ],
+                text
+            )
+
+
+class SnippetPicker(PopupPlugin):
+
+    _SECTION = 'plugin snippets'
+
+    _DEFAULT_BINDING = "<Ctrl><Alt>S"
+
+    def items(self):
+        if not self._kb.config.has_section('snippets'):
+            return ValueError("No config section snippets defined")
+
+        return self._kb.config.items('snippets')
+
+
+class Klemmbrett(object):
+
+    def __init__(self, config_files):
+
+        self._clipboard = gtk.Clipboard(selection = "CLIPBOARD")
+        self._primary = gtk.Clipboard(selection = "PRIMARY")
+
+        self.config = Config()
+        self.config.read(config_files)
+
+        # configure klemmbrett
+        self.history = collections.deque(
+            maxlen = int(self.config.get("klemmbrett", "length", 2)),
+        )
+
+        # bootstrap / configure plugins
+        self._plugins = [HistoryPicker(self), SnippetPicker(self)]
+        self._init_plugins()
+
+
+        self._schedule_check()
+
+    def _init_plugins(self):
+        for plugin in self._plugins:
+            binding = plugin.binding()
+            if binding:
+                keybinder.bind(*binding)
+
+    def is_new(self, text):
+        if not len(self.history):
+            return True
+        return text != self.history[0]
+
+    def add(self, text):
+        if text.strip():
+            self.history.appendleft(text)
+
+    def _schedule_check(self):
+        gobject.timeout_add(
+            self.config.get('klemmbrett', 'check-interval', 300),
+            self._check,
+        )
+
+    def _check(self):
+        def _check(source, dest):
+            text = source.wait_for_text()
+            if text and self.is_new(text):
+                self.add(text)
+                #print "setting new text: %r" % (text,)
+                dest.set_text(text)
+                return True
+            return False
+
+        if not _check(self._primary, self._clipboard):
+            _check(self._clipboard, self._primary)
+        self._schedule_check()
+
+    def set(self, text):
+        self._clipboard.set_text(text)
+        self._primary.set_text(text)
+
+    def main(self):
+        gtk.main()
+
+
+if __name__ == '__main__':
+    kb = Klemmbrett(['/etc/klemmbrett.conf', os.path.expanduser("~/.klemmbrett.conf")])
+    kb.main()
