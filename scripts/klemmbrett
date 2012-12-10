@@ -41,6 +41,13 @@ class Plugin(object):
         #print "setting new content: %r" % (buf,)
         self._kb.set(text)
 
+    def cleanup_text(self, text):
+        return text.replace('\n', ' ')[
+            :min(
+                len(text),
+                self.config('line-length', 30),
+            )
+        ].strip()
 
 class PopupPlugin(Plugin):
 
@@ -49,6 +56,13 @@ class PopupPlugin(Plugin):
 
     def popup(self):
         menu = gtk.Menu()
+
+        # XXX(mbra): this will not work with values as "no", "off" etc.
+        # since we do not use getbool
+        if self.config('show-current-selection', False) and self._kb.history:
+            item = gtk.MenuItem("")
+            item.get_children()[0].set_markup("<b>%s</b>" % (self.cleanup_text(self._kb.history[0]),))
+            menu.append(item)
         for label, value in self.items():
             item = gtk.MenuItem(label)
             item.connect("activate", self.set, value)
@@ -72,12 +86,7 @@ class HistoryPicker(PopupPlugin):
     def items(self):
         for text in self._kb.history:
             yield (
-                text.replace('\n', ' ')[
-                    :min(
-                        len(text),
-                        self.config('line-length', 30),
-                    )
-                ],
+                self.cleanup_text(text),
                 text
             )
 
