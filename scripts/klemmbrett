@@ -45,7 +45,7 @@ class Plugin(object):
         return text.replace('\n', ' ')[
             :min(
                 len(text),
-                self.config('line-length', 30),
+                int(self.config('line-length', 30)),
             )
         ].strip()
 
