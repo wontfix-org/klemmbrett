@@ -17,11 +17,11 @@ import keybinder
 undefined = object()
 
 
-class Config(ConfigParser.SafeConfigParser):
+class Config(ConfigParser.RawConfigParser):
 
     def get(self, section, option, default = undefined):
         try:
-            return ConfigParser.SafeConfigParser.get(self, section, option)
+            return ConfigParser.RawConfigParser.get(self, section, option)
         except (ConfigParser.NoSectionError, ConfigParser.NoOptionError):
             if default is not undefined:
                 return default
@@ -30,8 +30,9 @@ class Config(ConfigParser.SafeConfigParser):
 
 class Plugin(object):
 
-    def __init__(self, klemmbrett):
+    def __init__(self, klemmbrett, section):
         self._kb = weakref.proxy(klemmbrett)
+        self._SECTION = section
 
     def config(self, key, default = undefined):
         return self._kb.config.get(self._SECTION, key, default)
@@ -66,8 +67,6 @@ class PopupPlugin(Plugin):
 
 class HistoryPicker(PopupPlugin):
 
-    _SECTION = 'plugin history'
-
     _DEFAULT_BINDING = "<Ctrl><Alt>C"
 
     def items(self):
@@ -85,8 +84,6 @@ class HistoryPicker(PopupPlugin):
 
 class SnippetPicker(PopupPlugin):
 
-    _SECTION = 'plugin snippets'
-
     _DEFAULT_BINDING = "<Ctrl><Alt>S"
 
     def items(self):
@@ -94,6 +91,23 @@ class SnippetPicker(PopupPlugin):
             return ValueError("No config section snippets defined")
 
         return self._kb.config.items('snippets')
+
+class ActionPicker(PopupPlugin):
+
+    _DEFAULT_BINDING = "<Ctrl><Alt>A"
+
+    def items(self):
+        if not self._kb.config.has_section('actions'):
+            return ValueError("No config section actions defined")
+
+        return self._kb.config.items('actions')
+
+
+    def set(self, widget = None, text = None):
+        #print "setting new content: %r" % (buf,)
+        command = "/bin/bash -c " + text % (self._kb.history[0],)
+        gobject.spawn_async(["/bin/bash", "-c", text % (self._kb.history[0],)])
+        #self._kb.set(text)
 
 
 class Klemmbrett(object):
@@ -112,7 +126,11 @@ class Klemmbrett(object):
         )
 
         # bootstrap / configure plugins
-        self._plugins = [HistoryPicker(self), SnippetPicker(self)]
+        self._plugins = [
+            HistoryPicker(self, "plugin history"),
+            SnippetPicker(self, "plugin snippets"),
+            ActionPicker(self, "plugin actions"),
+        ]
         self._init_plugins()
 
 
