@@ -135,18 +135,23 @@ class Klemmbrett(object):
         )
 
         # bootstrap / configure plugins
-        self._plugins = [
-            HistoryPicker(self, "plugin history"),
-            SnippetPicker(self, "plugin snippets"),
-            ActionPicker(self, "plugin actions"),
-        ]
-        self._init_plugins()
+        self._plugins = []
+        self._load_plugins()
 
 
         self._schedule_check()
 
-    def _init_plugins(self):
-        for plugin in self._plugins:
+    def _load_plugins(self):
+        for section in self.config.sections():
+            if not section.startswith('plugin '):
+                continue
+
+            # load the plugin module and create an instance
+            plugin = self.load_object(
+                self.config.get(section, 'plugin'),
+            )(self, section)
+            self._plugins.append(plugin)
+
             binding = plugin.binding()
             if binding:
                 keybinder.bind(*binding)
@@ -186,6 +191,27 @@ class Klemmbrett(object):
 
     def main(self):
         gtk.main()
+
+    def load_object(self, name):
+        if not '.' in name:
+            return globals()[name]
+
+        """ stolen from andre malos wtf daemon """
+        components = name.split('.')
+        path = [components.pop(0)]
+        obj = __import__(path[0])
+        while components:
+            comp = components.pop(0)
+            path.append(comp)
+            try:
+                obj = getattr(obj, comp)
+            except AttributeError:
+                __import__('.'.join(path))
+                try:
+                    obj = getattr(obj, comp)
+                except AttributeError:
+                    raise ImportError('.'.join(path))
+        return obj
 
 
 if __name__ == '__main__':
