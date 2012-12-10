@@ -51,8 +51,16 @@ class Plugin(object):
 
 class PopupPlugin(Plugin):
 
-    def binding(self):
-        return (self.config('shortcut', self._DEFAULT_BINDING), self.popup)
+    def __init__(self, *args, **kwargs):
+        super(PopupPlugin, self).__init__(*args, **kwargs)
+        self.bind()
+
+    def bind(self):
+        keybinder.bind(
+            self.config('shortcut', self._DEFAULT_BINDING),
+            self.popup,
+        )
+
 
     def popup(self):
         menu = gtk.Menu()
@@ -151,10 +159,6 @@ class Klemmbrett(object):
                 self.config.get(section, 'plugin'),
             )(self, section)
             self._plugins.append(plugin)
-
-            binding = plugin.binding()
-            if binding:
-                keybinder.bind(*binding)
 
     def is_new(self, text):
         if not len(self.history):
