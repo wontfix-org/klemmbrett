@@ -49,6 +49,30 @@ class Plugin(object):
             )
         ].strip()
 
+class StatusIconPlugin(Plugin):
+
+    def __init__(self, *args, **kwargs):
+        super(StatusIconPlugin, self).__init__(*args, **kwargs)
+        self.tray = gtk.StatusIcon()
+        # TODO: Needs stylish icon
+        self.tray.set_from_stock(gtk.STOCK_ABOUT)
+        self.tray.set_visible(True)
+        self.tray.set_tooltip("Klemmbrett")
+        self.menu = gtk.Menu()
+
+        item = gtk.MenuItem("Quit")
+        item.connect('activate', gtk.main_quit)
+
+        self.menu.append(item)
+        self.menu.show_all()
+        self.tray.connect('popup-menu', self.on_menu, self.menu)
+
+    def on_menu(self, icon, event_button, event_time, menu):
+        menu.popup(
+            None, None, gtk.status_icon_position_menu,
+            event_button, event_time, self.tray
+        )
+
 class PopupPlugin(Plugin):
 
     def __init__(self, *args, **kwargs):
