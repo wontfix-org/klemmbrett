@@ -270,7 +270,8 @@ class Klemmbrett(object):
 
             self.history = plugin
 
-        self.history = DummyHistory(self, None)
+        if not self.history:
+            self.history = DummyHistory(self, None)
 
     def _load_plugins(self):
         for section in self.config.sections():
