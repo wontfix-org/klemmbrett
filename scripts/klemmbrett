@@ -159,6 +159,7 @@ class ActionPicker(PopupPlugin):
         gobject.spawn_async(["/bin/bash", "-c", text % (self._kb.history.top,)])
         #self._kb.set(text)
 
+
 class HistoryContainer(Plugin):
     """
         A history container needs to implement the following interface besides
@@ -173,6 +174,7 @@ class HistoryContainer(Plugin):
 
         bool accepts(string): whether or not a string will be accepted by add()
     """
+
 
 class History(HistoryContainer):
 
@@ -199,6 +201,10 @@ class History(HistoryContainer):
         return iter(self._history)
 
     def accepts(self, text):
+        # do not accept bullshit
+        if not isinstance(text, basestring):
+            return False
+
         # do not accept empty strings and pure whitespace strings
         text = text.strip()
         if not text:
@@ -212,6 +218,10 @@ class History(HistoryContainer):
         return text != self.top
 
 
+class KlemmbrettVormKopf(Exception):
+    pass
+
+
 class Klemmbrett(object):
 
     def __init__(self, config_files):
@@ -223,14 +233,29 @@ class Klemmbrett(object):
         self.config.read(config_files)
 
         # configure klemmbrett
-        self.history = History(self, "klemmbrett")
-
         # bootstrap / configure plugins
         self._plugins = []
         self._load_plugins()
 
+        self.history = None
+        self._init_history()
 
         self._schedule_check()
+
+    def _init_history(self):
+        for plugin in self._plugins:
+            if not isinstance(plugin, HistoryContainer):
+                continue
+
+            if self.history is not None:
+                raise KlemmbrettVormKopf(
+                    "There may be only one HistoryContainer plugin: %r vs.  %r" % (
+                        self.history,
+                        plugin,
+                    )
+                )
+
+            self.history = plugin
 
     def _load_plugins(self):
         for section in self.config.sections():
