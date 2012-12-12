@@ -100,7 +100,7 @@ class PopupPlugin(Plugin):
         # since we do not use getbool
         if self.config('show-current-selection', False) and self._kb.history:
             item = gtk.MenuItem("")
-            item.get_children()[0].set_markup("<b>%s</b>" % (self.cleanup_text(self._kb.history[0]),))
+            item.get_children()[0].set_markup("<b>%s</b>" % (self.cleanup_text(self._kb.history.top),))
             menu.append(item)
             menu.append(gtk.SeparatorMenuItem())
 
@@ -153,12 +153,63 @@ class ActionPicker(PopupPlugin):
 
         return self._kb.config.items('actions')
 
-
     def set(self, widget = None, text = None):
         #print "setting new content: %r" % (buf,)
-        command = "/bin/bash -c " + text % (self._kb.history[0],)
-        gobject.spawn_async(["/bin/bash", "-c", text % (self._kb.history[0],)])
+        command = "/bin/bash -c " + text % (self._kb.history.top,)
+        gobject.spawn_async(["/bin/bash", "-c", text % (self._kb.history.top,)])
         #self._kb.set(text)
+
+class HistoryContainer(Plugin):
+    """
+        A history container needs to implement the following interface besides
+        the Plugin ctor signature:
+
+        bool add(string): New clipboard contents, return whether it was accept
+                        into the history or not
+
+        top: the contents of the topmost item in the history
+
+        __iter__: an iterator over all history items
+
+        bool accepts(string): whether or not a string will be accepted by add()
+    """
+
+class History(HistoryContainer):
+
+    def __init__(self, *args, **kwargs):
+        super(History, self).__init__(*args, **kwargs)
+
+        self._history = collections.deque(
+            maxlen = int(self.config("length", 2)),
+        )
+
+    def add(self, text):
+        if self.accepts(text):
+            self._history.appendleft(text)
+            return True
+        return False
+
+    @property
+    def top(self):
+        if not len(self._history):
+            return None
+        return self._history[0]
+
+    def __iter__(self):
+        return iter(self._history)
+
+    def accepts(self, text):
+        # do not accept empty strings and pure whitespace strings
+        text = text.strip()
+        if not text:
+            return False
+
+        # accept everything if the history is empty
+        if not len(self._history):
+            return True
+
+        # only if it is not the current selection
+        return text != self.top
 
 
 class Klemmbrett(object):
@@ -172,9 +223,7 @@ class Klemmbrett(object):
         self.config.read(config_files)
 
         # configure klemmbrett
-        self.history = collections.deque(
-            maxlen = int(self.config.get("klemmbrett", "length", 2)),
-        )
+        self.history = History(self, "klemmbrett")
 
         # bootstrap / configure plugins
         self._plugins = []
@@ -194,15 +243,6 @@ class Klemmbrett(object):
             )(self, section)
             self._plugins.append(plugin)
 
-    def is_new(self, text):
-        if not len(self.history):
-            return True
-        return text != self.history[0]
-
-    def add(self, text):
-        if text.strip():
-            self.history.appendleft(text)
-
     def _schedule_check(self):
         gobject.timeout_add(
             self.config.get('klemmbrett', 'check-interval', 300),
@@ -212,9 +252,7 @@ class Klemmbrett(object):
     def _check(self):
         def _check(source, dest):
             text = source.wait_for_text()
-            if text and self.is_new(text):
-                self.add(text)
-                #print "setting new text: %r" % (text,)
+            if self.history.add(text):
                 dest.set_text(text)
                 return True
             return False
