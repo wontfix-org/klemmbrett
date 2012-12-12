@@ -3,6 +3,7 @@
 import os
 import sys
 import weakref
+import optparse
 import collections
 import ConfigParser
 
@@ -249,6 +250,32 @@ class Klemmbrett(object):
         return obj
 
 
+class KlemmbrettCommandline(object):
+
+    def __init__(self):
+        self.config_files = ['/etc/klemmbrett.conf', os.path.expanduser("~/.klemmbrett.conf")]
+
+        parser = optparse.OptionParser()
+        parser.add_option(
+            "-c",
+            "--config",
+            dest = "config",
+            type = "string",
+            action = "append",
+            help = "read this config file for configuration",
+            default = list(),
+        )
+
+        self.options, self.args = parser.parse_args()
+
+        if self.options.config:
+            self.config_files = self.options.config
+
+    def main(self):
+        kb = Klemmbrett(self.config_files)
+        kb.main()
+
+
 if __name__ == '__main__':
-    kb = Klemmbrett(['/etc/klemmbrett.conf', os.path.expanduser("~/.klemmbrett.conf")])
+    kb = KlemmbrettCommandline()
     kb.main()
