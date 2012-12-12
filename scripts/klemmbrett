@@ -218,6 +218,19 @@ class History(HistoryContainer):
         return text != self.top
 
 
+class DummyHistory(HistoryContainer):
+
+    def accepts(self, text):
+        return True
+
+    def __iter__(self):
+        yield self.top
+
+    def add(self, text):
+        self.top = text
+        return True
+
+
 class KlemmbrettVormKopf(Exception):
     pass
 
@@ -256,6 +269,8 @@ class Klemmbrett(object):
                 )
 
             self.history = plugin
+
+        self.history = DummyHistory(self, None)
 
     def _load_plugins(self):
         for section in self.config.sections():
