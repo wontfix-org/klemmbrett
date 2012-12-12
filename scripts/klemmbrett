@@ -79,6 +79,7 @@ class StatusIconPlugin(Plugin):
             self.tray,
         )
 
+
 class PopupPlugin(Plugin):
 
     def __init__(self, *args, **kwargs):
@@ -140,6 +141,7 @@ class SnippetPicker(PopupPlugin):
             return ValueError("No config section snippets defined")
 
         return self._kb.config.items('snippets')
+
 
 class ActionPicker(PopupPlugin):
 
