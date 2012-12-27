@@ -29,9 +29,10 @@ class Config(ConfigParser.RawConfigParser):
             raise
 
 
-class Plugin(object):
+class Plugin(gobject.GObject):
 
     def __init__(self, klemmbrett, section):
+        super(Plugin, self).__init__()
         self._kb = weakref.proxy(klemmbrett)
         self._SECTION = section
 
@@ -136,6 +137,13 @@ class SnippetPicker(PopupPlugin):
 
     _DEFAULT_BINDING = "<Ctrl><Alt>S"
 
+    def __init__(self, *args, **kwargs):
+        super(SnippetPicker, self).__init__(*args, **kwargs)
+        self._kb.connect("text-selected", self.do_text_selected)
+
+    def do_text_selected(self, sender, text):
+        print "text-selected: %r" % (text,)
+
     def items(self):
         if not self._kb.config.has_section('snippets'):
             return ValueError("No config section snippets defined")
@@ -235,10 +243,15 @@ class KlemmbrettVormKopf(Exception):
     pass
 
 
-class Klemmbrett(object):
+class Klemmbrett(gobject.GObject):
+
+    __gsignals__ = {
+        "text-selected": (gobject.SIGNAL_RUN_FIRST, None, (gobject.TYPE_PYOBJECT,)),
+        "text-accepted": (gobject.SIGNAL_RUN_FIRST, None, (gobject.TYPE_PYOBJECT,)),
+    }
 
     def __init__(self, config_files):
-
+        super(Klemmbrett, self).__init__()
         self._clipboard = gtk.Clipboard(selection = "CLIPBOARD")
         self._primary = gtk.Clipboard(selection = "PRIMARY")
 
@@ -246,10 +259,10 @@ class Klemmbrett(object):
         self.config.read(config_files)
 
         # configure klemmbrett
-        # bootstrap / configure plugins
         self._plugins = []
         self._load_plugins()
 
+        self.selection = None
         self.history = None
         self._init_history()
 
@@ -293,13 +306,20 @@ class Klemmbrett(object):
     def _check(self):
         def _check(source, dest):
             text = source.wait_for_text()
+
+            if text != self.selection:
+                self.selection = text
+                self.emit("text-selected", text)
+
             if self.history.add(text):
-                dest.set_text(text)
+                if text is not None:
+                    dest.set_text(text)
+                self.emit("text-accepted", text)
                 return True
+
             return False
 
-        if not _check(self._primary, self._clipboard):
-            _check(self._clipboard, self._primary)
+        _check(self._primary, self._clipboard)
         self._schedule_check()
 
     def set(self, text):
