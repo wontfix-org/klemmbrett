@@ -1,0 +1,123 @@
+#!/usr/bin/env python
+
+import weakref as _weakref
+
+import pygtk as _pygtk
+_pygtk.require('2.0')
+import gtk as _gtk
+import gobject as _gobject
+
+import klemmbrett.config as _config
+
+
+class KlemmbrettVormKopf(Exception):
+    pass
+
+
+class Klemmbrett(_gobject.GObject):
+
+    __gsignals__ = {
+        "text-selected": (_gobject.SIGNAL_RUN_FIRST, None, (_gobject.TYPE_PYOBJECT,)),
+    }
+
+    _PLUGIN_PREFIX = "plugin "
+    _TIE_PREFIX = "tie:"
+
+    def __init__(self, config_files):
+        super(Klemmbrett, self).__init__()
+        self._clipboard = _gtk.Clipboard(selection = "CLIPBOARD")
+        self._primary = _gtk.Clipboard(selection = "PRIMARY")
+
+        self.config = _config.Config()
+        self.config.read(config_files)
+
+        # configure klemmbrett
+        self._plugins = dict()
+        self._load_plugins()
+
+        self.selection = None
+
+        self._schedule_check()
+
+    def _load_plugins(self):
+        for section in self.config.sections():
+            if not section.startswith(self._PLUGIN_PREFIX):
+                continue
+
+            name = section[len(self._PLUGIN_PREFIX):].strip()
+            opts = dict(self.config.items(section))
+            # load the plugin module and create an instance
+            plugin = self.load_dotted(opts['plugin'])
+            plugin = plugin(
+                name,
+                dict(plugin.OPTIONS, **opts),
+                self,
+            )
+            self._plugins[name] = plugin
+
+
+        # inject attributes into plugins on a per plugin config
+        # basis via config options of the form:
+        # tie:plugin_local_identitier = global_name
+        # or from the plugin internal config dict.
+        for name, plugin in self._plugins.iteritems():
+            for key, value in plugin.options.iteritems():
+                if not key.startswith(self._TIE_PREFIX):
+                    continue
+
+                source = key[len(self._TIE_PREFIX):].strip()
+                target = _weakref.proxy(self._plugins[value])
+                setattr(self._plugins[name], source, target)
+
+        # only after alll plugins are instantiated and properly
+        # injected, they may connect to other plugins signals,
+        # so we, sadly, have to live with some kind of bootstrap
+        # method with some additional code
+        for plugin in self._plugins.values():
+            plugin.bootstrap()
+
+    def _schedule_check(self):
+        _gobject.timeout_add(
+            self.config.get('klemmbrett', 'check-interval', 300),
+            self._check,
+        )
+
+    def _check(self):
+        def _check(source, dest):
+            text = source.wait_for_text()
+
+            if text != self.selection:
+                self.selection = text
+                self.emit("text-selected", text)
+
+            return False
+
+        _check(self._primary, self._clipboard)
+        self._schedule_check()
+
+    def set(self, text):
+        self._clipboard.set_text(text)
+        self._primary.set_text(text)
+
+    def main(self):
+        _gtk.main()
+
+    def load_dotted(self, name):
+        """ stolen from andre malos wtf daemon """
+        components = name.split('.')
+        path = [components.pop(0)]
+        obj = __import__(path[0])
+        while components:
+            comp = components.pop(0)
+            path.append(comp)
+            try:
+                obj = getattr(obj, comp)
+            except AttributeError:
+                __import__('.'.join(path))
+                try:
+                    obj = getattr(obj, comp)
+                except AttributeError:
+                    raise ImportError('.'.join(path))
+        return obj
+
+
