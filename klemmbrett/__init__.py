@@ -105,7 +105,7 @@ class Klemmbrett(_gobject.GObject):
             # FIXME(mbra): i really do not know when and when this happens :/
             pass
 
-    der main(self):
+    def main(self):
         _gtk.main()
 
     def load_dotted(self, name):
