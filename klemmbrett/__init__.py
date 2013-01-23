@@ -88,7 +88,7 @@ class Klemmbrett(_gobject.GObject):
 
             if text != self.selection:
                 self.selection = text
-                self.set(text)
+                self.set(text, primary = False)
                 self.emit("text-selected", text)
 
             return False
@@ -96,10 +96,12 @@ class Klemmbrett(_gobject.GObject):
         _check(self._primary, self._clipboard)
         self._schedule_check()
 
-    def set(self, text):
+    def set(self, text, primary = True, clipboard = True):
         try:
-            self._clipboard.set_text(text)
-            self._primary.set_text(text)
+            if clipboard:
+                self._clipboard.set_text(text)
+            if primary:
+                self._primary.set_text(text)
         except TypeError:
             # TypeError: Gtk.Clipboard.set_text() argument 1 must be string, not None
             # FIXME(mbra): i really do not know when and when this happens :/
