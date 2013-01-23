@@ -97,10 +97,15 @@ class Klemmbrett(_gobject.GObject):
         self._schedule_check()
 
     def set(self, text):
-        self._clipboard.set_text(text)
-        self._primary.set_text(text)
+        try:
+            self._clipboard.set_text(text)
+            self._primary.set_text(text)
+        except TypeError:
+            # TypeError: Gtk.Clipboard.set_text() argument 1 must be string, not None
+            # FIXME(mbra): i really do not know when and when this happens :/
+            pass
 
-    def main(self):
+    der main(self):
         _gtk.main()
 
     def load_dotted(self, name):
