@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+import os as _os
+import functools as _ft
 import weakref as _weakref
 import collections as _collections
 
@@ -51,11 +53,15 @@ class StatusIcon(Plugin):
         self.menu.show_all()
 
         self.tray = _gtk.StatusIcon()
-        # TODO: Needs stylish icon
-        self.tray.set_from_stock(_gtk.STOCK_ABOUT)
         self.tray.set_visible(True)
         self.tray.set_tooltip("Klemmbrett")
         self.tray.connect('popup-menu', self.on_menu, self.menu)
+
+        icon = self.options.get('icon-path', None)
+        if icon:
+            self.tray.set_from_file(_os.path.expanduser(icon))
+        else:
+            self.tray.set_from_stock(_gtk.STOCK_ABOUT)
 
     def on_menu(self, icon, event_button, event_time, menu):
         menu.popup(
