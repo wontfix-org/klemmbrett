@@ -27,6 +27,8 @@ class Plugin(_gobject.GObject):
 
     def set(self, widget = None, text = None):
         #print "setting new content: %r" % (buf,)
+        if callable(text):
+            text = text()
         self.klemmbrett.set(text)
 
     def cleanup_text(self, text):
@@ -113,6 +115,51 @@ class PopupPlugin(Plugin):
         return True
 
 
+class FancyItemsMixin(object):
+
+    def items(self):
+        section = self.options.get('simple-section', self._SIMPLE_SECTION)
+
+        if not self.klemmbrett.config.has_section(section):
+            raise KeyError("No config section %s defined" % (section,))
+
+        for item in self.klemmbrett.config.items(section):
+            yield item
+
+
+        prefix = self.options.get('complex-section-prefix', self._COMPLEX_SECTION_PREFIX)
+        if not prefix:
+            raise StopIteration()
+
+        for section in self.klemmbrett.config.sections():
+            if not section.startswith(prefix):
+                continue
+
+            options = dict(self.klemmbrett.config.items(section))
+            label = section[len(prefix):]
+
+            if "callable" in options:
+                yield (
+                    label,
+                    _ft.partial(
+                        self.klemmbrett.load_dotted(options["callable"]),
+                        options = options,
+                        plugin = self,
+                    ),
+                )
+                continue
+
+            if not "value" in options:
+                raise KeyError(
+                    "No value found for %r in section %s" % (
+                        self.__class__.__name__,
+                        section,
+                    )
+                )
+
+            yield (label, options["value"])
+
+
 class HistoryPicker(PopupPlugin):
 
     _DEFAULT_BINDING = "<Ctrl><Alt>C"
@@ -178,32 +225,26 @@ class HistoryPicker(PopupPlugin):
         return self._history[0]
 
 
-class SnippetPicker(PopupPlugin):
+class SnippetPicker(PopupPlugin, FancyItemsMixin):
 
     _DEFAULT_BINDING = "<Ctrl><Alt>S"
+    _SIMPLE_SECTION = "snippets"
+    _COMPLEX_SECTION_PREFIX= "snippet "
+
     OPTIONS = {
         "tie:history": "history"
     }
 
-    def items(self):
-        if not self.klemmbrett.config.has_section('snippets'):
-            return ValueError("No config section snippets defined")
 
-        return self.klemmbrett.config.items('snippets')
-
-
-class ActionPicker(PopupPlugin):
+class ActionPicker(PopupPlugin, FancyItemsMixin):
 
     _DEFAULT_BINDING = "<Ctrl><Alt>A"
+    _SIMPLE_SECTION = "actions"
+    _COMPLEX_SECTION_PREFIX= "action "
+
     OPTIONS = {
         "tie:history": "history"
     }
-
-    def items(self):
-        if not self.klemmbrett.config.has_section('actions'):
-            return ValueError("No config section actions defined")
-
-        return self.klemmbrett.config.items('actions')
 
     def set(self, widget = None, text = None):
         try:

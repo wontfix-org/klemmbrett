@@ -88,6 +88,7 @@ class Klemmbrett(_gobject.GObject):
 
             if text != self.selection:
                 self.selection = text
+                self.set(text)
                 self.emit("text-selected", text)
 
             return False
