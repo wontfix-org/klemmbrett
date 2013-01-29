@@ -212,7 +212,8 @@ class HistoryPicker(PopupPlugin):
             else:
                 self._history.appendleft(text)
 
-            self.emit("text-accepted", text)
+            if emit:
+                self.emit("text-accepted", text)
             return True
         return False
 
