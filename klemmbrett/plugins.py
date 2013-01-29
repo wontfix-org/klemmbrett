@@ -144,7 +144,7 @@ class FancyItemsMixin(object):
                 yield (
                     label,
                     _ft.partial(
-                        self.klemmbrett.load_dotted(options["callable"]),
+                        _util.load_dotted(options["callable"]),
                         options = options,
                         plugin = self,
                     ),

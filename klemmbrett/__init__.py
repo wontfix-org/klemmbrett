@@ -7,6 +7,7 @@ _pygtk.require('2.0')
 import gtk as _gtk
 import gobject as _gobject
 
+import klemmbrett.util as _util
 import klemmbrett.config as _config
 
 
@@ -48,7 +49,7 @@ class Klemmbrett(_gobject.GObject):
             name = section[len(self._PLUGIN_PREFIX):].strip()
             opts = dict(self.config.items(section))
             # load the plugin module and create an instance
-            plugin = self.load_dotted(opts['plugin'])
+            plugin = _util.load_dotted(opts['plugin'])
             plugin = plugin(
                 name,
                 dict(plugin.OPTIONS, **opts),
@@ -104,23 +105,5 @@ class Klemmbrett(_gobject.GObject):
 
     def main(self):
         _gtk.main()
-
-    def load_dotted(self, name):
-        """ stolen from andre malos wtf daemon """
-        components = name.split('.')
-        path = [components.pop(0)]
-        obj = __import__(path[0])
-        while components:
-            comp = components.pop(0)
-            path.append(comp)
-            try:
-                obj = getattr(obj, comp)
-            except AttributeError:
-                __import__('.'.join(path))
-                try:
-                    obj = getattr(obj, comp)
-                except AttributeError:
-                    raise ImportError('.'.join(path))
-        return obj
 
 
