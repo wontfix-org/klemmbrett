@@ -37,9 +37,8 @@ class Klemmbrett(_gobject.GObject):
 
         self.selection = None
 
-        #self._schedule_check()
-        self._clipboard.connect('owner-change', self.clipboard_owner_changed)
-        self._primary.connect('owner-change', self.clipboard_owner_changed)
+        self._clipboard.connect('owner-change', self._clipboard_owner_changed)
+        self._primary.connect('owner-change', self._clipboard_owner_changed)
 
     def _load_plugins(self):
         for section in self.config.sections():
@@ -78,27 +77,7 @@ class Klemmbrett(_gobject.GObject):
         for plugin in self._plugins.values():
             plugin.bootstrap()
 
-    def _schedule_check(self):
-        _gobject.timeout_add(
-            self.config.get('klemmbrett', 'check-interval', 300),
-            self._check,
-        )
-
-    def _check(self):
-        def _check(source, dest):
-            text = source.wait_for_text()
-
-            if text != self.selection:
-                self.selection = text
-                self.set(text, primary = False)
-                self.emit("text-selected", text)
-
-            return False
-
-        _check(self._primary, self._clipboard)
-        self._schedule_check()
-
-    def clipboard_owner_changed(self, clipboard, event):
+    def _clipboard_owner_changed(self, clipboard, event):
         text = clipboard.wait_for_text()
 
         if text != self.selection and text is not None:
@@ -111,7 +90,6 @@ class Klemmbrett(_gobject.GObject):
             self.emit("text-selected", text)
 
         return True
-
 
     def set(self, text, primary = True, clipboard = True):
         try:
