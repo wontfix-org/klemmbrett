@@ -186,13 +186,13 @@ class HistoryPicker(PopupPlugin):
         super(HistoryPicker, self).__init__(*args, **kwargs)
 
         self._history = _collections.deque(
-            maxlen = int(self.options.get("length", 15)),
+            maxlen = self.maxlen,
         )
         self._extend_detection = _util.humanbool(self.options.get('extend-detection', 'yes'))
 
     def bootstrap(self):
         super(HistoryPicker, self).bootstrap()
-        self.klemmbrett.connect("text-selected", self.add)
+        self.klemmbrett.connect("text-selected", self._text_selected)
 
     def items(self):
         for text in self._history:
@@ -201,7 +201,7 @@ class HistoryPicker(PopupPlugin):
                 text,
             )
 
-    def add(self, widget, text):
+    def add(self, text, emit = True):
         if self.accepts(text):
             if (
                 self._extend_detection
@@ -215,6 +215,9 @@ class HistoryPicker(PopupPlugin):
             self.emit("text-accepted", text)
             return True
         return False
+
+    def _text_selected(self, widget, text):
+        return self.add(text)
 
     def __iter__(self):
         return iter(self._history)
@@ -243,31 +246,47 @@ class HistoryPicker(PopupPlugin):
     def top(self):
         return self._history[0]
 
+    @property
+    def maxlen(self):
+        return int(self.options.get("length", 15))
+
 
 class PersistentHistory(Plugin):
     OPTIONS = {
         "tie:history": "history",
     }
 
+    def __init__(self, *args, **kwargs):
+        super(PersistentHistory, self).__init__(*args, **kwargs)
+        self._histfile = _os.path.expanduser(self.options.get("histfile", "~/.klemmbrett.history"))
+
     def bootstrap(self):
-        _history = self.load()
-        self._persist = open(_os.path.expanduser("~/.klemmbrett.history"), "a")
-        self.history.connect("text-accepted", self.add)
-        self.history._history.extend(_history)
+        self._load()
+        self._persist = open(self._histfile, "a")
+        self.history.connect("text-accepted", self._text_accepted)
 
-    def load(self, maxlen = 15):
-        _history = open(_os.path.expanduser("~/.klemmbrett.history"), "r")
-        count = 0
-        while count < maxlen:
+    def _load(self):
+        if not _os.path.exists(self._histfile):
+            return
+
+        history = open(self._histfile, "r")
+        dq = _collections.deque(maxlen = self.history.maxlen)
+
+        while True:
             try:
-                yield _pickle.load(_history)
+                dq.append(_pickle.load(history))
             except EOFError:
-                raise StopIteration
-            count += 1
-        _history.close()
+                break
 
-    def add(self, widget, text):
-        print "ADDED"
+        history.close()
+
+        for i in dq:
+            self.history.add(i, False)
+
+
+    def _text_accepted(self, widget, text):
+        # FIXME(mbra): we need to handle a history size limit, so the file does
+        # not grow indefinitely
         _pickle.dump(text, self._persist, protocol = _pickle.HIGHEST_PROTOCOL)
         self._persist.flush()
         return True
