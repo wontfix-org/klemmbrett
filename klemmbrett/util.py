@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
-from distutils import util as _util
+import cgi as _cgi
+import distutils.util as _util
 
 
 def humanbool(value):
@@ -25,4 +26,6 @@ def load_dotted(name):
                 raise ImportError('.'.join(path))
     return obj
 
+def htmlsafe(text):
+    return _cgi.escape(text)
 

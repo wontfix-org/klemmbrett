@@ -33,13 +33,19 @@ class Plugin(_gobject.GObject):
             text = text()
         self.klemmbrett.set(text)
 
-    def cleanup_text(self, text):
-        return text.replace('\n', ' ')[
+    def _printable(self, text, htmlsafe = False):
+        clean = text.replace('\n', ' ')[
+
             :min(
                 len(text),
                 int(self.options.get('line-length', 30)),
             )
         ].strip()
+
+        if htmlsafe:
+            clean = _util.htmlsafe(clean)
+
+        return clean
 
     def bootstrap(self):
         pass
@@ -94,7 +100,9 @@ class PopupPlugin(Plugin):
         # since we do not use getbool
         if self.options.get('show-current-selection', False) and len(self.history):
             item = _gtk.MenuItem("")
-            item.get_children()[0].set_markup("<b>%s</b>" % (self.cleanup_text(self.history.top),))
+            item.get_children()[0].set_markup(
+                "<b>%s</b>" % (self._printable(self.history.top, True),),
+            )
             menu.append(item)
             menu.append(_gtk.SeparatorMenuItem())
             index += 1
@@ -189,8 +197,8 @@ class HistoryPicker(PopupPlugin):
     def items(self):
         for text in self._history:
             yield (
-                self.cleanup_text(text),
-                text
+                self._printable(text),
+                text,
             )
 
     def add(self, widget, text):
