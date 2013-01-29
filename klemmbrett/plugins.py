@@ -98,7 +98,7 @@ class PopupPlugin(Plugin):
 
         # XXX(mbra): this will not work with values as "no", "off" etc.
         # since we do not use getbool
-        if self.options.get('show-current-selection', False) and len(self.history):
+        if _util.humanbool(self.options.get('show-current-selection', 'yes')) and len(self.history):
             item = _gtk.MenuItem("")
             item.get_children()[0].set_markup(
                 "<b>%s</b>" % (self._printable(self.history.top, True),),
