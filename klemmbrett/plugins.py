@@ -4,6 +4,7 @@ import os as _os
 import functools as _ft
 import weakref as _weakref
 import collections as _collections
+import cPickle as _pickle
 
 import pygtk as _pygtk
 _pygtk.require('2.0')
@@ -233,6 +234,35 @@ class HistoryPicker(PopupPlugin):
     @property
     def top(self):
         return self._history[0]
+
+
+class PersistentHistory(Plugin):
+    OPTIONS = {
+        "tie:history": "history",
+    }
+
+    def bootstrap(self):
+        _history = self.load()
+        self._persist = open(_os.path.expanduser("~/.klemmbrett.history"), "a")
+        self.history.connect("text-accepted", self.add)
+        self.history._history.extend(_history)
+
+    def load(self, maxlen = 15):
+        _history = open(_os.path.expanduser("~/.klemmbrett.history"), "r")
+        count = 0
+        while count < maxlen:
+            try:
+                yield _pickle.load(_history)
+            except EOFError:
+                raise StopIteration
+            count += 1
+        _history.close()
+
+    def add(self, widget, text):
+        print "ADDED"
+        _pickle.dump(text, self._persist, protocol = _pickle.HIGHEST_PROTOCOL)
+        self._persist.flush()
+        return True
 
 
 class SnippetPicker(PopupPlugin, FancyItemsMixin):
