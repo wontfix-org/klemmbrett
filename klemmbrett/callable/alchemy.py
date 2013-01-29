@@ -5,7 +5,10 @@ def statement(options, plugin):
     return str(
         list(
             _sa.create_engine(options["engine"]).execute(
-                options["statement"] % {'clipboard': plugin.history.top},
+                _sa.sql.text(options["statement"]),
+                dict(
+                    ((str(x), y) for x, y in enumerate(list(plugin.history)))
+                )
             )
         )[0][0]
     )
