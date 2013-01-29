@@ -11,6 +11,7 @@ import gtk as _gtk
 import gobject as _gobject
 import keybinder as _keybinder
 
+import klemmbrett.util as _util
 import klemmbrett as _klemmbrett
 import klemmbrett.config as _config
 
@@ -178,6 +179,7 @@ class HistoryPicker(PopupPlugin):
         self._history = _collections.deque(
             maxlen = int(self.options.get("length", 15)),
         )
+        self._extend_detection = _util.humanbool(self.options.get('extend-detection', 'yes'))
 
     def bootstrap(self):
         super(HistoryPicker, self).bootstrap()
@@ -192,7 +194,15 @@ class HistoryPicker(PopupPlugin):
 
     def add(self, widget, text):
         if self.accepts(text):
-            self._history.appendleft(text)
+            if (
+                self._extend_detection
+                and len(self)
+                and text.startswith(self.top)
+            ):
+                self._history[0] = text
+            else:
+                self._history.appendleft(text)
+
             self.emit("text-accepted", text)
             return True
         return False
