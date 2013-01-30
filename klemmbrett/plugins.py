@@ -88,7 +88,7 @@ class PopupPlugin(Plugin):
 
     def bootstrap(self):
         _keybinder.bind(
-            self.options.get('shortcut', self._DEFAULT_BINDING),
+            self.options.get('shortcut', self.DEFAULT_BINDING),
             self.popup,
         )
 
@@ -128,7 +128,7 @@ class PopupPlugin(Plugin):
 class FancyItemsMixin(object):
 
     def items(self):
-        section = self.options.get('simple-section', self._SIMPLE_SECTION)
+        section = self.options.get('simple-section', self.SIMPLE_SECTION)
 
         if not self.klemmbrett.config.has_section(section):
             raise KeyError("No config section %s defined" % (section,))
@@ -137,7 +137,7 @@ class FancyItemsMixin(object):
             yield item
 
 
-        prefix = self.options.get('complex-section-prefix', self._COMPLEX_SECTION_PREFIX)
+        prefix = self.options.get('complex-section-prefix', self.COMPLEX_SECTION_PREFIX)
         if not prefix:
             raise StopIteration()
 
@@ -172,7 +172,7 @@ class FancyItemsMixin(object):
 
 class HistoryPicker(PopupPlugin):
 
-    _DEFAULT_BINDING = "<Ctrl><Alt>C"
+    DEFAULT_BINDING = "<Ctrl><Alt>C"
 
     __gsignals__ = {
         "text-accepted": (_gobject.SIGNAL_RUN_FIRST, None, (_gobject.TYPE_PYOBJECT,)),
@@ -295,9 +295,9 @@ class PersistentHistory(Plugin):
 
 class SnippetPicker(PopupPlugin, FancyItemsMixin):
 
-    _DEFAULT_BINDING = "<Ctrl><Alt>S"
-    _SIMPLE_SECTION = "snippets"
-    _COMPLEX_SECTION_PREFIX= "snippet "
+    DEFAULT_BINDING = "<Ctrl><Alt>S"
+    SIMPLE_SECTION = "snippets"
+    COMPLEX_SECTION_PREFIX= "snippet "
 
     OPTIONS = {
         "tie:history": "history"
@@ -306,9 +306,9 @@ class SnippetPicker(PopupPlugin, FancyItemsMixin):
 
 class ActionPicker(PopupPlugin, FancyItemsMixin):
 
-    _DEFAULT_BINDING = "<Ctrl><Alt>A"
-    _SIMPLE_SECTION = "actions"
-    _COMPLEX_SECTION_PREFIX= "action "
+    DEFAULT_BINDING = "<Ctrl><Alt>A"
+    SIMPLE_SECTION = "actions"
+    COMPLEX_SECTION_PREFIX= "action "
 
     OPTIONS = {
         "tie:history": "history"
