@@ -1,0 +1,7 @@
+ * Have a shortcut option on every complex item in a FancyItemsMixin based plugin
+ * Emit signal when text is set as the current clipboard contents
+ * Allow configuration of autopaste klemmbrett wide, plugin wide for FancyItemsMixin
+   based plugins, or on a per items basis for FancyItemsMixin based plugin
+ * Allow actions to behave like snippets in regard to the callable feature, so we can
+   take the text from the clipboard, transform it with the callable, and then pass it
+   to an action
