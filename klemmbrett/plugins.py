@@ -31,7 +31,7 @@ class Plugin(_gobject.GObject):
         #print "setting new content: %r" % (buf,)
         if callable(text):
             text = text()
-        self.klemmbrett.set(text)
+            self.klemmbrett.set(text)
 
     def _printable(self, text, htmlsafe = False):
         clean = text.replace('\n', ' ')[
@@ -201,16 +201,21 @@ class HistoryPicker(PopupPlugin):
                 text,
             )
 
+    def is_extended(self, text):
+        if (
+            self._extend_detection
+            and len(self)
+            and (
+                text.startswith(self.top)
+                or text.endswith(self.top)
+            )
+        ):
+            return True
+        return False
+
     def add(self, text, emit = True):
         if self.accepts(text):
-            if (
-                self._extend_detection
-                and len(self)
-                and (
-                    text.startswith(self.top)
-                    or text.endswith(self.top)
-                )
-            ):
+            if self.is_extended(text):
                 self._history[0] = text
             else:
                 self._history.appendleft(text)
