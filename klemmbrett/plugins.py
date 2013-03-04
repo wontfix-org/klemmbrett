@@ -206,7 +206,10 @@ class HistoryPicker(PopupPlugin):
             if (
                 self._extend_detection
                 and len(self)
-                and text.startswith(self.top)
+                and (
+                    text.startswith(self.top)
+                    or text.endswith(self.top)
+                )
             ):
                 self._history[0] = text
             else:
