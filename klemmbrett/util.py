@@ -3,6 +3,26 @@
 import cgi as _cgi
 import distutils.util as _util
 
+try:
+    from compiler.consts import CO_GENERATOR
+except ImportError:
+    # IronPython doesn't have a complier module
+    CO_GENERATOR = 0x20
+
+
+def isgenerator(func):
+    try:
+        return func.func_code.co_flags & CO_GENERATOR != 0
+    except AttributeError:
+        return False
+
+
+def yieldwrap(func, *args, **kwargs):
+    def wrapped():
+        for i in func(*args, **kwargs):
+            yield i
+    return wrapped
+
 
 def humanbool(value):
     return _util.strtobool(str(value).strip().lower() or 'no')
@@ -25,6 +45,7 @@ def load_dotted(name):
             except AttributeError:
                 raise ImportError('.'.join(path))
     return obj
+
 
 def htmlsafe(text):
     return _cgi.escape(text)

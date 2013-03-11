@@ -31,7 +31,7 @@ class Plugin(_gobject.GObject):
         #print "setting new content: %r" % (buf,)
         if callable(text):
             text = text()
-            self.klemmbrett.set(text)
+        self.klemmbrett.set(text)
 
     def _printable(self, text, htmlsafe = False):
         clean = text.replace('\n', ' ')[
@@ -92,6 +92,23 @@ class PopupPlugin(Plugin):
             self.popup,
         )
 
+    def _expand(self, widget, iterable):
+        sm = widget.get_submenu()
+        self._build_menu(sm, iterable())
+        sm.show_all()
+
+    def _build_menu(self, menu, items):
+        for pos, (label, value) in enumerate(items):
+            label = "_%s %s" % (pos, label)
+            item = _gtk.MenuItem(label, use_underline = True)
+            if _util.isgenerator(value):
+                item.set_submenu(_gtk.Menu())
+                item.connect("activate", self._expand, value)
+            else:
+                item.connect("activate", self.set, value)
+
+            menu.append(item)
+
     def popup(self):
         menu = _gtk.Menu()
         index = 0
@@ -107,11 +124,7 @@ class PopupPlugin(Plugin):
             menu.append(_gtk.SeparatorMenuItem())
             index += 1
 
-        for pos, (label, value) in enumerate(self.items()):
-            label = "_%s %s" % (pos, label)
-            item = _gtk.MenuItem(label, use_underline = True)
-            item.connect("activate", self.set, value)
-            menu.append(item)
+        self._build_menu(menu, self.items())
 
         menu.show_all()
         menu.popup(
