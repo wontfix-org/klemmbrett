@@ -151,8 +151,7 @@ class FancyItemsMixin(object):
             if "callable" in options:
                 yield (
                     label,
-                    _ft.partial(
-                        _util.load_dotted(options["callable"]),
+                    _util.load_dotted(options["callable"])(
                         options = options,
                         plugin = self,
                     ),
