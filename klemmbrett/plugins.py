@@ -28,7 +28,6 @@ class Plugin(_gobject.GObject):
         self.name = name
 
     def set(self, widget = None, text = None):
-        #print "setting new content: %r" % (buf,)
         if callable(text):
             text = text()
         self.klemmbrett.set(text)
@@ -140,19 +139,18 @@ class PopupPlugin(Plugin):
 
 class FancyItemsMixin(object):
 
-    def items(self):
+    def bootstrap(self):
+        self._items = []
         section = self.options.get('simple-section', self.SIMPLE_SECTION)
 
         if not self.klemmbrett.config.has_section(section):
             raise KeyError("No config section %s defined" % (section,))
 
         for item in self.klemmbrett.config.items(section):
-            yield item
+            self._items.append(item)
 
 
         prefix = self.options.get('complex-section-prefix', self.COMPLEX_SECTION_PREFIX)
-        if not prefix:
-            raise StopIteration()
 
         for section in self.klemmbrett.config.sections():
             if not section.startswith(prefix):
@@ -161,17 +159,19 @@ class FancyItemsMixin(object):
             options = dict(self.klemmbrett.config.items(section))
             label = section[len(prefix):]
 
+            item = None
+
             if "callable" in options:
-                yield (
+                item = (
                     label,
                     _util.load_dotted(options["callable"])(
                         options = options,
                         plugin = self,
                     ),
                 )
-                continue
-
-            if not "value" in options:
+            elif "value" in options:
+                item = (label, options["value"])
+            else:
                 raise KeyError(
                     "No value found for %r in section %s" % (
                         self.__class__.__name__,
@@ -179,7 +179,16 @@ class FancyItemsMixin(object):
                     )
                 )
 
-            yield (label, options["value"])
+            self._items.append(item)
+
+            if "shortcut" in options:
+                _keybinder.bind(
+                    options['shortcut'],
+                    _ft.partial(self.set, widget = None, text = item[1]),
+                )
+
+    def items(self):
+        return iter(self._items)
 
 
 class HistoryPicker(PopupPlugin):
@@ -323,6 +332,10 @@ class SnippetPicker(PopupPlugin, FancyItemsMixin):
         "tie:history": "history"
     }
 
+    def bootstrap(self):
+        PopupPlugin.bootstrap(self)
+        FancyItemsMixin.bootstrap(self)
+
 
 class ActionPicker(PopupPlugin, FancyItemsMixin):
 
@@ -333,6 +346,10 @@ class ActionPicker(PopupPlugin, FancyItemsMixin):
     OPTIONS = {
         "tie:history": "history"
     }
+
+    def bootstrap(self):
+        PopupPlugin.bootstrap(self)
+        FancyItemsMixin.bootstrap(self)
 
     def set(self, widget = None, text = None):
         try:
