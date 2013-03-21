@@ -151,7 +151,6 @@ class FancyItemsMixin(object):
             if r"#" in label:
                 target, label = label.split(r"#", 1)
 
-            print (label, {target: value})
             self._items.append((label, {target: value}))
 
         prefix = self.options.get('complex-section-prefix', self.COMPLEX_SECTION_PREFIX)
