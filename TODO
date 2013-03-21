@@ -1,8 +1,5 @@
  * Emit signal when text is set as the current clipboard contents
  * Allow configuration of autopaste klemmbrett wide, plugin wide for FancyItemsMixin
    based plugins, or on a per items basis for FancyItemsMixin based plugin
- * Allow actions to behave like snippets in regard to the callable feature, so we can
-   take the text from the clipboard, transform it with the callable, and then pass it
-   to an action
  * Should we just use "text in self.top" for extend-detection in HistoryPicker?
  * Should we be able to configure detection-method? "in", "start,end", "start" etc?
