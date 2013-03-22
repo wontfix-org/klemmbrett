@@ -28,14 +28,12 @@ class Plugin(_gobject.GObject):
         self.name = name
 
     def set(self, widget = None, text = None):
-        #print "setting new content: %r" % (buf,)
         if callable(text):
             text = text()
         self.klemmbrett.set(text)
 
     def _printable(self, text, htmlsafe = False):
         clean = text.replace('\n', ' ')[
-
             :min(
                 len(text),
                 int(self.options.get('line-length', 30)),
@@ -92,12 +90,27 @@ class PopupPlugin(Plugin):
             self.popup,
         )
 
+    def _expand(self, widget, iterable):
+        sm = widget.get_submenu()
+        self._build_menu(sm, iterable())
+        sm.show_all()
+
+    def _build_menu(self, menu, items):
+        for pos, (label, value) in enumerate(items):
+            label = "_%s %s" % (pos, label)
+            item = _gtk.MenuItem(label, use_underline = True)
+            if _util.isgenerator(value):
+                item.set_submenu(_gtk.Menu())
+                item.connect("activate", self._expand, value)
+            else:
+                item.connect("activate", self.set, value)
+
+            menu.append(item)
+
     def popup(self):
         menu = _gtk.Menu()
         index = 0
 
-        # XXX(mbra): this will not work with values as "no", "off" etc.
-        # since we do not use getbool
         if _util.humanbool(self.options.get('show-current-selection', 'yes')) and len(self.history):
             item = _gtk.MenuItem("")
             item.get_children()[0].set_markup(
@@ -107,11 +120,7 @@ class PopupPlugin(Plugin):
             menu.append(_gtk.SeparatorMenuItem())
             index += 1
 
-        for pos, (label, value) in enumerate(self.items()):
-            label = "_%s %s" % (pos, label)
-            item = _gtk.MenuItem(label, use_underline = True)
-            item.connect("activate", self.set, value)
-            menu.append(item)
+        self._build_menu(menu, self.items())
 
         menu.show_all()
         menu.popup(
@@ -127,19 +136,24 @@ class PopupPlugin(Plugin):
 
 class FancyItemsMixin(object):
 
-    def items(self):
+    SIMPLE_SECTION_DEFAULT = "value"
+
+    def bootstrap(self):
+        self._items = []
         section = self.options.get('simple-section', self.SIMPLE_SECTION)
+        default_type = self.options.get('simple-section-default', self.SIMPLE_SECTION_DEFAULT)
 
         if not self.klemmbrett.config.has_section(section):
             raise KeyError("No config section %s defined" % (section,))
 
-        for item in self.klemmbrett.config.items(section):
-            yield item
+        for label, value in self.klemmbrett.config.items(section):
+            target = default_type
+            if r"#" in label:
+                target, label = label.split(r"#", 1)
 
+            self._items.append((label, {target: value}))
 
         prefix = self.options.get('complex-section-prefix', self.COMPLEX_SECTION_PREFIX)
-        if not prefix:
-            raise StopIteration()
 
         for section in self.klemmbrett.config.sections():
             if not section.startswith(prefix):
@@ -148,26 +162,16 @@ class FancyItemsMixin(object):
             options = dict(self.klemmbrett.config.items(section))
             label = section[len(prefix):]
 
-            if "callable" in options:
-                yield (
-                    label,
-                    _ft.partial(
-                        _util.load_dotted(options["callable"]),
-                        options = options,
-                        plugin = self,
-                    ),
-                )
-                continue
+            self._items.append((label, options))
 
-            if not "value" in options:
-                raise KeyError(
-                    "No value found for %r in section %s" % (
-                        self.__class__.__name__,
-                        section,
-                    )
+            if "shortcut" in options:
+                _keybinder.bind(
+                    options['shortcut'],
+                    _ft.partial(self.set, widget = None, text = item[1]),
                 )
 
-            yield (label, options["value"])
+    def items(self):
+        return iter(self._items)
 
 
 class HistoryPicker(PopupPlugin):
@@ -201,16 +205,21 @@ class HistoryPicker(PopupPlugin):
                 text,
             )
 
+    def is_extended(self, text):
+        if (
+            self._extend_detection
+            and len(self)
+            and (
+                text.startswith(self.top)
+                or text.endswith(self.top)
+            )
+        ):
+            return True
+        return False
+
     def add(self, text, emit = True):
         if self.accepts(text):
-            if (
-                self._extend_detection
-                and len(self)
-                and (
-                    text.startswith(self.top)
-                    or text.endswith(self.top)
-                )
-            ):
+            if self.is_extended(text):
                 self._history[0] = text
             else:
                 self._history.appendleft(text)
@@ -296,30 +305,61 @@ class PersistentHistory(Plugin):
         return True
 
 
-class SnippetPicker(PopupPlugin, FancyItemsMixin):
+class MultiPicker(PopupPlugin, FancyItemsMixin):
 
-    DEFAULT_BINDING = "<Ctrl><Alt>S"
-    SIMPLE_SECTION = "snippets"
-    COMPLEX_SECTION_PREFIX= "snippet "
-
+    SIMPLE_SECTION_DEFAULT = "value"
     OPTIONS = {
         "tie:history": "history"
     }
 
+    def bootstrap(self):
+        PopupPlugin.bootstrap(self)
+        FancyItemsMixin.bootstrap(self)
+        self._types = (
+            ("value", self._value),
+            ("callable", self._callable),
+            ("action", self._action),
+        )
 
-class ActionPicker(PopupPlugin, FancyItemsMixin):
+    def items(self):
+        for label, options in FancyItemsMixin.items(self):
+            callable = lambda: self.history.top
 
+            for type, handler in self._types:
+                if type in options:
+                    callable = handler(label, options, callable)
+
+            yield (label, callable)
+
+    def _value(self, label, options, callable):
+        return _ft.partial(options.get, "value")
+
+    def _callable(self, label, options, callable):
+        return _util.load_dotted(options["callable"])(options, self)
+
+    def _action(self, label, options, callable):
+        return _ft.partial(self._perform_action, options, callable)
+
+    @staticmethod
+    def _perform_action(options, callable):
+        _gobject.spawn_async([
+            "/bin/bash",
+            "-c",
+            options["action"] % (callable(),),
+        ]),
+
+    def set(self, widget = None, text = None):
+        return PopupPlugin.set(self, widget = widget, text = text)
+
+
+class ActionPicker(MultiPicker):
     DEFAULT_BINDING = "<Ctrl><Alt>A"
     SIMPLE_SECTION = "actions"
     COMPLEX_SECTION_PREFIX= "action "
+    SIMPLE_SECTION_DEFAULT = "action"
 
-    OPTIONS = {
-        "tie:history": "history"
-    }
 
-    def set(self, widget = None, text = None):
-        try:
-            command = "/bin/bash -c " + text % (self.history.top,)
-            _gobject.spawn_async(["/bin/bash", "-c", text % (self.history.top,)])
-        except StopIteration:
-            pass
+class SnippetPicker(MultiPicker):
+    DEFAULT_BINDING = "<Ctrl><Alt>S"
+    SIMPLE_SECTION = "snippets"
+    COMPLEX_SECTION_PREFIX= "snippet "
