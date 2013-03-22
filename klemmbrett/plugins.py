@@ -358,6 +358,7 @@ class ActionPicker(MultiPicker):
     COMPLEX_SECTION_PREFIX= "action "
     SIMPLE_SECTION_DEFAULT = "action"
 
+
 class SnippetPicker(MultiPicker):
     DEFAULT_BINDING = "<Ctrl><Alt>S"
     SIMPLE_SECTION = "snippets"
