@@ -19,6 +19,7 @@ class Klemmbrett(_gobject.GObject):
 
     __gsignals__ = {
         "text-selected": (_gobject.SIGNAL_RUN_FIRST, None, (_gobject.TYPE_PYOBJECT,)),
+        "text-set": (_gobject.SIGNAL_RUN_FIRST, None, (_gobject.TYPE_PYOBJECT,)),
     }
 
     _PLUGIN_PREFIX = "plugin "
@@ -98,6 +99,7 @@ class Klemmbrett(_gobject.GObject):
                 self._clipboard.set_text(text)
             if primary:
                 self._primary.set_text(text)
+            self.emit("text-set", text)
         except TypeError:
             # TypeError: Gtk.Clipboard.set_text() argument 1 must be string, not None
             # FIXME(mbra): i really do not know when and when this happens :/

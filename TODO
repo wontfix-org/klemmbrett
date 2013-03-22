@@ -1,4 +1,3 @@
- * Emit signal when text is set as the current clipboard contents
  * Allow configuration of autopaste klemmbrett wide, plugin wide for FancyItemsMixin
    based plugins, or on a per items basis for FancyItemsMixin based plugin
  * Should we just use "text in self.top" for extend-detection in HistoryPicker?
