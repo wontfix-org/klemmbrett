@@ -307,7 +307,7 @@ class PersistentHistory(Plugin):
 
 class MultiPicker(PopupPlugin, FancyItemsMixin):
 
-    SIMPLE_SECTION_DEFAULT = "action"
+    SIMPLE_SECTION_DEFAULT = "value"
     OPTIONS = {
         "tie:history": "history"
     }
