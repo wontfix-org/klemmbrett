@@ -137,6 +137,7 @@ class PopupPlugin(Plugin):
 class FancyItemsMixin(object):
 
     SIMPLE_SECTION_DEFAULT = "value"
+    _TYPE_SEPERATOR = "."
 
     def bootstrap(self):
         self._items = []
@@ -148,8 +149,8 @@ class FancyItemsMixin(object):
 
         for label, value in self.klemmbrett.config.items(section):
             target = default_type
-            if r"#" in label:
-                target, label = label.split(r"#", 1)
+            if self._TYPE_SEPERATOR in label:
+                target, label = label.split(self._TYPE_SEPERATOR, 1)
 
             self._items.append((label, {target: value}))
 
