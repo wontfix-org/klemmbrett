@@ -2,10 +2,9 @@
 
 import os as _os
 import functools as _ft
+import cPickle as _pickle
 import weakref as _weakref
 import collections as _collections
-import cPickle as _pickle
-
 import pygtk as _pygtk
 _pygtk.require('2.0')
 import gtk as _gtk
@@ -22,8 +21,16 @@ class Plugin(_gobject.GObject):
     OPTIONS = {}
 
     def __init__(self, name, options, klemmbrett):
-        super(Plugin, self).__init__()
-        self.klemmbrett = _weakref.proxy(klemmbrett)
+        if hasattr(self, '_initialized'):
+            return
+
+        _gobject.GObject.__init__(self)
+
+        if type(klemmbrett) in _weakref.ProxyTypes:
+            self.klemmbrett = _weakref.proxy(klemmbrett)
+        else:
+            self.klemmbrett = klemmbrett
+
         self.options = options
         self.name = name
 
@@ -107,7 +114,7 @@ class PopupPlugin(Plugin):
 
             menu.append(item)
 
-    def popup(self):
+    def popup(self, items = None):
         menu = _gtk.Menu()
         index = 0
 
@@ -120,7 +127,7 @@ class PopupPlugin(Plugin):
             menu.append(_gtk.SeparatorMenuItem())
             index += 1
 
-        self._build_menu(menu, self.items())
+        self._build_menu(menu, items or self.items())
 
         menu.show_all()
         menu.popup(
@@ -175,29 +182,16 @@ class FancyItemsMixin(object):
         return iter(self._items)
 
 
-class HistoryPicker(PopupPlugin):
-
-    DEFAULT_BINDING = "<Ctrl><Alt>C"
+class HistoryController(Plugin):
 
     __gsignals__ = {
         "text-accepted": (_gobject.SIGNAL_RUN_FIRST, None, (_gobject.TYPE_PYOBJECT,)),
     }
 
-    OPTIONS = {
-        "tie:history": "history",
-    }
-
-    def __init__(self, *args, **kwargs):
-        super(HistoryPicker, self).__init__(*args, **kwargs)
-
-        self._history = _collections.deque(
-            maxlen = self.maxlen,
-        )
+    def __init__(self, name, options, klemmbrett):
+        Plugin.__init__(self, name, options, klemmbrett)
+        self._history = _collections.deque(maxlen = self.maxlen)
         self._extend_detection = _util.humanbool(self.options.get('extend-detection', 'yes'))
-
-    def bootstrap(self):
-        super(HistoryPicker, self).bootstrap()
-        self.klemmbrett.connect("text-selected", self._text_selected)
 
     def items(self):
         for text in self._history:
@@ -207,14 +201,17 @@ class HistoryPicker(PopupPlugin):
             )
 
     def is_extended(self, text):
+        if not self._extend_detection:
+            return False
+
         if (
-            self._extend_detection
-            and len(self)
+            len(self)
             and (
                 text.startswith(self.top)
                 or text.endswith(self.top)
             )
         ):
+
             return True
         return False
 
@@ -229,9 +226,6 @@ class HistoryPicker(PopupPlugin):
                 self.emit("text-accepted", text)
             return True
         return False
-
-    def _text_selected(self, widget, text):
-        return self.add(text)
 
     def __iter__(self):
         return iter(self._history)
@@ -265,6 +259,25 @@ class HistoryPicker(PopupPlugin):
         return int(self.options.get("length", 15))
 
 
+class HistoryPicker(HistoryController, PopupPlugin):
+
+    DEFAULT_BINDING = "<Ctrl><Alt>C"
+
+    OPTIONS = {
+        "tie:history": "history",
+    }
+
+    def __init__(self, name, options, klemmbrett):
+        PopupPlugin.__init__(self, name, options, klemmbrett)
+        HistoryController.__init__(self, name, options, klemmbrett)
+
+    def bootstrap(self):
+        self.klemmbrett.connect("text-selected", self._text_selected)
+
+    def _text_selected(self, widget, text):
+        return self.add(text)
+
+
 class PersistentHistory(Plugin):
     OPTIONS = {
         "tie:history": "history",
@@ -296,7 +309,6 @@ class PersistentHistory(Plugin):
 
         for i in dq:
             self.history.add(i, False)
-
 
     def _text_accepted(self, widget, text):
         # FIXME(mbra): we need to handle a history size limit, so the file does
