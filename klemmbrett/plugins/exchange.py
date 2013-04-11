@@ -88,10 +88,10 @@ class ClipboardExchangeHandler(_xmlrpcserver.SimpleXMLRPCRequestHandler):
             # only accept messages in a narrow timeslot, best whould be
             # to have a logbook of request ids used or some sort of sequence
             # but that seems excessive at the moment, on the other hand this
-            # requires the systems to sync their time, either by using a 
-            #timeserver or some sort of internal protocol
+            # requires the systems to sync their time, either by using a
+            # timeserver or some sort of internal protocol
             now = _time.time()
-            if issued < _time.time() - 5:
+            if issued < now - 5:
                 self.send_response(400, "The request is no longer valid")
                 self.send_header("Content-length", "0")
                 self.end_headers()
