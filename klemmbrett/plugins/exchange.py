@@ -182,6 +182,9 @@ class ClipboardExchange(_plugins.PopupPlugin):
                 "hmac-key": self.options["hmac-key"],
             }
 
+            for ip, dest in dests.iteritems():
+                dest["history"].bootstrap()
+
         return dests
 
     def bootstrap(self):

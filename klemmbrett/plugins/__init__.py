@@ -272,6 +272,8 @@ class HistoryPicker(HistoryController, PopupPlugin):
         HistoryController.__init__(self, name, options, klemmbrett)
 
     def bootstrap(self):
+        PopupPlugin.bootstrap(self)
+        HistoryController.bootstrap(self)
         self.klemmbrett.connect("text-selected", self._text_selected)
 
     def _text_selected(self, widget, text):
