@@ -97,7 +97,7 @@ class ClipboardExchangeServer(_xmlrpcserver.SimpleXMLRPCServer):
         self._destinations = kwargs.pop('destinations', [])
         _xmlrpcserver.SimpleXMLRPCServer.__init__(self, *args, **kwargs)
 
-    def _marshaled_dispatch(self, data, dispatch_method = None):
+    def _marshaled_dispatch(self, data, *args, **kwargs):
         try:
             hmac, issued, data = data.split("|")
             issued = int(issued)
@@ -141,7 +141,8 @@ class ClipboardExchangeServer(_xmlrpcserver.SimpleXMLRPCServer):
             return _xmlrpcserver.SimpleXMLRPCServer._marshaled_dispatch(
                 self,
                 data,
-                dispatch_method
+                *args,
+                **kwargs,
             )
 
         except:
