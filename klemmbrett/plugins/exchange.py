@@ -44,63 +44,11 @@ class ClipboardExchangeHandler(_xmlrpcserver.SimpleXMLRPCRequestHandler):
         decoding/verifing the xmlrpc encryption.
     """
 
-    def __init__(self, destinations, *args, **kwargs):
-        self._destinations = destinations
-        _xmlrpcserver.SimpleXMLRPCRequestHandler.__init__(self, *args, **kwargs)
-
     def _dispatch(self, method, params):
         """ Inject the client_address into the argument list of all rpc methods """
         f = list(params)
         f.append(self.client_address)
         return self.server._dispatch(method, f)
-
-    def decode_request_content(self, data):
-        """ Do decryption/verification of the rpc request """
-        try:
-            hmac, issued, data = data.split("|")
-            issued = int(issued)
-
-            data = data.decode("hex")
-            hmac = hmac.decode("hex")
-
-            h = str(
-                _hmac.new(
-                    str(self._destinations[self.client_address[0]]["hmac-key"]),
-                    msg = data,
-                    digestmod = _sha,
-                ).digest()
-            )
-
-            if h != hmac:
-                self.send_response(400, "Request Verification failed")
-                self.send_header("Content-length", "0")
-                self.end_headers()
-                return None
-
-
-            # the first block_size bytes of the message is the initialization vector
-            data = _aes.new(
-                self._destinations[self.client_address[0]]["encryption-key"].decode("hex"),
-                _aes.MODE_CFB,
-                data[:_aes.block_size],
-            ).decrypt(data[_aes.block_size:])
-
-            # only accept messages in a narrow timeslot, best whould be
-            # to have a logbook of request ids used or some sort of sequence
-            # but that seems excessive at the moment, on the other hand this
-            # requires the systems to sync their time, either by using a
-            # timeserver or some sort of internal protocol
-            now = _time.time()
-            if issued < now - 5:
-                self.send_response(400, "The request is no longer valid")
-                self.send_header("Content-length", "0")
-                self.end_headers()
-                return None
-
-            return _xmlrpcserver.SimpleXMLRPCRequestHandler.decode_request_content(self, data)
-        except:
-            import traceback as _tb
-            _tb.print_exc()
 
 
 class ClipboardExchangeTransport(_xmlrpc.Transport):
@@ -141,6 +89,69 @@ class ClipboardExchangeTransport(_xmlrpc.Transport):
             ]),
             verbose,
         )
+
+
+class ClipboardExchangeServer(_xmlrpcserver.SimpleXMLRPCServer):
+
+    def __init__(self, *args, **kwargs):
+        self._destinations = kwargs.pop('destinations', [])
+        _xmlrpcserver.SimpleXMLRPCServer.__init__(self, *args, **kwargs)
+
+    def _marshaled_dispatch(self, data, dispatch_method = None):
+        try:
+            hmac, issued, data = data.split("|")
+            issued = int(issued)
+
+            data = data.decode("hex")
+            hmac = hmac.decode("hex")
+
+            h = str(
+                _hmac.new(
+                    str(self._destinations[self.client_address[0]]["hmac-key"]),
+                    msg = data,
+                    digestmod = _sha,
+                ).digest()
+            )
+
+            if h != hmac:
+                self.send_response(400, "Request Verification failed")
+                self.send_header("Content-length", "0")
+                self.end_headers()
+                return None
+
+            # the first block_size bytes of the message is the initialization vector
+            data = _aes.new(
+                self._destinations[self.client_address[0]]["encryption-key"].decode("hex"),
+                _aes.MODE_CFB,
+                data[:_aes.block_size],
+            ).decrypt(data[_aes.block_size:])
+
+            # only accept messages in a narrow timeslot, best whould be
+            # to have a logbook of request ids used or some sort of sequence
+            # but that seems excessive at the moment, on the other hand this
+            # requires the systems to sync their time, either by using a
+            # timeserver or some sort of internal protocol
+            now = _time.time()
+            if issued < now - 5:
+                self.send_response(400, "The request is no longer valid")
+                self.send_header("Content-length", "0")
+                self.end_headers()
+                return None
+
+            return _xmlrpcserver.SimpleXMLRPCServer._marshaled_dispatch(
+                self,
+                data,
+                dispatch_method
+            )
+
+        except:
+            import traceback as _tb
+            _tb.print_exc()
+
+    def get_request(self):
+        (request, client_address) = _xmlrpcserver.SimpleXMLRPCServer.get_request(self)
+        self.client_address = client_address
+        return  (request, client_address)
 
 
 class ClipboardExchange(_plugins.PopupPlugin):
@@ -227,13 +238,11 @@ class ClipboardExchange(_plugins.PopupPlugin):
         host, port = hosttuple(self.options.get("listen", "0.0.0.0"))
 
         _gtk.gdk.threads_init()
-        self._server = _xmlrpcserver.SimpleXMLRPCServer(
+        self._server = ClipboardExchangeServer(
             (host, port),
             allow_none = True,
-            requestHandler = _ft.partial(
-                ClipboardExchangeHandler,
-                self._destinations,
-            ),
+            requestHandler = ClipboardExchangeHandler,
+            destinations = self._destinations,
         )
         self._server.register_function(self._suggest, "suggest")
         #self._server.register_introspection_functions()
@@ -256,6 +265,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
             ),
             text,
         )
+
         self._destinations[client_address[0]]["history"].add(text)
         n.show()
         self._current_history = self._destinations[client_address[0]]["history"]
