@@ -142,7 +142,7 @@ class ClipboardExchangeServer(_xmlrpcserver.SimpleXMLRPCServer):
                 self,
                 data,
                 *args,
-                **kwargs,
+                **kwargs
             )
 
         except:
