@@ -110,7 +110,7 @@ class PopupPlugin(Plugin):
 
     def _build_menu(self, menu, items):
         for pos, (label, value) in enumerate(items):
-            label = "_%s %s" % (pos, label)
+            label = "_%s %s" % (pos, label.replace('_', '__'))
             item = _gtk.MenuItem(label, use_underline = True)
             if _util.isgenerator(value):
                 item.set_submenu(_gtk.Menu())
