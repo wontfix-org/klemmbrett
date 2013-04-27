@@ -97,10 +97,68 @@ class ClipboardExchangeHandler(_xmlrpcserver.SimpleXMLRPCRequestHandler):
                 self.end_headers()
                 return None
 
-            return _xmlrpcserver.SimpleXMLRPCRequestHandler.decode_request_content(self, data)
+            return data
         except:
             import traceback as _tb
             _tb.print_exc()
+
+    def do_POST(self):
+        """Handles the HTTP POST request.
+
+        Attempts to interpret all HTTP POST requests as XML-RPC calls,
+        which are forwarded to the server's _dispatch method for handling.
+        """
+
+        # Check that the path is legal
+        if not self.is_rpc_path_valid():
+            self.report_404()
+            return
+
+        try:
+            # Get arguments by reading body of request.
+            # We read this in chunks to avoid straining
+            # socket.read(); around the 10 or 15Mb mark, some platforms
+            # begin to have problems (bug #792570).
+            max_chunk_size = 10*1024*1024
+            size_remaining = int(self.headers["content-length"])
+            L = []
+            while size_remaining:
+                chunk_size = min(size_remaining, max_chunk_size)
+                L.append(self.rfile.read(chunk_size))
+                size_remaining -= len(L[-1])
+            data = self.decode_request_content(''.join(L))
+
+            # In previous versions of SimpleXMLRPCServer, _dispatch
+            # could be overridden in this class, instead of in
+            # SimpleXMLRPCDispatcher. To maintain backwards compatibility,
+            # check to see if a subclass implements _dispatch and dispatch
+            # using that method if present.
+            response = self.server._marshaled_dispatch(
+                data,
+                getattr(self, '_dispatch', None),
+            )
+        except Exception, e: # This should only happen if the module is buggy
+            # internal error, report as HTTP server error
+            self.send_response(500)
+
+            # Send information about the exception if requested
+            if hasattr(self.server, '_send_traceback_header') and \
+                    self.server._send_traceback_header:
+                self.send_header("X-exception", str(e))
+                self.send_header("X-traceback", traceback.format_exc())
+
+            self.end_headers()
+        else:
+            # got a valid XML RPC response
+            self.send_response(200)
+            self.send_header("Content-type", "text/xml")
+            self.send_header("Content-length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+            # shut down the connection
+            self.wfile.flush()
+            self.connection.shutdown(1)
 
 
 class ClipboardExchangeTransport(_xmlrpc.Transport):
