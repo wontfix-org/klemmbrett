@@ -12,6 +12,7 @@ _setuptools.setup(
     packages = _setuptools.find_packages(),
     scripts = ["scripts/klemmbrett"],
     data_files = [
-        ("/etc", ["conf/klemmbrett.conf"])
+        ("/etc", ["conf/klemmbrett.conf"]),
+        ("/etc/xdg/autostart/", ["conf/klemmbrett-autostart.desktop"]),
     ]
 )
