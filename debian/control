@@ -1,0 +1,12 @@
+Source: klemmbrett
+Maintainer: Michael van Bracht <michael@wontfix.org>
+Section: python
+Priority: optional
+Build-Depends: python-setuptools (>= 0.6b3), python-all (>= 2.6.6-3), debhelper (>= 7.4.3)
+Standards-Version: 3.9.1
+
+Package: python-klemmbrett
+Architecture: all
+Depends: ${misc:Depends}, ${python:Depends}, python-gtk2, python-keybinder
+Description: Versatile clipboard manager
+
