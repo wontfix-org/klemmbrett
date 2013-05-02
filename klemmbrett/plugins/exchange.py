@@ -312,7 +312,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
             "Suggestions from %r" % (
                 self._destinations[client_address[0]]["name"],
             ),
-            text,
+            self._printable(text, htmlsafe = True),
         )
         self._destinations[client_address[0]]["history"].add(text)
         n.show()
