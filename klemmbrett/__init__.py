@@ -7,9 +7,10 @@ _pygtk.require('2.0')
 import gtk as _gtk
 import gobject as _gobject
 
+import pynotify as _notify
+
 import klemmbrett.util as _util
 import klemmbrett.config as _config
-
 
 class KlemmbrettVormKopf(Exception):
     pass
@@ -41,6 +42,8 @@ class Klemmbrett(_gobject.GObject):
 
         self._clipboard.connect('owner-change', self._clipboard_owner_changed)
         self._primary.connect('owner-change', self._clipboard_owner_changed)
+
+        _notify.init("Klemmbrett")
 
     def _load_plugins(self):
         for section in self.config.sections():
@@ -87,11 +90,16 @@ class Klemmbrett(_gobject.GObject):
             if clipboard == self._primary:
                 self._clipboard.set_text(text)
             elif clipboard == self._clipboard:
-                self._clipboard.set_text(text)
+                self._primary.set_text(text)
 
             self.emit("text-selected", text)
 
         return True
+
+    def notify(self, summary, text):
+        """ Display a message about the new suggestion and its origin """
+        n = _notify.Notification(summary, text)
+        n.show()
 
     def set(self, text, primary = True, clipboard = True):
         try:
