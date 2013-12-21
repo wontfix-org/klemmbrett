@@ -353,6 +353,7 @@ class MultiPicker(PopupPlugin, FancyItemsMixin):
             ("value", self._value),
             ("callable", self._callable),
             ("action", self._action),
+            ("notify", self._notify),
         )
 
     def items(self):
@@ -373,6 +374,9 @@ class MultiPicker(PopupPlugin, FancyItemsMixin):
 
     def _action(self, label, options, callable):
         return _ft.partial(self._perform_action, options, callable)
+
+    def _notify(self, label, options, callable):
+        return _ft.partial(self.klemmbrett.notify, "Klemmbrett", options.get("notify"))
 
     @staticmethod
     def _perform_action(options, callable):
