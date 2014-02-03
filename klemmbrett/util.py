@@ -29,9 +29,8 @@ def yieldwrap(func, *args, **kwargs):
 def humanbool(value):
     """
         Use distutils.util strtobool to convert various boolean tokens
-        like yes, on, no, off etc
+        like yes, on, no, off etc to a boolean
     """
-    to a python boolean
     return _util.strtobool(str(value).strip().lower() or 'no')
 
 
