@@ -17,6 +17,6 @@ _setuptools.setup(
         ("/etc", ["conf/klemmbrett.conf"]),
         ("/etc/xdg/autostart/", ["conf/klemmbrett-autostart.desktop"]),
         ("share/klemmbrett/", ["data/gtk-paste.svg", "data/gtk-paste2.svg"]),
-        ("share/applications/", ["conf/klemmbrett.desktop"]),
+#        ("share/applications/", ["conf/klemmbrett.desktop"]),
     ]
 )
