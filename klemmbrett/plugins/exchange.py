@@ -18,7 +18,6 @@ import gtk as _gtk
 import gobject as _gobject
 import keybinder as _keybinder
 
-import pynotify as _notify
 import Crypto.Cipher.AES as _aes
 
 import klemmbrett.util as _util
@@ -252,7 +251,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
         self._destinations = self.get_destinations()
 
         # initialize standard stuff
-        _notify.init("Klemmbrett")
+        #_notify.init("Klemmbrett")
         self._current_suggestion = None
 
         # binding to accept the suggested text into the clipboard
@@ -308,15 +307,14 @@ class ClipboardExchange(_plugins.PopupPlugin):
     def _suggest(self, text, client_address):
         """ Display a message about the new suggestion and it origin """
         _gtk.gdk.threads_enter()
-        n = _notify.Notification(
+        self._destinations[client_address[0]]["history"].add(text)
+        self._current_history = self._destinations[client_address[0]]["history"]
+        self.klemmbrett.notify(
             "Suggestions from %r" % (
                 self._destinations[client_address[0]]["name"],
             ),
-            text,
+            self._printable(text, htmlsafe = True),
         )
-        self._destinations[client_address[0]]["history"].add(text)
-        n.show()
-        self._current_history = self._destinations[client_address[0]]["history"]
         _gtk.gdk.threads_leave()
 
     def items(self):

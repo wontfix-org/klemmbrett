@@ -11,7 +11,12 @@ _setuptools.setup(
     url = "https://github.com/wontfix-org/klemmbrett",
     packages = _setuptools.find_packages(),
     scripts = ["scripts/klemmbrett"],
+    # XXX(mvb): This is probably too os/distribution dependent and
+    # should be moved to the actual packaging code
     data_files = [
-        ("/etc", ["conf/klemmbrett.conf"])
+        ("/etc", ["conf/klemmbrett.conf"]),
+        ("/etc/xdg/autostart/", ["conf/klemmbrett-autostart.desktop"]),
+        ("share/klemmbrett/", ["data/gtk-paste.svg", "data/gtk-paste2.svg"]),
+#        ("share/applications/", ["conf/klemmbrett.desktop"]),
     ]
 )

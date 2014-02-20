@@ -1,4 +1,0 @@
-klemmbrett
-==========
-
-Easy clipboard management

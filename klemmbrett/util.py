@@ -11,6 +11,7 @@ except ImportError:
 
 
 def isgenerator(func):
+    """ Check if a given function is a generator before calling it """
     try:
         return func.func_code.co_flags & CO_GENERATOR != 0
     except AttributeError:
@@ -18,6 +19,7 @@ def isgenerator(func):
 
 
 def yieldwrap(func, *args, **kwargs):
+    """ Ensure that the toplevel function is seen as a generator """
     def wrapped():
         for i in func(*args, **kwargs):
             yield i
@@ -25,11 +27,15 @@ def yieldwrap(func, *args, **kwargs):
 
 
 def humanbool(value):
+    """
+        Use distutils.util strtobool to convert various boolean tokens
+        like yes, on, no, off etc to a boolean
+    """
     return _util.strtobool(str(value).strip().lower() or 'no')
 
 
 def load_dotted(name):
-    """ stolen from andre malos wtf daemon """
+    """ Imports and return the given dot-notated python object """
     components = name.split('.')
     path = [components.pop(0)]
     obj = __import__(path[0])
@@ -48,5 +54,6 @@ def load_dotted(name):
 
 
 def htmlsafe(text):
+    """ Escape htmlentities """
     return _cgi.escape(text)
 

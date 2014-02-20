@@ -2,10 +2,12 @@
 
 import os as _os
 import re as _re
+import itertools as _it
 import functools as _ft
 import cPickle as _pickle
 import weakref as _weakref
 import collections as _collections
+
 import pygtk as _pygtk
 _pygtk.require('2.0')
 import gtk as _gtk
@@ -109,8 +111,19 @@ class PopupPlugin(Plugin):
         sm.show_all()
 
     def _build_menu(self, menu, items):
+        accels = list(
+            _it.chain(
+                xrange(0, 10),
+                map(
+                    chr,
+                    _it.chain(
+                        xrange(ord('a'), ord('z') + 1),
+                        xrange(ord('A'), ord('Z') + 1)),
+                )
+            )
+        )
         for pos, (label, value) in enumerate(items):
-            label = "_%s %s" % (pos, label)
+            label = "_%s %s" % (accels[pos], label.replace('_', '__'))
             item = _gtk.MenuItem(label, use_underline = True)
             if _util.isgenerator(value):
                 item.set_submenu(_gtk.Menu())
@@ -340,6 +353,7 @@ class MultiPicker(PopupPlugin, FancyItemsMixin):
             ("value", self._value),
             ("callable", self._callable),
             ("action", self._action),
+            ("notify", self._notify),
         )
 
     def items(self):
@@ -360,6 +374,9 @@ class MultiPicker(PopupPlugin, FancyItemsMixin):
 
     def _action(self, label, options, callable):
         return _ft.partial(self._perform_action, options, callable)
+
+    def _notify(self, label, options, callable):
+        return _ft.partial(self.klemmbrett.notify, "Klemmbrett", options.get("notify"))
 
     @staticmethod
     def _perform_action(options, callable):
