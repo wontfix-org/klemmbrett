@@ -82,7 +82,10 @@ class StatusIcon(Plugin):
 
         icon = self.options.get('icon-path', None)
         if icon:
-            self.tray.set_from_file(_os.path.expanduser(icon))
+            if os.path.sep in icon:
+                self.tray.set_from_file(_os.path.expanduser(icon))
+            else:
+                self.tray.set_from_name(icon)
         else:
             self.tray.set_from_stock(_gtk.STOCK_ABOUT)
 
