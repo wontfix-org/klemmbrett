@@ -38,6 +38,8 @@ class Klemmbrett(_gobject.GObject):
         self._plugins = dict()
         self._load_plugins()
 
+        self._sync = _util.humanbool(self.config.get('klemmbrett', 'sync', True))
+
         self.selection = None
 
         self._clipboard.connect('owner-change', self._clipboard_owner_changed)
@@ -87,10 +89,11 @@ class Klemmbrett(_gobject.GObject):
 
         if text != self.selection and text is not None:
             self.selection = text
-            if clipboard == self._primary:
-                self._clipboard.set_text(text)
-            elif clipboard == self._clipboard:
-                self._primary.set_text(text)
+            if self._sync:
+                if clipboard == self._primary:
+                    self._clipboard.set_text(text)
+                elif clipboard == self._clipboard:
+                    self._primary.set_text(text)
 
             self.emit("text-selected", text)
 
