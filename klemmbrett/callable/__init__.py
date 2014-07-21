@@ -5,11 +5,23 @@ import klemmbrett.util as _util
 
 
 def newline_to_comma_quoted(options, plugin):
-    return lambda: "'" + "','".join(_re.split(r"\s+", plugin.history.top.strip())) + "'"
+    def n2cq():
+        try:
+            text = plugin.history.top
+        except IndexError:
+            return None
+        return "'" + "','".join(_re.split(r"\s+", text.strip())) + "'"
+    return n2cq
 
 
 def newline_to_comma(options, plugin):
-    return lambda: plugin.history.top.strip().replace("\n", ",")
+    def n2c():
+        try:
+            text = plugin.history.top
+        except IndexError:
+            return None
+        return text.strip().replace("\n", ",")
+    return n2c
 
 
 def fswalker(options, plugin):
