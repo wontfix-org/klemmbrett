@@ -5,7 +5,7 @@ import klemmbrett.util as _util
 
 
 def newline_to_comma_quoted(options, plugin):
-    return "'" + "','".join(_re.split(r"\s+", plugin.history.top.strip())) + "'"
+    return lambda: "'" + "','".join(_re.split(r"\s+", plugin.history.top.strip())) + "'"
 
 
 def newline_to_comma(options, plugin):
