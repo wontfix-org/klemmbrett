@@ -63,8 +63,20 @@ In that section you can now add an arbitrary number of keys that get passed to t
 the reserved keys that are required to setup the snippet.
 
 ```
-[snippet sql]
+[snippet random product]
 callable = klemmbrett.callable.alchemy.statement
 engine = postgres://user:pw@host/database
 statement = select id from products limit 1
 ```
+
+Additionally, the statement plugin passes the current clipboard contents to the prepared statement as :0,
+so you may do a lookup based on it and return what has been found.
+
+```
+[snippet lookup product name]
+callable = klemmbrett.callable.alchemy.statement
+engine = postgres://user:pw@host/database
+statement = select name from products where id = :0 limit 1
+```
+
+
