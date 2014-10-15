@@ -18,6 +18,13 @@ import klemmbrett.util as _util
 import klemmbrett as _klemmbrett
 import klemmbrett.config as _config
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
+
+class HistoryEmpty(Exception):
+    pass
+
 
 class Plugin(_gobject.GObject):
 
@@ -274,6 +281,8 @@ class HistoryController(Plugin):
 
     @property
     def top(self):
+        if not self._history:
+            raise HistoryEmpty("The history is empty")
         return self._history[0]
 
     @property
@@ -373,10 +382,19 @@ class MultiPicker(PopupPlugin, FancyItemsMixin):
         return _ft.partial(options.get, "value")
 
     def _callable(self, label, options, callable):
-        return _util.load_dotted(options["callable"])(options, self)
+        try:
+            return _util.load_dotted(options["callable"])(options, self)
+        except HistoryEmpty:
+            _log.info("History is empty")
+            self.klemmbrett.notify("The history is empty", "The history is empty")
+
 
     def _action(self, label, options, callable):
-        return _ft.partial(self._perform_action, options, callable)
+        try:
+            return _ft.partial(self._perform_action, options, callable)
+        except HistoryEmpty:
+            _log.info("History is empty")
+            self.klemmbrett.notify("The history is empty", "The history is empty")
 
     def _notify(self, label, options, callable):
         return _ft.partial(self.klemmbrett.notify, "Klemmbrett", options.get("notify"))
