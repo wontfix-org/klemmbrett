@@ -204,7 +204,7 @@ class FancyItemsMixin(object):
             if "shortcut" in options:
                 _keybinder.bind(
                     options['shortcut'],
-                    _ft.partial(self.set, widget = None, text = item[1]),
+                    _ft.partial(self.set, widget = None, text = label),
                 )
 
     def items(self):
