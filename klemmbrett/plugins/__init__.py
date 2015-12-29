@@ -133,8 +133,13 @@ class PopupPlugin(Plugin):
             )
         )
         for pos, (label, value) in enumerate(items):
-            label = "_%s %s" % (accels[pos], label.replace('_', '__'))
-            item = _gtk.MenuItem(label, use_underline = True)
+            try:
+                label = "_%s %s" % (accels[pos], label.replace('_', '__'))
+                item = _gtk.MenuItem(label, use_underline = True)
+            except IndexError:
+                # We ran out of accelerator keys, too bad...
+                item = _gtk.MenuItem(label, use_underline = False)
+
             if _util.isgenerator(value):
                 item.set_submenu(_gtk.Menu())
                 item.connect("activate", self._expand, value)
