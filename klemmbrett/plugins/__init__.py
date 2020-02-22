@@ -4,15 +4,16 @@ import os as _os
 import re as _re
 import itertools as _it
 import functools as _ft
-import cPickle as _pickle
+import pickle as _pickle
 import weakref as _weakref
 import collections as _collections
 
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-import gobject as _gobject
-import keybinder as _keybinder
+import gi as _gi
+_gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as _gtk
+from gi.repository import GObject as _gobject
+_gi.require_version('Keybinder', '3.0')
+from gi.repository import Keybinder as _keybinder
 
 import klemmbrett.util as _util
 import klemmbrett as _klemmbrett
@@ -58,7 +59,7 @@ class Plugin(_gobject.GObject):
             if om == 'start':
                 clean = clean[len(clean) - ll:]
             elif om == 'middle':
-                clean = clean[:ll / 2] + " ... " + clean[len(clean) - (ll / 2):]
+                clean = clean[:int(ll / 2)] + " ... " + clean[len(clean) - int(ll / 2):]
             elif om == 'end':
                 clean = clean[:ll]
 
@@ -84,7 +85,7 @@ class StatusIcon(Plugin):
 
         self.tray = _gtk.StatusIcon()
         self.tray.set_visible(True)
-        self.tray.set_tooltip("Klemmbrett")
+        self.tray.set_tooltip_text("Klemmbrett")
         self.tray.connect('popup-menu', self.on_menu, self.menu)
 
         icon = self.options.get('icon-path', None)
@@ -100,16 +101,17 @@ class StatusIcon(Plugin):
         menu.popup(
             None,
             None,
-            _gtk.status_icon_position_menu,
+            _gtk.StatusIcon.position_menu,
+            self.tray,
             event_button,
             event_time,
-            self.tray,
         )
 
 
 class PopupPlugin(Plugin):
 
     def bootstrap(self):
+        _keybinder.init()
         _keybinder.bind(
             self.options.get('shortcut', self.DEFAULT_BINDING),
             self.popup,
@@ -123,12 +125,12 @@ class PopupPlugin(Plugin):
     def _build_menu(self, menu, items):
         accels = list(
             _it.chain(
-                xrange(0, 10),
+                range(0, 10),
                 map(
                     chr,
                     _it.chain(
-                        xrange(ord('a'), ord('z') + 1),
-                        xrange(ord('A'), ord('Z') + 1)),
+                        range(ord('a'), ord('z') + 1),
+                        range(ord('A'), ord('Z') + 1)),
                 )
             )
         )
@@ -148,7 +150,7 @@ class PopupPlugin(Plugin):
 
             menu.append(item)
 
-    def popup(self, items = None):
+    def popup(self, keystr, items = None):
         menu = _gtk.Menu()
         index = 0
 
@@ -168,7 +170,8 @@ class PopupPlugin(Plugin):
             None,
             None,
             None,
-            1,
+            None,
+            0,
             _gtk.get_current_event_time(),
         )
         menu.set_active(index)
@@ -269,7 +272,7 @@ class HistoryController(Plugin):
 
     def accepts(self, text):
         # do not accept bullshit
-        if not isinstance(text, basestring):
+        if not isinstance(text, str):
             return False
 
         # do not accept empty strings and pure whitespace strings

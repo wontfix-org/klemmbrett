@@ -1,11 +1,10 @@
 # coding: utf-8
 import os as _os
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-#import gobject as _gobject
 import appindicator as _appindicator
 
+import gi as _gi
+_gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as _gtk
 from klemmbrett import plugins as _plugins
 
 class AppIndicatorPlugin(_plugins.Plugin):

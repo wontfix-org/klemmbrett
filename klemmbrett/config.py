@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import ConfigParser as _config
+import configparser as _config
 
 undefined = object()
 

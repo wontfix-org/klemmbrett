@@ -2,12 +2,14 @@
 
 import weakref as _weakref
 
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-import gobject as _gobject
+import notify2 as _notify
 
-import pynotify as _notify
+import gi as _gi
+_gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as _gtk
+_gi.require_version('Gdk', '3.0')
+from gi.repository import Gdk as _gdk
+from gi.repository import GObject as _gobject
 
 import klemmbrett.util as _util
 import klemmbrett.config as _config
@@ -28,8 +30,8 @@ class Klemmbrett(_gobject.GObject):
 
     def __init__(self, config_files):
         super(Klemmbrett, self).__init__()
-        self._clipboard = _gtk.Clipboard(selection = "CLIPBOARD")
-        self._primary = _gtk.Clipboard(selection = "PRIMARY")
+        self._clipboard = _gtk.Clipboard.get(_gdk.SELECTION_CLIPBOARD)
+        self._primary = _gtk.Clipboard.get(_gdk.SELECTION_PRIMARY)
 
         self.config = _config.Config()
         self.config.read(config_files)
@@ -68,8 +70,8 @@ class Klemmbrett(_gobject.GObject):
         # basis via config options of the form:
         # tie:plugin_local_identitier = global_name
         # or from the plugin internal config dict.
-        for name, plugin in self._plugins.iteritems():
-            for key, value in plugin.options.iteritems():
+        for name, plugin in self._plugins.items():
+            for key, value in plugin.options.items():
                 if not key.startswith(self._TIE_PREFIX):
                     continue
 
@@ -90,10 +92,10 @@ class Klemmbrett(_gobject.GObject):
         if text != self.selection and text is not None:
             self.selection = text
             if self._sync:
-                if clipboard == self._primary:
-                    self._clipboard.set_text(text)
-                elif clipboard == self._clipboard:
-                    self._primary.set_text(text)
+                if clipboard is self._primary:
+                    self._clipboard.set_text(text, -1)
+                elif clipboard is self._clipboard:
+                    self._primary.set_text(text, -1)
 
             self.emit("text-selected", text)
 

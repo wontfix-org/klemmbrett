@@ -12,11 +12,12 @@ import urlparse as _urlparse
 import threading as _threading
 import SimpleXMLRPCServer as _xmlrpcserver
 
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-import gobject as _gobject
-import keybinder as _keybinder
+import gi as _gi
+_gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as _gtk
+from gi.repository import GObject as _gobject
+_gi.require_version('Keybinder', '3.0')
+from gi.repository import Keybinder as _keybinder
 
 import Crypto.Cipher.AES as _aes
 
@@ -223,7 +224,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
         """
         dests = dict()
 
-        for name, addr in self.options.iteritems():
+        for name, addr in self.options.items():
             if not name.startswith('user.'):
                 continue
 
@@ -239,7 +240,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
                 "hmac-key": self.options["hmac-key"],
             }
 
-            for ip, dest in dests.iteritems():
+            for ip, dest in dests.items():
                 dest["history"].bootstrap()
 
         return dests
@@ -253,6 +254,8 @@ class ClipboardExchange(_plugins.PopupPlugin):
         # initialize standard stuff
         #_notify.init("Klemmbrett")
         self._current_suggestion = None
+
+        _keybinder.init()
 
         # binding to accept the suggested text into the clipboard
         _keybinder.bind(
