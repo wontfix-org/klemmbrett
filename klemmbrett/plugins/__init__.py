@@ -15,6 +15,10 @@ from gi.repository import GObject as _gobject
 _gi.require_version('Keybinder', '3.0')
 from gi.repository import Keybinder as _keybinder
 
+
+from gi.repository import Gdk as _gdk
+from gi.repository import GdkX11 as _gdkx11
+
 import klemmbrett.util as _util
 import klemmbrett as _klemmbrett
 import klemmbrett.config as _config
@@ -165,15 +169,23 @@ class PopupPlugin(Plugin):
 
         self._build_menu(menu, items or self.items())
 
+
+        _gdk.Window.process_all_updates()
+        gdk_display = _gdkx11.X11Display.get_default()
+        gdk_window = _gdkx11.X11Window.foreign_new_for_display(gdk_display, _gdkx11.x11_get_default_root_xwindow())
+        print(gdk_window.get_geometry())
+
+        seat = _gdk.Display.get_default().get_default_seat()
+        print("TEST")
+        event = _gdk.Event().new(_gdk.EventType.BUTTON_RELEASE)
+        event.button = 1
+        event.x = 20
+        event.x_root = 20
+        event.y_root = 20
+        event.window = gdk_window
+        #menu.set_window(gdk_window)
         menu.show_all()
-        menu.popup(
-            None,
-            None,
-            None,
-            None,
-            0,
-            _gtk.get_current_event_time(),
-        )
+        menu.popup_at_pointer(event)
         menu.set_active(index)
         return True
 
