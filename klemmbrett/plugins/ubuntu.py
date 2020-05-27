@@ -1,26 +1,26 @@
 # coding: utf-8
 import os as _os
-import appindicator as _appindicator
 
 import gi as _gi
 _gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk as _gtk
+_gi.require_version('AppIndicator3', '0.1')
+from gi.repository import AppIndicator3 as _appindicator
 from klemmbrett import plugins as _plugins
+
 
 class AppIndicatorPlugin(_plugins.Plugin):
 
     def __init__(self, *args, **kwargs):
         super(AppIndicatorPlugin, self).__init__(*args, **kwargs)
 
-        self.indicator = _appindicator.Indicator(
+        icon = self.options.get("icon-path", "document-open")
+        self.indicator = _appindicator.Indicator.new(
             "klemmbrett",
-            "indicator-messages",
-            _appindicator.CATEGORY_APPLICATION_STATUS
+            icon,
+            _appindicator.IndicatorCategory.APPLICATION_STATUS,
         )
-
-        icon = self.options.get('icon-path', None)
-
-        self.indicator.set_icon(_os.path.expanduser(icon))
+        self.indicator.set_status(_appindicator.IndicatorStatus.ACTIVE)
 
         self.menu = _gtk.Menu()
         item = _gtk.MenuItem("Quit")
@@ -29,6 +29,3 @@ class AppIndicatorPlugin(_plugins.Plugin):
         self.menu.show_all()
 
         self.indicator.set_menu(self.menu)
-        self.indicator.set_status(_appindicator.STATUS_ACTIVE)
-
-
