@@ -2,12 +2,16 @@
 
 import weakref as _weakref
 
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-import gobject as _gobject
+import notify2 as _notify
 
-import pynotify as _notify
+import gi as _gi
+_gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as _gtk
+_gi.require_version('Gdk', '3.0')
+from gi.repository import Gdk as _gdk
+from gi.repository import GObject as _gobject
+_gi.require_version('Keybinder', '3.0')
+from gi.repository import Keybinder as _keybinder
 
 import klemmbrett.util as _util
 import klemmbrett.config as _config
@@ -28,11 +32,13 @@ class Klemmbrett(_gobject.GObject):
 
     def __init__(self, config_files):
         super(Klemmbrett, self).__init__()
-        self._clipboard = _gtk.Clipboard(selection = "CLIPBOARD")
-        self._primary = _gtk.Clipboard(selection = "PRIMARY")
+        self._clipboard = _gtk.Clipboard.get(_gdk.SELECTION_CLIPBOARD)
+        self._primary = _gtk.Clipboard.get(_gdk.SELECTION_PRIMARY)
 
         self.config = _config.Config()
         self.config.read(config_files)
+
+        _keybinder.init()
 
         # configure klemmbrett
         self._plugins = dict()
@@ -90,10 +96,10 @@ class Klemmbrett(_gobject.GObject):
         if text != self.selection and text is not None:
             self.selection = text
             if self._sync:
-                if clipboard == self._primary:
-                    self._clipboard.set_text(text)
-                elif clipboard == self._clipboard:
-                    self._primary.set_text(text)
+                if clipboard is self._primary:
+                    self._clipboard.set_text(text, -1)
+                elif clipboard is self._clipboard:
+                    self._primary.set_text(text, -1)
 
             self.emit("text-selected", text)
 
@@ -107,9 +113,9 @@ class Klemmbrett(_gobject.GObject):
     def set(self, text, primary = True, clipboard = True):
         try:
             if clipboard:
-                self._clipboard.set_text(text)
+                self._clipboard.set_text(text, -1)
             if primary:
-                self._primary.set_text(text)
+                self._primary.set_text(text, -1)
             self.emit("text-set", text)
         except TypeError:
             # TypeError: Gtk.Clipboard.set_text() argument 1 must be string, not None

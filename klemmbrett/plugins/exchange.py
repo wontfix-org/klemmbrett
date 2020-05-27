@@ -12,11 +12,12 @@ import urlparse as _urlparse
 import threading as _threading
 import SimpleXMLRPCServer as _xmlrpcserver
 
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-import gobject as _gobject
-import keybinder as _keybinder
+import gi as _gi
+_gi.require_version('Gdk', '3.0')
+from gi.repository import Gdk as _gdk
+from gi.repository import GObject as _gobject
+_gi.require_version('Keybinder', '3.0')
+from gi.repository import Keybinder as _keybinder
 
 import Crypto.Cipher.AES as _aes
 
@@ -283,7 +284,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
         """
         host, port = hosttuple(self.options.get("listen", "0.0.0.0"))
 
-        _gtk.gdk.threads_init()
+        _gdk.threads_init()
         self._server = _xmlrpcserver.SimpleXMLRPCServer(
             (host, port),
             allow_none = True,
@@ -306,7 +307,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
 
     def _suggest(self, text, client_address):
         """ Display a message about the new suggestion and it origin """
-        _gtk.gdk.threads_enter()
+        _gdk.threads_enter()
         self._destinations[client_address[0]]["history"].add(text)
         self._current_history = self._destinations[client_address[0]]["history"]
         self.klemmbrett.notify(
@@ -315,7 +316,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
             ),
             self._printable(text, htmlsafe = True),
         )
-        _gtk.gdk.threads_leave()
+        _gdk.threads_leave()
 
     def items(self):
         """

@@ -8,11 +8,15 @@ import pickle as _pickle
 import weakref as _weakref
 import collections as _collections
 
-import pygtk as _pygtk
-_pygtk.require('2.0')
-import gtk as _gtk
-import gobject as _gobject
-import keybinder as _keybinder
+import gi as _gi
+_gi.require_version('Gtk', '3.0')
+from gi.repository import Gtk as _gtk
+_gi.require_version('Gdk', '3.0')
+from gi.repository import Gdk as _gdk
+from gi.repository import GdkX11 as _gdkx11
+from gi.repository import GObject as _gobject
+_gi.require_version('Keybinder', '3.0')
+from gi.repository import Keybinder as _keybinder
 
 import klemmbrett.util as _util
 import klemmbrett as _klemmbrett
@@ -84,7 +88,7 @@ class StatusIcon(Plugin):
 
         self.tray = _gtk.StatusIcon()
         self.tray.set_visible(True)
-        self.tray.set_tooltip("Klemmbrett")
+        self.tray.set_tooltip_text("Klemmbrett")
         self.tray.connect('popup-menu', self.on_menu, self.menu)
 
         icon = self.options.get('icon-path', None)
@@ -100,10 +104,10 @@ class StatusIcon(Plugin):
         menu.popup(
             None,
             None,
-            _gtk.status_icon_position_menu,
+            _gtk.StatusIcon.position_menu,
+            self.tray,
             event_button,
             event_time,
-            self.tray,
         )
 
 
@@ -148,7 +152,15 @@ class PopupPlugin(Plugin):
 
             menu.append(item)
 
-    def popup(self, items = None):
+    def _ungrab_keyboard(self):
+        dm = _gdkx11.X11DeviceManagerCore(display=_gdk.Display.get_default())
+        for dev in dm.list_devices(_gdk.DeviceType.MASTER):
+            if dev.get_source() == _gdk.InputSource.KEYBOARD:
+                dev.ungrab(_keybinder.get_current_event_time())
+
+    def popup(self, keystr, items = None):
+        self._ungrab_keyboard()
+
         menu = _gtk.Menu()
         index = 0
 
@@ -168,8 +180,9 @@ class PopupPlugin(Plugin):
             None,
             None,
             None,
-            1,
-            _gtk.get_current_event_time(),
+            None,
+            0,
+            _keybinder.get_current_event_time(),
         )
         menu.set_active(index)
         return True
