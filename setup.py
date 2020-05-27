@@ -13,8 +13,8 @@ _setuptools.setup(
     scripts = ["scripts/klemmbrett"],
     # XXX(mvb): This is probably too os/distribution dependent and
     # should be moved to the actual packaging code
-    setup_requires=["setuptools-markdown"],
-    long_description_markdown_filename="README.md",
+    long_description=open("README.md").read(),
+    long_description_content_type="text/markdown",
     data_files = [
         ("/etc", ["conf/klemmbrett.conf"]),
         ("/etc/xdg/autostart/", ["conf/klemmbrett-autostart.desktop"]),
