@@ -18,5 +18,11 @@ _setuptools.setup(
         ("/etc/xdg/autostart/", ["conf/klemmbrett-autostart.desktop"]),
         ("share/klemmbrett/", ["data/gtk-paste.svg", "data/gtk-paste2.svg"]),
 #        ("share/applications/", ["conf/klemmbrett.desktop"]),
+    ],
+    install_requires = [
+        "notify2",
+        "dbus-python",
+        "pygobject",
+        "pycrypto",
     ]
 )
