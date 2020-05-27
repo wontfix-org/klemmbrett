@@ -9,7 +9,7 @@ if your distribution ships them as seperate packages (as Debian/Ubuntu does).
 
 
 ```
-apt-get install gir1.2-keybinder-3.0 gir1.2-gtk-3.0 gir1.2-glib-2.0
+apt-get install libgirepository1.0-dev gir1.2-keybinder-3.0 gir1.2-gtk-3.0 gir1.2-glib-2.0
 pip install klemmbrett
 ```
 
