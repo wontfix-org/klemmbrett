@@ -68,8 +68,8 @@ class Klemmbrett(_gobject.GObject):
         # basis via config options of the form:
         # tie:plugin_local_identitier = global_name
         # or from the plugin internal config dict.
-        for name, plugin in self._plugins.iteritems():
-            for key, value in plugin.options.iteritems():
+        for name, plugin in self._plugins.items():
+            for key, value in plugin.options.items():
                 if not key.startswith(self._TIE_PREFIX):
                     continue
 

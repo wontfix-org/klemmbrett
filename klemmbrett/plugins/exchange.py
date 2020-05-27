@@ -136,7 +136,7 @@ class ClipboardExchangeHandler(_xmlrpcserver.SimpleXMLRPCRequestHandler):
                 data,
                 getattr(self, '_dispatch', None),
             )
-        except Exception, e: # This should only happen if the module is buggy
+        except Exception as e: # This should only happen if the module is buggy
             # internal error, report as HTTP server error
             self.send_response(500)
 
@@ -223,7 +223,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
         """
         dests = dict()
 
-        for name, addr in self.options.iteritems():
+        for name, addr in self.options.items():
             if not name.startswith('user.'):
                 continue
 
@@ -239,7 +239,7 @@ class ClipboardExchange(_plugins.PopupPlugin):
                 "hmac-key": self.options["hmac-key"],
             }
 
-            for ip, dest in dests.iteritems():
+            for ip, dest in dests.items():
                 dest["history"].bootstrap()
 
         return dests

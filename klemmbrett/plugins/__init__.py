@@ -4,7 +4,7 @@ import os as _os
 import re as _re
 import itertools as _it
 import functools as _ft
-import cPickle as _pickle
+import pickle as _pickle
 import weakref as _weakref
 import collections as _collections
 
@@ -58,7 +58,7 @@ class Plugin(_gobject.GObject):
             if om == 'start':
                 clean = clean[len(clean) - ll:]
             elif om == 'middle':
-                clean = clean[:ll / 2] + " ... " + clean[len(clean) - (ll / 2):]
+                clean = clean[:int(ll / 2)] + " ... " + clean[len(clean) - int(ll / 2):]
             elif om == 'end':
                 clean = clean[:ll]
 
@@ -123,12 +123,12 @@ class PopupPlugin(Plugin):
     def _build_menu(self, menu, items):
         accels = list(
             _it.chain(
-                xrange(0, 10),
+                range(0, 10),
                 map(
                     chr,
                     _it.chain(
-                        xrange(ord('a'), ord('z') + 1),
-                        xrange(ord('A'), ord('Z') + 1)),
+                        range(ord('a'), ord('z') + 1),
+                        range(ord('A'), ord('Z') + 1)),
                 )
             )
         )
@@ -269,7 +269,7 @@ class HistoryController(Plugin):
 
     def accepts(self, text):
         # do not accept bullshit
-        if not isinstance(text, basestring):
+        if not isinstance(text, str):
             return False
 
         # do not accept empty strings and pure whitespace strings

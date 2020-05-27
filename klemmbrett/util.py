@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import cgi as _cgi
+import html as _html
 import distutils.util as _util
 
 try:
@@ -55,5 +55,5 @@ def load_dotted(name):
 
 def htmlsafe(text):
     """ Escape htmlentities """
-    return _cgi.escape(text)
+    return _html.escape(text)
 
