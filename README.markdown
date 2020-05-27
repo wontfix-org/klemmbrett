@@ -2,20 +2,18 @@
 
 ## Getting started
 
-### GIT
+Besides just installing klembrett via pip, you will need to make sure a couple system packages are installed.
+We use keybinder for global shortcuts and gtk3 for clipboard handling and the popup menus, so make sure the
+packages for your distro are installed, also make sure the typelib files for gobject introspection are installed
+if your distribution ships them as seperate packages (as Debian/Ubuntu does).
 
-Clone the GIT Repository into a directory of your liking.
-
-Klemmbrett by default uses Ctrl-Alt-{C,A,S} as shortcuts, your desktop environment may use
-them for something else or you may not like them, so you should either modify klemmbrett.conf
-to suit your needs or unbind them in your desktop environment.
 
 ```
-cp conf/klemmbrett.conf $HOME/.klemmbrett.conf
-PYTHONPATH="." scripts/klemmbrett
+apt-get install gir1.2-keybinder-3.0 gir1.2-gtk-3.0 gir1.2-glib-2.0
+pip install klemmbrett
 ```
 
- * Select some text, hit Ctrl-Alt-C to see your clipboard history
+If you do not like to install pip packages into your system globally, either use a virtualenv or `pip install --user`.
 
 ## Adding your own stuff
 
@@ -78,5 +76,3 @@ callable = klemmbrett.callable.alchemy.statement
 engine = postgres://user:pw@host/database
 statement = select name from products where id = :0 limit 1
 ```
-
-
