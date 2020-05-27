@@ -13,6 +13,8 @@ _setuptools.setup(
     scripts = ["scripts/klemmbrett"],
     # XXX(mvb): This is probably too os/distribution dependent and
     # should be moved to the actual packaging code
+    setup_requires=["setuptools-markdown"],
+    long_description_markdown_filename="README.md",
     data_files = [
         ("/etc", ["conf/klemmbrett.conf"]),
         ("/etc/xdg/autostart/", ["conf/klemmbrett-autostart.desktop"]),
@@ -24,5 +26,9 @@ _setuptools.setup(
         "dbus-python",
         "pygobject",
         "pycrypto",
-    ]
+    ],
+    classifiers=[
+        "Programming Language :: Python :: 3 :: Only",
+        "Environment :: X11 Applications :: GTK"
+    ],
 )
