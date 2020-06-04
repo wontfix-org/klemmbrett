@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import weakref as _weakref
+import logging as _logging
 
 import notify2 as _notify
 
@@ -13,8 +14,14 @@ from gi.repository import GObject as _gobject
 _gi.require_version('Keybinder', '3.0')
 from gi.repository import Keybinder as _keybinder
 
+import dbus as _dbus
+
 import klemmbrett.util as _util
 import klemmbrett.config as _config
+
+
+_log = _logging.getLogger(__name__)
+
 
 class KlemmbrettVormKopf(Exception):
     pass
@@ -51,7 +58,10 @@ class Klemmbrett(_gobject.GObject):
         self._clipboard.connect('owner-change', self._clipboard_owner_changed)
         self._primary.connect('owner-change', self._clipboard_owner_changed)
 
-        _notify.init("Klemmbrett")
+        try:
+            _notify.init("Klemmbrett")
+        except _dbus.exceptions.DBusException:
+            _log.error("Could not register with notification interface, notifications will not work properly", exc_info=True)
 
     def _load_plugins(self):
         for section in self.config.sections():
