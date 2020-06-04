@@ -340,14 +340,14 @@ class PersistentHistory(Plugin):
 
     def bootstrap(self):
         self._load()
-        self._persist = open(self._histfile, "a")
+        self._persist = open(self._histfile, "ba")
         self.history.connect("text-accepted", self._text_accepted)
 
     def _load(self):
         if not _os.path.exists(self._histfile):
             return
 
-        history = open(self._histfile, "r")
+        history = open(self._histfile, "br")
         dq = _collections.deque(maxlen = self.history.maxlen)
 
         while True:
