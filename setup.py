@@ -9,6 +9,7 @@ _setuptools.setup(
     author = "Michael van Bracht",
     author_email = "michael@wontfix.org",
     url = "https://github.com/wontfix-org/klemmbrett",
+    license="MIT",
     packages = _setuptools.find_packages(),
     scripts = ["scripts/klemmbrett"],
     # XXX(mvb): This is probably too os/distribution dependent and

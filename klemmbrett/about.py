@@ -25,6 +25,7 @@ def about(event):
     dialog.set_website("https://github.com/wontfix-org/klemmbrett")
     dialog.set_copyright("Tray Icon provided by https://icons8.com")
     dialog.set_website_label("Klemmbrett on GitHub")
+    dialog.set_license_type(_gtk.License.MIT_X11)
     logo = _pixbuf.Pixbuf.new_from_file(_util.get_status_icon_filename())
     dialog.set_logo(logo)
 
