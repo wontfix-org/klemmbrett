@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import html as _html
+import pkg_resources as _pr
 import distutils.util as _util
 
 try:
@@ -8,6 +9,10 @@ try:
 except ImportError:
     # IronPython doesn't have a complier module
     CO_GENERATOR = 0x20
+
+
+def get_status_icon_filename():
+    return _pr.resource_filename("klemmbrett", "assets/klemmbrett.png")
 
 
 def isgenerator(func):

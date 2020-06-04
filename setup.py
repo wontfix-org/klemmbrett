@@ -21,6 +21,7 @@ _setuptools.setup(
         ("share/klemmbrett/", ["data/gtk-paste.svg", "data/gtk-paste2.svg"]),
 #        ("share/applications/", ["conf/klemmbrett.desktop"]),
     ],
+    include_package_data=True,
     install_requires = [
         "notify2",
         "dbus-python",

@@ -6,23 +6,27 @@ import itertools as _it
 import functools as _ft
 import pickle as _pickle
 import weakref as _weakref
+import logging as _logging
 import collections as _collections
 
 import gi as _gi
+
 _gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk as _gtk
+
 _gi.require_version('Gdk', '3.0')
 from gi.repository import Gdk as _gdk
 from gi.repository import GdkX11 as _gdkx11
 from gi.repository import GObject as _gobject
+
 _gi.require_version('Keybinder', '3.0')
 from gi.repository import Keybinder as _keybinder
 
 import klemmbrett.util as _util
 import klemmbrett as _klemmbrett
+import klemmbrett.about as _about
 import klemmbrett.config as _config
 
-import logging as _logging
 _log = _logging.getLogger(__name__)
 
 
@@ -81,9 +85,16 @@ class StatusIcon(Plugin):
         super(StatusIcon, self).__init__(*args, **kwargs)
 
         self.menu = _gtk.Menu()
+
         item = _gtk.MenuItem("Quit")
         item.connect('activate', _gtk.main_quit)
         self.menu.append(item)
+
+        item = _gtk.MenuItem("About")
+        item.connect('activate', _about.about)
+        self.menu.append(item)
+
+
         self.menu.show_all()
 
         self.tray = _gtk.StatusIcon()
@@ -91,14 +102,11 @@ class StatusIcon(Plugin):
         self.tray.set_tooltip_text("Klemmbrett")
         self.tray.connect('popup-menu', self.on_menu, self.menu)
 
-        icon = self.options.get('icon-path', None)
-        if icon:
-            if _os.path.sep in icon:
-                self.tray.set_from_file(_os.path.expanduser(icon))
-            else:
-                self.tray.set_from_icon_name(icon)
+        icon = self.options.get('icon-path', _util.get_status_icon_filename())
+        if _os.path.sep in icon:
+            self.tray.set_from_file(_os.path.expanduser(icon))
         else:
-            self.tray.set_from_stock(_gtk.STOCK_ABOUT)
+            self.tray.set_from_icon_name(icon)
 
     def on_menu(self, icon, event_button, event_time, menu):
         menu.popup(
