@@ -86,14 +86,13 @@ class StatusIcon(Plugin):
 
         self.menu = _gtk.Menu()
 
-        item = _gtk.MenuItem("Quit")
-        item.connect('activate', _gtk.main_quit)
-        self.menu.append(item)
-
         item = _gtk.MenuItem("About")
         item.connect('activate', _about.about)
         self.menu.append(item)
 
+        item = _gtk.MenuItem("Quit")
+        item.connect('activate', _gtk.main_quit)
+        self.menu.append(item)
 
         self.menu.show_all()
 
