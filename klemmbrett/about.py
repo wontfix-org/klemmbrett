@@ -33,6 +33,8 @@ def about(event):
     dialog.set_title("")
 
     # to close the aboutdialog when "close" is clicked we connect the
-    # "response" signal to on_close
+    # "response" signal to the destroy action
+    dialog.connect("response", lambda action, parameter: action.destroy())
+
     # show the aboutdialog
     dialog.show()
