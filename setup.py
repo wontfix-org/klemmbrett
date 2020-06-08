@@ -4,7 +4,7 @@ import setuptools as _setuptools
 
 _setuptools.setup(
     name = "klemmbrett",
-    version = "0.3.2",
+    version = "0.3.3",
     description = "Versatile clipboard manager",
     author = "Michael van Bracht",
     author_email = "michael@wontfix.org",
