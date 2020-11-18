@@ -24,6 +24,16 @@ def newline_to_comma(options, plugin):
     return n2c
 
 
+def newline_to_space(options, plugin):
+    def n2s():
+        try:
+            text = plugin.history.top
+        except IndexError:
+            return None
+        return text.strip().replace("\n", " ")
+    return n2s
+
+
 def fswalker(options, plugin):
     def walk(base = None):
         if base is None:
