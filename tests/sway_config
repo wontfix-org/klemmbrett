@@ -1,0 +1,11 @@
+# Minimal sway config for the headless Wayland integration test.
+#
+# XWayland is disabled because the test only needs the wlr-data-control
+# protocol, and Xwayland refuses to start when /tmp/.X11-unix is owned by
+# neither root nor the current user (as in a sandboxed build environment).
+xwayland disable
+
+# No bar, no wallpaper, no autostart: the test drives the clipboard directly
+# and never needs a surface, since data-control works without one.
+default_border none
+focus_follows_mouse no

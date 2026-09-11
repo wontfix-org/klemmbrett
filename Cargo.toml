@@ -1,0 +1,15 @@
+[package]
+name = "klemmbrett"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "klemmbrett"
+path = "src/lib.rs"
+
+[[bin]]
+name = "klemmbrett"
+path = "src/main.rs"
+
+[dependencies]
+arboard = { version = "3.4", features = ["wayland-data-control"] }
