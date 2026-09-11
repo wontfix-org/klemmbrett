@@ -196,8 +196,8 @@ mod popup;
 
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use history::{
-    db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_HISTORY_LIMIT,
-    DEFAULT_LABEL_MAX,
+    db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
+    DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
 };
 pub use history_api::{
     HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH,

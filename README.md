@@ -47,6 +47,7 @@ Optional flags:
 | `--history-limit` | `50` | Maximum rows kept in SQLite; older rows are deleted |
 | `--label-max` | `64` | Maximum characters shown per menu item |
 | `--db` | `$XDG_DATA_HOME/klemmbrett/history.sqlite` | History database path |
+| `--coalesce-growing` / `--no-coalesce-growing` | on | Replace the last history item when a new clip contains it, so a selection grown character by character is one row |
 
 ## D-Bus
 
