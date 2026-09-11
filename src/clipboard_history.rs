@@ -157,6 +157,16 @@ mod tests {
     }
 
     #[test]
+    fn a_growing_primary_selection_replaces_the_last_history_item() {
+        let mut hist = history(Fake::new("", ""));
+        for text in ["h", "he", "hel", "hell", "hello"] {
+            hist.backend_mut().user_sets(Selection::Primary, text);
+            hist.poll();
+        }
+        assert_eq!(hist.entries().unwrap(), vec!["hello".to_owned()]);
+    }
+
+    #[test]
     fn polling_while_in_sync_does_not_duplicate_the_current_item() {
         let mut hist = history(Fake::new("hello", "hello"));
         hist.record_current();

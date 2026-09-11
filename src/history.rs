@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DEFAULT_HISTORY_LIMIT: usize = 50;
 /// Default maximum characters shown for a history item in the popup.
 pub const DEFAULT_LABEL_MAX: usize = 64;
+/// Default: replace the last history item when a new clip contains it.
+pub const DEFAULT_COALESCE_GROWING: bool = true;
 
 pub fn default_db_path() -> PathBuf {
     db_path_from_env(
@@ -44,6 +46,7 @@ pub fn shorten_label(text: &str, max_chars: usize) -> String {
 pub struct HistoryStore {
     conn: Connection,
     limit: usize,
+    coalesce_growing: bool,
 }
 
 impl HistoryStore {
@@ -71,25 +74,43 @@ impl HistoryStore {
         let store = Self {
             conn,
             limit: limit.max(1),
+            coalesce_growing: DEFAULT_COALESCE_GROWING,
         };
         store.trim()?;
         Ok(store)
+    }
+
+    pub fn with_coalesce_growing(mut self, enabled: bool) -> Self {
+        self.coalesce_growing = enabled;
+        self
     }
 
     pub fn record(&mut self, text: &str) -> rusqlite::Result<()> {
         if text.is_empty() {
             return Ok(());
         }
-        if self.newest_text()?.as_deref() == Some(text) {
-            return Ok(());
+        let created_at = now_secs();
+        if let Some((id, newest)) = self.newest()? {
+            if newest == text {
+                return Ok(());
+            }
+            // Growing a selection (character by character) replaces the last
+            // row instead of filling history with every intermediate clip.
+            if self.coalesce_growing && text.contains(&newest) {
+                self.conn.execute(
+                    "UPDATE history SET text = ?1, created_at = ?2 WHERE id = ?3",
+                    params![text, created_at, id],
+                )?;
+                self.conn.execute(
+                    "DELETE FROM history WHERE text = ?1 AND id != ?2",
+                    params![text, id],
+                )?;
+                return Ok(());
+            }
         }
         // Re-copying an older item moves it to the top instead of duplicating it.
         self.conn
             .execute("DELETE FROM history WHERE text = ?1", [text])?;
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
         self.conn.execute(
             "INSERT INTO history (text, created_at) VALUES (?1, ?2)",
             params![text, created_at],
@@ -105,12 +126,12 @@ impl HistoryStore {
         rows.collect()
     }
 
-    fn newest_text(&self) -> rusqlite::Result<Option<String>> {
+    fn newest(&self) -> rusqlite::Result<Option<(i64, String)>> {
         self.conn
             .query_row(
-                "SELECT text FROM history ORDER BY id DESC LIMIT 1",
+                "SELECT id, text FROM history ORDER BY id DESC LIMIT 1",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
     }
@@ -124,6 +145,13 @@ impl HistoryStore {
         )?;
         Ok(())
     }
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -164,6 +192,75 @@ mod tests {
         store.record("one").unwrap();
         store.record("one").unwrap();
         assert_eq!(store.entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_growing_selection_replaces_the_last_item() {
+        let mut store = HistoryStore::open_in_memory(10).unwrap();
+        store.record("h").unwrap();
+        store.record("he").unwrap();
+        store.record("hel").unwrap();
+        store.record("hell").unwrap();
+        store.record("hello").unwrap();
+        assert_eq!(store.entries().unwrap(), vec!["hello".to_owned()]);
+    }
+
+    #[test]
+    fn growing_from_either_end_replaces_the_last_item() {
+        let mut store = HistoryStore::open_in_memory(10).unwrap();
+        store.record("ell").unwrap();
+        store.record("ello").unwrap();
+        store.record("hello").unwrap();
+        assert_eq!(store.entries().unwrap(), vec!["hello".to_owned()]);
+    }
+
+    #[test]
+    fn a_unrelated_clip_is_still_a_new_item() {
+        let mut store = HistoryStore::open_in_memory(10).unwrap();
+        store.record("one").unwrap();
+        store.record("two").unwrap();
+        assert_eq!(
+            store.entries().unwrap(),
+            vec!["two".to_owned(), "one".to_owned()]
+        );
+    }
+
+    #[test]
+    fn shrinking_a_selection_does_not_replace_the_longer_item() {
+        let mut store = HistoryStore::open_in_memory(10).unwrap();
+        store.record("hello").unwrap();
+        store.record("hell").unwrap();
+        assert_eq!(
+            store.entries().unwrap(),
+            vec!["hell".to_owned(), "hello".to_owned()]
+        );
+    }
+
+    #[test]
+    fn growing_onto_an_older_duplicate_drops_the_older_row() {
+        let mut store = HistoryStore::open_in_memory(10).unwrap();
+        store.record("hello").unwrap();
+        store.record("other").unwrap();
+        store.record("hell").unwrap();
+        store.record("hello").unwrap();
+        assert_eq!(
+            store.entries().unwrap(),
+            vec!["hello".to_owned(), "other".to_owned()]
+        );
+    }
+
+    #[test]
+    fn growing_selections_are_kept_when_coalesce_is_disabled() {
+        let mut store = HistoryStore::open_in_memory(10)
+            .unwrap()
+            .with_coalesce_growing(false);
+        store.record("h").unwrap();
+        store.record("he").unwrap();
+        store.record("hel").unwrap();
+        assert_eq!(
+            store.entries().unwrap(),
+            vec!["hel".to_owned(), "he".to_owned(), "h".to_owned()]
+        );
     }
 
     #[test]

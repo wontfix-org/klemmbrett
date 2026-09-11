@@ -5,8 +5,8 @@ use clap::Parser;
 use std::path::PathBuf;
 use std::rc::Rc;
 use klemmbrett::{
-    default_db_path, ArboardBackend, ClipboardSync, HistoryStore, DEFAULT_HISTORY_LIMIT,
-    DEFAULT_LABEL_MAX, POLL_INTERVAL,
+    default_db_path, ArboardBackend, ClipboardSync, HistoryStore, DEFAULT_COALESCE_GROWING,
+    DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, POLL_INTERVAL,
 };
 
 #[derive(Parser, Debug)]
@@ -25,6 +25,19 @@ struct Args {
     /// SQLite file used for history (defaults to $XDG_DATA_HOME/klemmbrett/history.sqlite)
     #[arg(long)]
     db: Option<PathBuf>,
+
+    /// Replace the last history item when a new clip contains it (growing selections)
+    #[arg(
+        long,
+        default_value_t = DEFAULT_COALESCE_GROWING,
+        action = clap::ArgAction::SetTrue
+    )]
+    #[arg(
+        long = "no-coalesce-growing",
+        action = clap::ArgAction::SetFalse,
+        overrides_with = "coalesce_growing"
+    )]
+    coalesce_growing: bool,
 }
 
 fn main() {
@@ -32,9 +45,11 @@ fn main() {
     gtk::init().expect("Failed to initialize GTK.");
 
     let db_path = args.db.unwrap_or_else(default_db_path);
-    let history = HistoryStore::open(&db_path, args.history_limit).unwrap_or_else(|err| {
-        panic!("Failed to open history database {}: {err}", db_path.display());
-    });
+    let history = HistoryStore::open(&db_path, args.history_limit)
+        .unwrap_or_else(|err| {
+            panic!("Failed to open history database {}: {err}", db_path.display());
+        })
+        .with_coalesce_growing(args.coalesce_growing);
 
     let backend = ArboardBackend::new().expect("Failed to initialize the Wayland clipboard.");
     let sync = ClipboardSync::new(backend);
