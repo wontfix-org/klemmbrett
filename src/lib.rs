@@ -99,6 +99,12 @@ impl<B: Backend> ClipboardSync<B> {
         &mut self.backend
     }
 
+    /// Text last recorded for the clipboard side. After a successful tick that
+    /// copied or found both sides in sync, this is the common value.
+    pub fn last_text(&self) -> &str {
+        &self.last_clipboard
+    }
+
     fn remember(&mut self, text: &str) {
         self.last_clipboard.clear();
         self.last_clipboard.push_str(text);
@@ -182,6 +188,24 @@ impl<B: Backend> ClipboardSync<B> {
         }
     }
 }
+
+mod clipboard_history;
+mod history;
+mod history_api;
+mod popup;
+
+pub use clipboard_history::{history_candidate, ClipboardHistory};
+pub use history::{
+    db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_HISTORY_LIMIT,
+    DEFAULT_LABEL_MAX,
+};
+pub use history_api::{
+    HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH,
+};
+pub use popup::{
+    accelerator_for, index_for_accelerator, menu_item_spec, position_on_outputs, MenuItemSpec,
+    OutputGeom,
+};
 
 #[cfg(target_os = "linux")]
 pub use arboard_backend::ArboardBackend;
