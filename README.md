@@ -78,59 +78,69 @@ coordinates: it tries `swaymsg -t get_cursor` (available on some builds), and
 otherwise reads the pointer from a seat if the compositor includes it, falling
 back to the focused output only if neither is present.
 
-Put this next to your Sway config, for example as `~/.config/sway/clip-history.sh`:
+Put this next to your Sway config, for example as `~/.config/sway/clip-history.py`:
 
-```sh
-#!/bin/sh
-set -e
-coords=$(python3 - <<'PY'
-import json, subprocess, sys
+```python
+#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+
 
 def call(msg_type):
     return json.loads(subprocess.check_output(["swaymsg", "-t", msg_type]))
 
-try:
-    cursor = call("get_cursor")
-    print(int(cursor["x"]), int(cursor["y"]))
-    sys.exit(0)
-except Exception:
-    pass
 
-try:
-    for seat in call("get_seats"):
-        cursor = seat.get("cursor") or {}
-        if "x" in cursor and "y" in cursor:
-            print(int(cursor["x"]), int(cursor["y"]))
-            sys.exit(0)
-except Exception:
-    pass
+def coords():
+    try:
+        cursor = call("get_cursor")
+        return int(cursor["x"]), int(cursor["y"])
+    except Exception:
+        pass
 
-# Last resort: the focused output's origin, so the menu still appears
-# on the screen the pointer is most likely on.
-for output in call("get_outputs"):
-    if output.get("focused"):
-        rect = output["rect"]
-        print(int(rect["x"]), int(rect["y"]))
-        break
-PY
+    try:
+        for seat in call("get_seats"):
+            cursor = seat.get("cursor") or {}
+            if "x" in cursor and "y" in cursor:
+                return int(cursor["x"]), int(cursor["y"])
+    except Exception:
+        pass
+
+    # Last resort: the focused output's origin, so the menu still appears
+    # on the screen the pointer is most likely on.
+    for output in call("get_outputs"):
+        if output.get("focused"):
+            rect = output["rect"]
+            return int(rect["x"]), int(rect["y"])
+
+    sys.exit("could not determine pointer coordinates")
+
+
+x, y = coords()
+subprocess.check_call(
+    [
+        "busctl",
+        "--user",
+        "call",
+        "org.klemmbrett",
+        "/org/klemmbrett/History",
+        "org.klemmbrett.History",
+        "ShowMenu",
+        "ii",
+        str(x),
+        str(y),
+    ]
 )
-# shellcheck disable=SC2086
-set -- $coords
-exec busctl --user call \
-    org.klemmbrett \
-    /org/klemmbrett/History \
-    org.klemmbrett.History \
-    ShowMenu ii "$1" "$2"
 ```
 
 ```sh
-chmod +x ~/.config/sway/clip-history.sh
+chmod +x ~/.config/sway/clip-history.py
 ```
 
 In `~/.config/sway/config`:
 
 ```
-bindsym $mod+v exec ~/.config/sway/clip-history.sh
+bindsym $mod+v exec ~/.config/sway/clip-history.py
 ```
 
 ## Qtile key binding
