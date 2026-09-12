@@ -1,23 +1,27 @@
 use crate::ui::App;
+use std::collections::HashSet;
 use std::rc::Rc;
 use klemmbrett::{HistoryApi, HISTORY_BUS_NAME, HISTORY_OBJECT_PATH};
 
-/// Serves `ShowMenu(x, y)` on the session bus and forwards requests to GTK.
+/// Serves `ShowMenu(source, x, y)` and forwards valid requests to GTK.
 pub fn spawn(app: Rc<App>) {
+    let source_names: HashSet<_> = app.source_names().into_iter().collect();
     #[allow(deprecated)]
-    let (tx, rx) = glib::MainContext::channel(glib::Priority::DEFAULT);
-    rx.attach(None, move |(x, y)| {
-        app.show_history_menu(x, y);
+    let (tx, rx) = glib::MainContext::channel::<(String, i32, i32)>(glib::Priority::DEFAULT);
+    rx.attach(None, move |(source, x, y)| {
+        app.show_source_menu(&source, x, y);
         glib::ControlFlow::Continue
     });
 
     std::thread::Builder::new()
         .name("klemmbrett-dbus".into())
         .spawn(move || {
-            let api = HistoryApi::new(move |x, y| {
-                if let Err(err) = tx.send((x, y)) {
-                    eprintln!("Failed to request the history menu: {err}");
+            let api = HistoryApi::new(move |source, x, y| {
+                if !source_names.contains(&source) {
+                    return Err(format!("unknown source {source:?}"));
                 }
+                tx.send((source, x, y))
+                    .map_err(|err| format!("failed to request popup: {err}"))
             });
             match zbus::blocking::connection::Builder::session()
                 .expect("session bus")

@@ -195,10 +195,7 @@ fn syncs_both_ways_against_a_real_compositor_without_looping() {
     // attached to a logged-in session instead, it would find that session's
     // clipboard here and stop before disturbing it.
     assert_eq!(
-        (
-            read_now(Selection::Clipboard),
-            read_now(Selection::Primary)
-        ),
+        (read_now(Selection::Clipboard), read_now(Selection::Primary)),
         (String::new(), String::new()),
         "expected the private compositor's selections to start empty"
     );

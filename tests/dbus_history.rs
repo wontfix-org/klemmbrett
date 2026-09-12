@@ -6,15 +6,19 @@ use std::time::Duration;
 use klemmbrett::{HistoryApi, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 
 #[test]
-fn show_menu_forwards_the_pointer_coordinates() {
+fn show_menu_forwards_the_source_and_pointer_coordinates() {
     let Ok(builder) = zbus::blocking::connection::Builder::session() else {
         eprintln!("skipping: no session bus");
         return;
     };
 
     let (tx, rx) = mpsc::channel();
-    let api = HistoryApi::new(move |x, y| {
-        let _ = tx.send((x, y));
+    let api = HistoryApi::new(move |source, x, y| {
+        if source != "snippets" {
+            return Err(format!("unknown source {source:?}"));
+        }
+        let _ = tx.send((source, x, y));
+        Ok(())
     });
 
     let name = format!(
@@ -51,12 +55,23 @@ fn show_menu_forwards_the_pointer_coordinates() {
             HISTORY_OBJECT_PATH,
             Some(HISTORY_INTERFACE),
             "ShowMenu",
-            &(120_i32, 80_i32),
+            &("snippets", 120_i32, 80_i32),
         )
         .expect("ShowMenu should succeed");
 
-    let (x, y) = rx
+    let (source, x, y) = rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("ShowMenu should deliver coordinates to the UI thread");
-    assert_eq!((x, y), (120, 80));
+        .expect("ShowMenu should deliver the source and coordinates to the UI thread");
+    assert_eq!((source.as_str(), x, y), ("snippets", 120, 80));
+
+    let error = client
+        .call_method(
+            Some(name.as_str()),
+            HISTORY_OBJECT_PATH,
+            Some(HISTORY_INTERFACE),
+            "ShowMenu",
+            &("missing", 120_i32, 80_i32),
+        )
+        .expect_err("an unknown source should be rejected");
+    assert!(error.to_string().contains("unknown source"));
 }
