@@ -159,11 +159,20 @@ impl Session {
     }
 
     fn start_app(&mut self, db: &std::path::Path) {
+        let config = self.runtime_dir.join("config.toml");
+        fs::write(
+            &config,
+            format!(
+                "[[sources]]\nname = \"history\"\ntype = \"clipboard-history\"\ndb = {:?}\n",
+                db
+            ),
+        )
+        .expect("write app config");
         let log = fs::File::create(self.runtime_dir.join("app.log")).expect("create app log");
         let app = self
             .command(env!("CARGO_BIN_EXE_klemmbrett"))
-            .arg("--db")
-            .arg(db)
+            .arg("--config")
+            .arg(config)
             .stdout(log.try_clone().expect("clone log handle"))
             .stderr(log)
             .spawn()
@@ -186,7 +195,10 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        for child in [self.app.as_mut(), self.decoy.as_mut()].into_iter().flatten() {
+        for child in [self.app.as_mut(), self.decoy.as_mut()]
+            .into_iter()
+            .flatten()
+        {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -199,7 +211,7 @@ impl Drop for Session {
 }
 
 /// Waits for the daemon to claim the bus name, then asks for the popup.
-fn show_menu(session: &Session, x: i32, y: i32) {
+fn show_menu(session: &Session, source: &str, x: i32, y: i32) {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut last_error = None;
     while Instant::now() < deadline {
@@ -211,7 +223,7 @@ fn show_menu(session: &Session, x: i32, y: i32) {
                     HISTORY_OBJECT_PATH,
                     Some(HISTORY_INTERFACE),
                     "ShowMenu",
-                    &(x, y),
+                    &(source, x, y),
                 )
             });
         match attempt {
@@ -244,7 +256,7 @@ fn a_history_entry_can_be_picked_by_key_without_moving_the_pointer() {
 
     session.open_focused_window();
     session.start_app(&db);
-    show_menu(&session, 100, 100);
+    show_menu(&session, "history", 100, 100);
     std::thread::sleep(Duration::from_millis(750));
 
     // A headless seat has no keyboard until wtype creates a virtual one, and

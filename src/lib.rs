@@ -190,22 +190,27 @@ impl<B: Backend> ClipboardSync<B> {
 }
 
 mod clipboard_history;
+mod config;
 mod history;
 mod history_api;
 mod popup;
+mod source;
 
 pub use clipboard_history::{history_candidate, ClipboardHistory};
+pub use config::{
+    config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
+    PopupConfig, SourceConfig,
+};
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
     DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
 };
-pub use history_api::{
-    HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH,
-};
+pub use history_api::{HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 pub use popup::{
     accelerator_for, index_for_accelerator, menu_item_spec, position_on_outputs, MenuItemSpec,
     OutputGeom,
 };
+pub use source::{Record, Sources};
 
 #[cfg(target_os = "linux")]
 pub use arboard_backend::ArboardBackend;

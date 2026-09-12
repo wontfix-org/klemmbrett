@@ -51,9 +51,7 @@ impl<B: Backend> ClipboardHistory<B> {
     /// Puts `text` on the clipboard and records it. The next poll copies it
     /// to the primary selection the same way a user copy would.
     pub fn restore(&mut self, text: &str) -> Result<(), String> {
-        self.sync
-            .backend_mut()
-            .write(Selection::Clipboard, text)?;
+        self.sync.backend_mut().write(Selection::Clipboard, text)?;
         self.history.record(text).map_err(|err| err.to_string())?;
         Ok(())
     }
@@ -151,7 +149,8 @@ mod tests {
     #[test]
     fn a_primary_selection_is_appended_to_history() {
         let mut hist = history(Fake::new("", ""));
-        hist.backend_mut().user_sets(Selection::Primary, "from-mouse");
+        hist.backend_mut()
+            .user_sets(Selection::Primary, "from-mouse");
         hist.poll();
         assert_eq!(hist.entries().unwrap(), vec!["from-mouse".to_owned()]);
     }
@@ -199,7 +198,10 @@ mod tests {
 
         hist.poll();
         assert_eq!(hist.backend_mut().primary, "one");
-        assert_eq!(hist.backend_mut().writes.last().unwrap().0, Selection::Primary);
+        assert_eq!(
+            hist.backend_mut().writes.last().unwrap().0,
+            Selection::Primary
+        );
     }
 
     #[test]

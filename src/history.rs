@@ -18,7 +18,10 @@ pub fn default_db_path() -> PathBuf {
     )
 }
 
-pub fn db_path_from_env(xdg_data_home: Option<&std::ffi::OsStr>, home: Option<&std::ffi::OsStr>) -> PathBuf {
+pub fn db_path_from_env(
+    xdg_data_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> PathBuf {
     let data_home = xdg_data_home
         .map(PathBuf::from)
         .or_else(|| home.map(|home| PathBuf::from(home).join(".local/share")))
@@ -183,7 +186,10 @@ mod tests {
         let mut store = HistoryStore::open_in_memory(10).unwrap();
         store.record("one").unwrap();
         store.record("two").unwrap();
-        assert_eq!(store.entries().unwrap(), vec!["two".to_owned(), "one".to_owned()]);
+        assert_eq!(
+            store.entries().unwrap(),
+            vec!["two".to_owned(), "one".to_owned()]
+        );
     }
 
     #[test]
@@ -269,7 +275,10 @@ mod tests {
         store.record("one").unwrap();
         store.record("two").unwrap();
         store.record("one").unwrap();
-        assert_eq!(store.entries().unwrap(), vec!["one".to_owned(), "two".to_owned()]);
+        assert_eq!(
+            store.entries().unwrap(),
+            vec!["one".to_owned(), "two".to_owned()]
+        );
         assert_eq!(store.entries().unwrap().len(), 2);
     }
 

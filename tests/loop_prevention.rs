@@ -153,7 +153,10 @@ fn a_write_still_in_flight_is_not_mistaken_for_a_user_edit() {
         assert_eq!(sync.tick(), Action::InSync);
     }
     assert_eq!(sync.backend_mut().primary, "new");
-    assert_eq!(sync.backend_mut().writes, vec![(Selection::Clipboard, "new".to_owned())]);
+    assert_eq!(
+        sync.backend_mut().writes,
+        vec![(Selection::Clipboard, "new".to_owned())]
+    );
 }
 
 /// Re-copying something that was synced earlier is a real edit, not an echo.
@@ -206,7 +209,8 @@ fn non_text_content_leaves_the_other_side_alone() {
     assert_eq!(sync.tick(), Action::Stalled);
     assert_eq!(sync.backend_mut().primary, "hello");
 
-    sync.backend_mut().user_sets(Selection::Clipboard, "text-after");
+    sync.backend_mut()
+        .user_sets(Selection::Clipboard, "text-after");
     assert_eq!(sync.tick(), copied(Selection::Primary, "text-after"));
 }
 

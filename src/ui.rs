@@ -18,8 +18,8 @@ use gtk_layer_shell::LayerShell;
 use std::cell::RefCell;
 use std::rc::Rc;
 use klemmbrett::{
-    index_for_accelerator, menu_item_spec, position_on_outputs, ArboardBackend, ClipboardHistory,
-    ClipboardSync, HistoryStore, OutputGeom,
+    history_candidate, index_for_accelerator, menu_item_spec, position_on_outputs, ArboardBackend,
+    Backend, ClipboardSync, OutputGeom, Record, Selection, Sources,
 };
 
 const CSS: &str = "
@@ -28,52 +28,73 @@ const CSS: &str = "
 ";
 
 pub struct App {
-    inner: RefCell<ClipboardHistory<ArboardBackend>>,
+    inner: RefCell<AppState>,
     label_max: usize,
     popup: RefCell<Option<Popup>>,
+}
+
+struct AppState {
+    sync: ClipboardSync<ArboardBackend>,
+    sources: Sources,
 }
 
 /// The live popup: its surface, the rows it offers, and the list showing them.
 struct Popup {
     window: gtk::Window,
     list: gtk::ListBox,
-    entries: Vec<String>,
+    entries: Vec<Record>,
 }
 
 impl App {
-    pub fn new(
-        sync: ClipboardSync<ArboardBackend>,
-        history: HistoryStore,
-        label_max: usize,
-    ) -> Self {
+    pub fn new(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usize) -> Self {
         Self {
-            inner: RefCell::new(ClipboardHistory::new(sync, history)),
+            inner: RefCell::new(AppState { sync, sources }),
             label_max: label_max.max(1),
             popup: RefCell::new(None),
         }
     }
 
     pub fn record_current(&self) {
-        self.inner.borrow_mut().record_current();
-    }
-
-    pub fn poll(&self) {
-        self.inner.borrow_mut().poll();
-    }
-
-    fn restore(&self, text: &str) {
-        if let Err(err) = self.inner.borrow_mut().restore(text) {
-            eprintln!("Failed to restore the clipboard: {err}");
+        let mut inner = self.inner.borrow_mut();
+        let text = inner.sync.last_text().to_owned();
+        if let Err(err) = inner.sources.record_history(&text) {
+            eprintln!("Failed to seed clipboard history: {err}");
         }
     }
 
-    pub fn show_history_menu(self: &Rc<Self>, x: i32, y: i32) {
+    pub fn poll(&self) {
+        let mut inner = self.inner.borrow_mut();
+        let action = inner.sync.tick();
+        let last = inner.sync.last_text().to_owned();
+        if let Some(text) = history_candidate(&action, &last) {
+            if let Err(err) = inner.sources.record_history(text) {
+                eprintln!("Failed to record clipboard history: {err}");
+            }
+        }
+    }
+
+    fn restore(&self, text: &str) {
+        let mut inner = self.inner.borrow_mut();
+        if let Err(err) = inner.sync.backend_mut().write(Selection::Clipboard, text) {
+            eprintln!("Failed to restore the clipboard: {err}");
+            return;
+        }
+        if let Err(err) = inner.sources.record_history(text) {
+            eprintln!("Failed to record restored clipboard text: {err}");
+        }
+    }
+
+    pub fn source_names(&self) -> Vec<String> {
+        self.inner.borrow().sources.names()
+    }
+
+    pub fn show_source_menu(self: &Rc<Self>, source: &str, x: i32, y: i32) {
         self.dismiss_popup();
 
-        let entries = match self.inner.borrow().entries() {
+        let entries = match self.inner.borrow().sources.records(source) {
             Ok(entries) => entries,
             Err(err) => {
-                eprintln!("Failed to read clipboard history: {err}");
+                eprintln!("Failed to read source {source:?}: {err}");
                 return;
             }
         };
@@ -85,7 +106,7 @@ impl App {
 
         if entries.is_empty() {
             let row = gtk::ListBoxRow::new();
-            let label = gtk::Label::new(Some("No clipboard history"));
+            let label = gtk::Label::new(Some("No entries"));
             label.set_xalign(0.0);
             label.set_margin_start(8);
             label.set_margin_end(8);
@@ -94,8 +115,12 @@ impl App {
             row.set_activatable(false);
             list.add(&row);
         } else {
-            for (index, text) in entries.iter().enumerate() {
-                list.add(&build_row(&menu_item_spec(index, text, self.label_max)));
+            for (index, record) in entries.iter().enumerate() {
+                list.add(&build_row(&menu_item_spec(
+                    index,
+                    &record.label,
+                    self.label_max,
+                )));
             }
         }
 
@@ -198,16 +223,17 @@ impl App {
     }
 
     fn activate(self: &Rc<Self>, index: i32) {
-        let text = self
+        let value = self
             .popup
             .borrow()
             .as_ref()
-            .and_then(|popup| popup.entries.get(index as usize).cloned());
-        let Some(text) = text else {
+            .and_then(|popup| popup.entries.get(index as usize))
+            .map(|record| record.value.clone());
+        let Some(value) = value else {
             return;
         };
         self.dismiss_popup();
-        self.restore(&text);
+        self.restore(&value);
     }
 
     fn dismiss_popup(&self) {
@@ -284,15 +310,23 @@ pub fn install_styles() {
 pub fn install_tray(app: Rc<App>) {
     let menu = gtk::Menu::new();
 
-    let show = gtk::MenuItem::with_mnemonic("_Clipboard history");
-    let app_show = app.clone();
-    show.connect_activate(move |_| {
-        let (x, y) = pointer_position();
-        app_show.show_history_menu(x, y);
-    });
-    menu.append(&show);
-
-    menu.append(&gtk::SeparatorMenuItem::new());
+    let source_names = app.source_names();
+    if !source_names.is_empty() {
+        let sources_item = gtk::MenuItem::with_mnemonic("_Sources");
+        let sources_menu = gtk::Menu::new();
+        for name in source_names {
+            let item = gtk::MenuItem::with_label(&name);
+            let app_show = app.clone();
+            item.connect_activate(move |_| {
+                let (x, y) = pointer_position();
+                app_show.show_source_menu(&name, x, y);
+            });
+            sources_menu.append(&item);
+        }
+        sources_item.set_submenu(Some(&sources_menu));
+        menu.append(&sources_item);
+        menu.append(&gtk::SeparatorMenuItem::new());
+    }
 
     let quit = gtk::MenuItem::with_mnemonic("_Quit");
     quit.connect_activate(|_| {

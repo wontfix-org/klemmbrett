@@ -1,13 +1,13 @@
 # klemmbrett
 
-Keeps the Wayland clipboard and primary selection holding the same text, and
-remembers recent clips in an SQLite file so they can be pasted again.
+Keeps the Wayland clipboard and primary selection holding the same text. Named
+popup sources can provide values to copy to the clipboard, including optional
+SQLite clipboard history and text, JSON, or YAML files.
 
-A GTK popup lists the history. Entries longer than a configurable length are
+A GTK popup lists a configured source. Entries longer than a configurable length are
 shown shortened. The first 35 items can be chosen with accelerator keys
 (`1`–`9`, then `a`–`z`); `Up`/`Down` and `Enter` also work, and `Escape`
-closes the popup. An Ayatana AppIndicator entry in the system tray opens the
-same list.
+closes the popup. An Ayatana AppIndicator has a Sources submenu.
 
 The popup takes keyboard focus as soon as it appears, without needing the
 pointer. It is a `wlr-layer-shell` surface that requests exclusive keyboard
@@ -40,14 +40,64 @@ cargo build --release
 klemmbrett
 ```
 
-Optional flags:
+To use a different configuration file:
 
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--history-limit` | `50` | Maximum rows kept in SQLite; older rows are deleted |
-| `--label-max` | `64` | Maximum characters shown per menu item |
-| `--db` | `$XDG_DATA_HOME/klemmbrett/history.sqlite` | History database path |
-| `--coalesce-growing` / `--no-coalesce-growing` | on | Replace the last history item when a new clip contains it, so a selection grown character by character is one row |
+```sh
+klemmbrett --config /path/to/config.toml
+```
+
+## Configuration
+
+The default configuration is
+`$XDG_CONFIG_HOME/klemmbrett/config.toml` (normally
+`~/.config/klemmbrett/config.toml`). If it does not exist, clipboard/primary
+selection syncing still runs, but no popup sources or history database are
+initialized.
+
+```toml
+[popup]
+label-max = 64
+
+[[sources]]
+name = "history"
+type = "clipboard-history"
+history-limit = 50
+coalesce-growing = true
+
+[[sources]]
+name = "snippets"
+type = "file"
+path = "snippets.yaml"
+format = "yaml"
+```
+
+Source names must be unique. Relative `db` and `path` values are resolved
+relative to the configuration file. The history `db` defaults to
+`$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history-limit` defaults to 50,
+and `coalesce-growing` defaults to true. Coalescing replaces the newest row
+when a new selection contains it, avoiding one row per character while a
+selection grows.
+
+File sources are read again whenever their popup opens. `text` format uses one
+non-empty line per record. JSON and YAML files contain an array whose records
+may be strings:
+
+```json
+["plain value", {"key": "url", "label": "Project website", "value": "https://example.com"}]
+```
+
+or the equivalent YAML:
+
+```yaml
+- plain value
+- key: url
+  label: Project website
+  value: https://example.com
+```
+
+Every record requires a value. Its key and label default to the value when
+omitted, and keys must be unique within a source. The popup displays the label
+and copies the value.
 
 ## D-Bus
 
@@ -58,7 +108,7 @@ The process owns `org.klemmbrett` on the session bus:
 | Name | `org.klemmbrett` |
 | Object | `/org/klemmbrett/History` |
 | Interface | `org.klemmbrett.History` |
-| Method | `ShowMenu(ii)` — `x`, `y` in global compositor coordinates |
+| Method | `ShowMenu(sii)` — source name, then `x`, `y` in global compositor coordinates |
 
 `x` and `y` are the pointer location in the compositor's global layout (the
 same space qtile's `get_mouse_position()` and Sway output `rect` values use).
@@ -69,7 +119,7 @@ busctl --user call \
     org.klemmbrett \
     /org/klemmbrett/History \
     org.klemmbrett.History \
-    ShowMenu ii 120 80
+    ShowMenu sii history 120 80
 ```
 
 ## Sway key binding
@@ -127,7 +177,8 @@ subprocess.check_call(
         "/org/klemmbrett/History",
         "org.klemmbrett.History",
         "ShowMenu",
-        "ii",
+        "sii",
+        "history",
         str(x),
         str(y),
     ]
@@ -159,7 +210,7 @@ from libqtile.config import Key
 from libqtile.lazy import lazy
 from libqtile.utils import create_task
 
-async def _show_clip_history(x, y):
+async def _show_source(source, x, y):
     bus = await MessageBus().connect()
     try:
         await bus.call(
@@ -168,8 +219,8 @@ async def _show_clip_history(x, y):
                 path="/org/klemmbrett/History",
                 interface="org.klemmbrett.History",
                 member="ShowMenu",
-                signature="ii",
-                body=[int(x), int(y)],
+                signature="sii",
+                body=[source, int(x), int(y)],
             )
         )
     finally:
@@ -177,7 +228,7 @@ async def _show_clip_history(x, y):
 
 def show_clip_history(qtile):
     x, y = qtile.core.get_mouse_position()
-    create_task(_show_clip_history(x, y))
+    create_task(_show_source("history", x, y))
 
 keys = [
     Key(["mod4"], "v", lazy.function(show_clip_history)),
