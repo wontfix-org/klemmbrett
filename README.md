@@ -46,6 +46,23 @@ To use a different configuration file:
 klemmbrett --config /path/to/config.toml
 ```
 
+Install a systemd user unit bound to `graphical-session.target` so the
+daemon starts with the compositor and stops when the session ends:
+
+```sh
+klemmbrett --install-systemd
+```
+
+That writes `$XDG_CONFIG_HOME/systemd/user/klemmbrett.service` (normally
+`~/.config/systemd/user/klemmbrett.service`) as a `Type=dbus` unit for
+`org.klemmbrett`, and a session D-Bus service file at
+`$XDG_DATA_HOME/dbus-1/services/org.klemmbrett.service`. The unit is
+pulled in by `graphical-session.target` so history is recorded from
+login. The D-Bus file is a fallback: a `ShowMenu` call still starts the
+unit if the bus name is missing. If this process can see
+`WAYLAND_DISPLAY`, that value is imported into the systemd user manager.
+Pass `--config` as well to pin that file in `ExecStart`.
+
 ## Configuration
 
 The default configuration is
@@ -212,6 +229,7 @@ from dbus_fast import Message, MessageType
 from dbus_fast.aio import MessageBus
 from libqtile.config import Key
 from libqtile.lazy import lazy
+from libqtile.log_utils import logger
 from libqtile.utils import create_task
 
 _bus = None
@@ -250,7 +268,11 @@ async def _show_source(source, x, y):
             )
         )
     if reply.message_type == MessageType.ERROR:
-        print(f"Klemmbrett ShowMenu failed: {reply.error_name} {reply.body}")
+        logger.error(
+            "Klemmbrett ShowMenu failed: %s %s",
+            reply.error_name,
+            reply.body,
+        )
 
 def show_clip_history(qtile):
     x, y = qtile.core.get_mouse_position()
