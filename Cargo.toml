@@ -13,8 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 arboard = { version = "3.4", features = ["wayland-data-control"] }
-appindicator3 = "0.3"
 clap = { version = "4", features = ["derive"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 gdk = "0.18"
 glib = "0.18"
 gtk = "0.18"
