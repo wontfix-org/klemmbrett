@@ -1,9 +1,9 @@
 //! Talks to the history object over the session bus, the same way a compositor
 //! key binding would.
 
+use klemmbrett::{HistoryApi, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 use std::sync::mpsc;
 use std::time::Duration;
-use klemmbrett::{HistoryApi, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 
 #[test]
 fn show_menu_forwards_the_source_and_pointer_coordinates() {
