@@ -7,11 +7,11 @@
 //! The compositor is started by the test itself in its own `XDG_RUNTIME_DIR`,
 //! so it never reads from or writes to a logged-in Wayland session.
 
+use klemmbrett::{Action, ArboardBackend, Backend, ClipboardSync, Selection};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use klemmbrett::{Action, ArboardBackend, Backend, ClipboardSync, Selection};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 

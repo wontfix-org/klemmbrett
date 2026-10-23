@@ -6,14 +6,14 @@
 //! interactivity instead. Only a real compositor can show whether that works,
 //! so this drives a private headless sway and types into it.
 
+use klemmbrett::{
+    ArboardBackend, Backend, HistoryStore, Selection, HISTORY_INTERFACE, HISTORY_OBJECT_PATH,
+};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use klemmbrett::{
-    ArboardBackend, Backend, HistoryStore, Selection, HISTORY_INTERFACE, HISTORY_OBJECT_PATH,
-};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 

@@ -5,8 +5,8 @@
 //! seen before. A real compositor applies selections asynchronously, so these
 //! races are only reproducible on demand with a fake.
 
-use std::time::Duration;
 use klemmbrett::{Action, Backend, ClipboardSync, Selection};
+use std::time::Duration;
 
 /// A pair of selections whose writes can be delayed by a fixed number of
 /// reads, imitating a compositor that applies a selection asynchronously.

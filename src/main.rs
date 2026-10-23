@@ -2,8 +2,8 @@ mod dbus;
 mod ui;
 
 use clap::Parser;
-use std::path::PathBuf;
 use klemmbrett::{load_config, ArboardBackend, ClipboardSync, Sources};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(

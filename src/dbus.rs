@@ -5,6 +5,7 @@ use std::collections::HashSet;
 #[derive(Debug)]
 pub enum UiCmd {
     ShowMenu { source: String, x: i32, y: i32 },
+    RecordHistory(String),
     Quit,
 }
 

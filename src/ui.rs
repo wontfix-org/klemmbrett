@@ -10,18 +10,20 @@
 //! user input, so the rows and their key handling live here instead.
 
 use crate::dbus::{self, UiCmd};
-use gpui::{
-    div, point, prelude::*, px, rgb, size, uniform_list, App, Bounds, Context, Entity, FocusHandle,
-    Focusable, KeyDownEvent, MouseButton, Pixels, QuitMode, ScrollStrategy, UniformListScrollHandle,
-    WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
-};
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
+use gpui::{
+    div, point, prelude::*, px, rgb, size, transparent_black, uniform_list, App, Bounds, Context,
+    DisplayId, Entity, FocusHandle, Focusable, KeyDownEvent, LinuxWindowBackground, MouseButton,
+    Pixels, QuitMode, ScrollStrategy, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
+    WindowDecorations, WindowHandle, WindowKind, WindowOptions,
+};
 use klemmbrett::{
     history_candidate, index_for_accelerator, menu_item_spec, place_on_outputs, ArboardBackend,
     Backend, ClipboardSync, OutputGeom, Record, Selection, Sources, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
+use std::sync::mpsc::{self, RecvTimeoutError};
 
 const TRAY_ICON_NAME: &str = "edit-paste";
 const TRAY_ICON_SIZES: [i32; 4] = [16, 22, 24, 32];
@@ -30,30 +32,31 @@ const CHAR_WIDTH: f32 = 9.0;
 const BORDER: f32 = 1.0;
 const MAX_POPUP_HEIGHT: f32 = 600.0;
 
+enum ClipCmd {
+    Restore(String),
+}
+
 pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usize) {
     let (tx, rx) = async_channel::unbounded::<UiCmd>();
     let source_names: HashSet<_> = sources.names().into_iter().collect();
     dbus::spawn(source_names, tx.clone());
-    install_tray(sources.names(), tx);
+    install_tray(sources.names(), tx.clone());
+    let clip_tx = spawn_clipboard(sync, tx);
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(sync, sources, label_max));
-            app.update(cx, |this, _cx| this.record_current());
-
-            let poller = app.clone();
-            cx.spawn(async move |cx| loop {
-                cx.background_executor().timer(POLL_INTERVAL).await;
-                poller.update(cx, |this, _cx| this.poll());
-            })
-            .detach();
+            let app = cx.new(|_cx| Klemmbrett::new(sources, label_max, clip_tx));
+            app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
             cx.spawn(async move |cx| {
                 while let Ok(cmd) = rx.recv().await {
                     dispatcher.update(cx, |this, cx| match cmd {
-                        UiCmd::ShowMenu { source, x, y } => this.show_source_menu(&source, x, y, cx),
+                        UiCmd::ShowMenu { source, x, y } => {
+                            this.show_source_menu(&source, x, y, cx)
+                        }
+                        UiCmd::RecordHistory(text) => this.record_history(&text),
                         UiCmd::Quit => cx.quit(),
                     });
                 }
@@ -62,53 +65,86 @@ pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usi
         });
 }
 
+fn spawn_clipboard(
+    mut sync: ClipboardSync<ArboardBackend>,
+    ui: async_channel::Sender<UiCmd>,
+) -> mpsc::Sender<ClipCmd> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("klemmbrett-clipboard".into())
+        .spawn(move || {
+            let seed = sync.last_text().to_owned();
+            let _ = ui.send_blocking(UiCmd::RecordHistory(seed));
+            loop {
+                match rx.recv_timeout(POLL_INTERVAL) {
+                    Ok(ClipCmd::Restore(text)) => {
+                        if let Err(err) = sync.backend_mut().write(Selection::Clipboard, &text) {
+                            eprintln!("Failed to restore the clipboard: {err}");
+                            continue;
+                        }
+                        let _ = ui.send_blocking(UiCmd::RecordHistory(text));
+                        let action = sync.tick();
+                        let last = sync.last_text().to_owned();
+                        if let Some(text) = history_candidate(&action, &last) {
+                            let _ = ui.send_blocking(UiCmd::RecordHistory(text.to_owned()));
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        let action = sync.tick();
+                        let last = sync.last_text().to_owned();
+                        if let Some(text) = history_candidate(&action, &last) {
+                            let _ = ui.send_blocking(UiCmd::RecordHistory(text.to_owned()));
+                        }
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        })
+        .expect("spawn clipboard thread");
+    tx
+}
+
 struct Klemmbrett {
-    sync: ClipboardSync<ArboardBackend>,
     sources: Sources,
     label_max: usize,
     popup: Option<WindowHandle<PopupView>>,
+    clip_tx: mpsc::Sender<ClipCmd>,
 }
 
 impl Klemmbrett {
-    fn new(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usize) -> Self {
+    fn new(sources: Sources, label_max: usize, clip_tx: mpsc::Sender<ClipCmd>) -> Self {
         Self {
-            sync,
             sources,
             label_max: label_max.max(1),
             popup: None,
+            clip_tx,
         }
     }
 
-    fn record_current(&mut self) {
-        let text = self.sync.last_text().to_owned();
-        if let Err(err) = self.sources.record_history(&text) {
-            eprintln!("Failed to seed clipboard history: {err}");
-        }
-    }
-
-    fn poll(&mut self) {
-        let action = self.sync.tick();
-        let last = self.sync.last_text().to_owned();
-        if let Some(text) = history_candidate(&action, &last) {
-            if let Err(err) = self.sources.record_history(text) {
-                eprintln!("Failed to record clipboard history: {err}");
-            }
+    fn record_history(&mut self, text: &str) {
+        if let Err(err) = self.sources.record_history(text) {
+            eprintln!("Failed to record clipboard history: {err}");
         }
     }
 
     fn restore(&mut self, text: &str) {
-        if let Err(err) = self.sync.backend_mut().write(Selection::Clipboard, text) {
+        if let Err(err) = self.clip_tx.send(ClipCmd::Restore(text.to_owned())) {
             eprintln!("Failed to restore the clipboard: {err}");
-            return;
-        }
-        if let Err(err) = self.sources.record_history(text) {
-            eprintln!("Failed to record restored clipboard text: {err}");
         }
     }
 
-    fn show_source_menu(&mut self, source: &str, x: i32, y: i32, cx: &mut Context<Self>) {
-        self.dismiss_popup(cx);
+    fn drop_popup_handle(&mut self) {
+        self.popup = None;
+    }
 
+    fn prewarm_popup(&mut self, cx: &mut Context<Self>) {
+        let Some(placement) = popup_placement(cx, 0, 0, 1, self.label_max) else {
+            return;
+        };
+        self.open_popup(Vec::new(), placement, false, cx);
+    }
+
+    fn show_source_menu(&mut self, source: &str, x: i32, y: i32, cx: &mut Context<Self>) {
         let entries = match self.sources.records(source) {
             Ok(entries) => entries,
             Err(err) => {
@@ -122,29 +158,75 @@ impl Klemmbrett {
             return;
         };
 
+        if self.reuse_popup(&entries, &placement, cx) {
+            return;
+        }
+        self.open_popup(entries, placement, true, cx);
+    }
+
+    fn reuse_popup(
+        &mut self,
+        entries: &[Record],
+        placement: &PopupPlacement,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(handle) = self.popup else {
+            return false;
+        };
+        match handle.update(cx, |view, window, cx| {
+            if view.display_id != placement.display_id {
+                return false;
+            }
+            window.resize(placement.output_size);
+            view.reload(entries.to_vec(), placement.card, cx);
+            view.reveal(window, cx);
+            true
+        }) {
+            Ok(true) => true,
+            Ok(false) => {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                self.popup = None;
+                false
+            }
+            Err(_) => {
+                self.popup = None;
+                false
+            }
+        }
+    }
+
+    fn open_popup(
+        &mut self,
+        entries: Vec<Record>,
+        placement: PopupPlacement,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) {
         let app = cx.entity();
-        match cx.open_window(placement.options, move |window, cx| {
-            let view = cx.new(|cx| PopupView::new(app, entries, placement.label_max, cx));
-            let focus = view.read(cx).focus_handle.clone();
-            window.focus(&focus, cx);
+        let options = overlay_options(&placement, visible);
+        match cx.open_window(options, move |window, cx| {
+            let view = if visible {
+                cx.new(|cx| PopupView::shown(app, entries, placement, cx))
+            } else {
+                cx.new(|cx| PopupView::new(app, entries, placement, cx))
+            };
+            if visible {
+                let focus = view.read(cx).focus_handle.clone();
+                window.focus(&focus, cx);
+                window.activate();
+            }
             view
         }) {
             Ok(handle) => self.popup = Some(handle),
             Err(err) => eprintln!("Failed to open the history popup: {err}"),
         }
     }
-
-    fn dismiss_popup(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = self.popup.take() {
-            let _ = handle.update(cx, |_, window, _| {
-                window.remove_window();
-            });
-        }
-    }
 }
 
 struct PopupPlacement {
-    options: WindowOptions,
+    display_id: DisplayId,
+    output_size: gpui::Size<Pixels>,
+    card: Bounds<Pixels>,
     label_max: usize,
 }
 
@@ -179,35 +261,46 @@ fn popup_placement(
     let height = (rows.max(1) as f32 * ROW_HEIGHT + BORDER * 2.0).min(MAX_POPUP_HEIGHT);
     let (index, margin_x, margin_y) =
         place_on_outputs(x, y, width as i32, height as i32, &outputs, primary)?;
+    let output_size = displays[index].bounds().size;
 
     Some(PopupPlacement {
-        options: WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                point(px(0.), px(0.)),
-                size(px(width), px(height)),
-            ))),
-            titlebar: None,
-            focus: true,
-            show: true,
-            kind: WindowKind::LayerShell(LayerShellOptions {
-                namespace: "klemmbrett".into(),
-                layer: Layer::Overlay,
-                anchor: Anchor::LEFT.union(Anchor::TOP),
-                exclusive_zone: Some(px(-1.)),
-                exclusive_edge: None,
-                margin: Some((px(margin_y as f32), px(0.), px(0.), px(margin_x as f32))),
-                keyboard_interactivity: KeyboardInteractivity::Exclusive,
-            }),
-            is_movable: false,
-            is_resizable: false,
-            is_minimizable: false,
-            display_id: Some(displays[index].id()),
-            app_id: Some("klemmbrett".into()),
-            window_decorations: Some(WindowDecorations::Client),
-            ..Default::default()
-        },
+        display_id: displays[index].id(),
+        output_size,
+        card: Bounds::new(
+            point(px(margin_x as f32), px(margin_y as f32)),
+            size(px(width), px(height)),
+        ),
         label_max,
     })
+}
+
+fn overlay_options(placement: &PopupPlacement, show: bool) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            point(px(0.), px(0.)),
+            placement.output_size,
+        ))),
+        titlebar: None,
+        focus: show,
+        show,
+        kind: WindowKind::LayerShell(LayerShellOptions {
+            namespace: "klemmbrett".into(),
+            layer: Layer::Overlay,
+            anchor: Anchor::LEFT.union(Anchor::TOP),
+            exclusive_zone: Some(px(0.)),
+            exclusive_edge: None,
+            margin: Some((px(0.), px(0.), px(0.), px(0.))),
+            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+        }),
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        display_id: Some(placement.display_id),
+        app_id: Some("klemmbrett".into()),
+        window_decorations: Some(WindowDecorations::Client),
+        linux_window_background: LinuxWindowBackground::Transparent,
+        ..Default::default()
+    }
 }
 
 fn pixels_i32(value: Pixels) -> i32 {
@@ -220,6 +313,9 @@ struct PopupView {
     entries: Vec<Record>,
     selected: usize,
     label_max: usize,
+    display_id: DisplayId,
+    card: Bounds<Pixels>,
+    visible: bool,
     seen_active: bool,
     scroll: UniformListScrollHandle,
 }
@@ -228,7 +324,7 @@ impl PopupView {
     fn new(
         app: Entity<Klemmbrett>,
         entries: Vec<Record>,
-        label_max: usize,
+        placement: PopupPlacement,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -236,10 +332,62 @@ impl PopupView {
             app,
             entries,
             selected: 0,
-            label_max,
+            label_max: placement.label_max,
+            display_id: placement.display_id,
+            card: placement.card,
+            visible: false,
             seen_active: false,
             scroll: UniformListScrollHandle::new(),
         }
+    }
+
+    fn shown(
+        app: Entity<Klemmbrett>,
+        entries: Vec<Record>,
+        placement: PopupPlacement,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::new(app, entries, placement, cx);
+        view.visible = true;
+        view
+    }
+
+    fn reload(&mut self, entries: Vec<Record>, card: Bounds<Pixels>, cx: &mut Context<Self>) {
+        self.entries = entries;
+        self.card = card;
+        self.selected = 0;
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
+    }
+
+    fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.visible = true;
+        self.seen_active = false;
+        window.set_visible(true);
+        window.focus(&self.focus_handle, cx);
+        window.activate();
+        cx.notify();
+    }
+
+    fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
+        self.visible = false;
+        self.seen_active = false;
+        // Layer-shell remap after a null-buffer unmap is broken in GPUI-CE:
+        // prepare_to_map is xdg-only, so set_visible(true) never attaches a
+        // buffer again. Destroy this surface and build a fresh hidden one.
+        window.remove_window();
+        let app = self.app.clone();
+        app.update(cx, |klemmbrett, _cx| klemmbrett.drop_popup_handle());
+        cx.defer(move |cx| {
+            app.update(cx, |klemmbrett, cx| {
+                if klemmbrett.popup.is_none() {
+                    klemmbrett.prewarm_popup(cx);
+                }
+            });
+        });
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -247,7 +395,7 @@ impl PopupView {
         let mods = &event.keystroke.modifiers;
         match key {
             "escape" => {
-                window.remove_window();
+                self.hide(window, cx);
                 cx.stop_propagation();
                 return;
             }
@@ -302,7 +450,7 @@ impl PopupView {
             return;
         };
         self.app.update(cx, |app, _cx| app.restore(&value));
-        window.remove_window();
+        self.hide(window, cx);
     }
 }
 
@@ -314,10 +462,12 @@ impl Focusable for PopupView {
 
 impl Render for PopupView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if window.is_window_active() {
-            self.seen_active = true;
-        } else if self.seen_active {
-            window.remove_window();
+        if self.visible {
+            if window.is_window_active() {
+                self.seen_active = true;
+            } else if self.seen_active {
+                self.hide(window, cx);
+            }
         }
 
         let rows = if self.entries.is_empty() {
@@ -351,21 +501,38 @@ impl Render for PopupView {
             .into_any()
         };
 
+        let card = self.card;
         div()
-            .id("klemmbrett-popup")
+            .id("klemmbrett-overlay")
             .track_focus(&self.focus_handle)
             .size_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .bg(rgb(0x2b2b2b))
-            .border_1()
-            .border_color(rgb(0x555555))
-            .text_color(rgb(0xe8e8e8))
-            .text_sm()
-            .line_height(px(ROW_HEIGHT))
+            .relative()
+            .bg(transparent_black())
             .on_key_down(cx.listener(|this, event, window, cx| this.on_key(event, window, cx)))
-            .child(rows)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _event, window, cx| this.hide(window, cx)),
+            )
+            .child(
+                div()
+                    .id("klemmbrett-popup")
+                    .absolute()
+                    .left(card.origin.x)
+                    .top(card.origin.y)
+                    .w(card.size.width)
+                    .h(card.size.height)
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .bg(rgb(0x2b2b2b))
+                    .border_1()
+                    .border_color(rgb(0x555555))
+                    .text_color(rgb(0xe8e8e8))
+                    .text_sm()
+                    .line_height(px(ROW_HEIGHT))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(rows),
+            )
     }
 }
 
@@ -406,13 +573,7 @@ fn popup_row(
                 .text_color(rgb(0x888888))
                 .child(accelerator.map(|c| c.to_string()).unwrap_or_default()),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .child(text.to_owned()),
-        )
+        .child(div().flex_1().min_w_0().truncate().child(text.to_owned()))
 }
 
 fn install_tray(sources: Vec<String>, tx: async_channel::Sender<UiCmd>) {

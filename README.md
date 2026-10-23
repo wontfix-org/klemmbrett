@@ -208,16 +208,25 @@ Qtile already talks to D-Bus through dbus-fast (notifications, StatusNotifier,
 and related widgets), so this matches the compositor's own stack.
 
 ```python
-from dbus_fast import Message
+from dbus_fast import Message, MessageType
 from dbus_fast.aio import MessageBus
 from libqtile.config import Key
 from libqtile.lazy import lazy
 from libqtile.utils import create_task
 
+_bus = None
+
+async def _session_bus():
+    global _bus
+    if _bus is None or not _bus.connected:
+        _bus = await MessageBus().connect()
+    return _bus
+
 async def _show_source(source, x, y):
-    bus = await MessageBus().connect()
+    global _bus
     try:
-        await bus.call(
+        bus = await _session_bus()
+        reply = await bus.call(
             Message(
                 destination="org.klemmbrett",
                 path="/org/klemmbrett/History",
@@ -227,8 +236,21 @@ async def _show_source(source, x, y):
                 body=[source, int(x), int(y)],
             )
         )
-    finally:
-        bus.disconnect()
+    except Exception:
+        _bus = None
+        bus = await _session_bus()
+        reply = await bus.call(
+            Message(
+                destination="org.klemmbrett",
+                path="/org/klemmbrett/History",
+                interface="org.klemmbrett.History",
+                member="ShowMenu",
+                signature="sii",
+                body=[source, int(x), int(y)],
+            )
+        )
+    if reply.message_type == MessageType.ERROR:
+        print(f"Klemmbrett ShowMenu failed: {reply.error_name} {reply.body}")
 
 def show_clip_history(qtile):
     x, y = qtile.core.get_mouse_position()
