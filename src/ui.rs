@@ -15,10 +15,10 @@ use appindicator3::{Indicator, IndicatorCategory, IndicatorStatus};
 use gdk::prelude::*;
 use gtk::prelude::*;
 use gtk_layer_shell::LayerShell;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use klemmbrett::{
-    history_candidate, index_for_accelerator, menu_item_spec, position_on_outputs, ArboardBackend,
+    history_candidate, index_for_accelerator, menu_item_spec, place_on_outputs, ArboardBackend,
     Backend, ClipboardSync, OutputGeom, Record, Selection, Sources,
 };
 
@@ -99,7 +99,7 @@ impl App {
             }
         };
 
-        let window = layer_window(x, y);
+        let window = layer_window();
         let list = gtk::ListBox::new();
         list.style_context().add_class("klemmbrett-popup");
         list.set_selection_mode(gtk::SelectionMode::Browse);
@@ -128,6 +128,7 @@ impl App {
         frame.set_shadow_type(gtk::ShadowType::Out);
         frame.add(&list);
         window.add(&frame);
+        place_layer_window(&window, x, y);
 
         let app = Rc::clone(self);
         list.connect_row_activated(move |_, row| {
@@ -264,7 +265,7 @@ fn build_row(spec: &klemmbrett::MenuItemSpec) -> gtk::ListBoxRow {
     row
 }
 
-fn layer_window(x: i32, y: i32) -> gtk::Window {
+fn layer_window() -> gtk::Window {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_decorated(false);
     window.set_resizable(false);
@@ -279,17 +280,64 @@ fn layer_window(x: i32, y: i32) -> gtk::Window {
     window.set_keyboard_mode(gtk_layer_shell::KeyboardMode::Exclusive);
     window.set_exclusive_zone(-1);
 
-    if let Some((outputs, primary)) = output_geometry() {
-        if let Some((index, local_x, local_y)) = position_on_outputs(x, y, &outputs, primary) {
-            if let Some(monitor) = gdk_monitor(index) {
-                window.set_monitor(&monitor);
-            }
-            window.set_layer_shell_margin(gtk_layer_shell::Edge::Left, local_x);
-            window.set_layer_shell_margin(gtk_layer_shell::Edge::Top, local_y);
-        }
-    }
-
     window
+}
+
+/// Places the popup from the pointer and the window's size, then corrects if
+/// the allocated size differs. The last applied size is remembered so a
+/// margin change does not loop.
+fn place_layer_window(window: &gtk::Window, x: i32, y: i32) {
+    let Some((outputs, primary)) = output_geometry() else {
+        return;
+    };
+    let applied = Rc::new(Cell::new((0, 0)));
+    let (_, nat) = window.preferred_size();
+    apply_layer_placement(
+        window,
+        x,
+        y,
+        (nat.width, nat.height),
+        &outputs,
+        primary,
+        &applied,
+    );
+
+    window.connect_size_allocate(move |window, alloc| {
+        apply_layer_placement(
+            window,
+            x,
+            y,
+            (alloc.width(), alloc.height()),
+            &outputs,
+            primary,
+            &applied,
+        );
+    });
+}
+
+fn apply_layer_placement(
+    window: &gtk::Window,
+    x: i32,
+    y: i32,
+    size: (i32, i32),
+    outputs: &[OutputGeom],
+    primary: usize,
+    applied: &Cell<(i32, i32)>,
+) {
+    if applied.get() == size {
+        return;
+    }
+    applied.set(size);
+    let Some((index, margin_x, margin_y)) =
+        place_on_outputs(x, y, size.0, size.1, outputs, primary)
+    else {
+        return;
+    };
+    if let Some(monitor) = gdk_monitor(index) {
+        window.set_monitor(&monitor);
+    }
+    window.set_layer_shell_margin(gtk_layer_shell::Edge::Left, margin_x);
+    window.set_layer_shell_margin(gtk_layer_shell::Edge::Top, margin_y);
 }
 
 pub fn install_styles() {

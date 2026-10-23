@@ -1,4 +1,4 @@
-//! Popup menu rows and placing the popup on the right output.
+//! Popup menu rows and placing the popup on the right output so it stays visible.
 //!
 //! Accelerators are matched by this module rather than by GTK mnemonics: the
 //! popup is opened from D-Bus, so it has no input event to hand GTK, and GTK's
@@ -88,6 +88,43 @@ pub fn position_on_outputs(
     let index = primary.min(outputs.len() - 1);
     let output = outputs[index];
     Some((index, (x - output.x).max(0), (y - output.y).max(0)))
+}
+
+/// Maps a global pointer position and popup size onto `outputs`.
+///
+/// Picks the output the same way as [`position_on_outputs`], then places the
+/// popup so it prefers growing down and to the right from the pointer. If that
+/// would leave the output, the box flips so the opposite edge sits on the
+/// pointer; it then slides to stay inside the output. A popup larger than the
+/// output is pinned to the origin.
+pub fn place_on_outputs(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    outputs: &[OutputGeom],
+    primary: usize,
+) -> Option<(usize, i32, i32)> {
+    let (index, local_x, local_y) = position_on_outputs(x, y, outputs, primary)?;
+    let output = outputs[index];
+    Some((
+        index,
+        place_axis(local_x, width, output.width),
+        place_axis(local_y, height, output.height),
+    ))
+}
+
+fn place_axis(local: i32, size: i32, output_size: i32) -> i32 {
+    let size = size.max(0);
+    let mut pos = local;
+    if pos + size > output_size {
+        pos = local - size;
+    }
+    if size >= output_size {
+        0
+    } else {
+        pos.clamp(0, output_size - size)
+    }
 }
 
 #[cfg(test)]
@@ -187,5 +224,68 @@ mod tests {
     #[test]
     fn no_outputs_means_no_position() {
         assert_eq!(position_on_outputs(0, 0, &[], 0), None);
+    }
+
+    fn output() -> [OutputGeom; 1] {
+        [OutputGeom::new(0, 0, 1920, 1080)]
+    }
+
+    #[test]
+    fn a_popup_with_room_below_stays_at_the_pointer() {
+        assert_eq!(
+            place_on_outputs(120, 80, 200, 300, &output(), 0),
+            Some((0, 120, 80))
+        );
+    }
+
+    #[test]
+    fn a_popup_near_the_bottom_flips_above_the_pointer() {
+        assert_eq!(
+            place_on_outputs(120, 1000, 200, 200, &output(), 0),
+            Some((0, 120, 800))
+        );
+    }
+
+    #[test]
+    fn a_popup_near_the_right_flips_left_of_the_pointer() {
+        assert_eq!(
+            place_on_outputs(1900, 80, 150, 100, &output(), 0),
+            Some((0, 1750, 80))
+        );
+    }
+
+    #[test]
+    fn a_popup_larger_than_the_output_is_pinned_to_the_origin() {
+        assert_eq!(
+            place_on_outputs(400, 300, 2000, 1200, &output(), 0),
+            Some((0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn a_flipped_popup_that_still_overflows_slides_onto_the_output() {
+        // Pointer near the top, menu taller than the space above or below:
+        // flip goes off the top, then slide pins the box to y = 0.
+        assert_eq!(
+            place_on_outputs(10, 40, 100, 1060, &output(), 0),
+            Some((0, 10, 0))
+        );
+    }
+
+    #[test]
+    fn a_popup_on_the_second_output_is_localised_then_placed() {
+        let outputs = [
+            OutputGeom::new(0, 0, 1920, 1080),
+            OutputGeom::new(1920, 0, 800, 600),
+        ];
+        assert_eq!(
+            place_on_outputs(2700, 500, 200, 200, &outputs, 0),
+            Some((1, 580, 300))
+        );
+    }
+
+    #[test]
+    fn no_outputs_means_no_placement() {
+        assert_eq!(place_on_outputs(0, 0, 10, 10, &[], 0), None);
     }
 }

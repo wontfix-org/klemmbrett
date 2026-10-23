@@ -112,7 +112,8 @@ The process owns `org.klemmbrett` on the session bus:
 
 `x` and `y` are the pointer location in the compositor's global layout (the
 same space qtile's `get_mouse_position()` and Sway output `rect` values use).
-The popup is placed on the output that contains that point.
+The popup is placed on the output that contains that point, flipping or
+sliding so it stays on that output.
 
 ```sh
 busctl --user call \
