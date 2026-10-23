@@ -10,6 +10,8 @@ pub const DEFAULT_HISTORY_LIMIT: usize = 50;
 pub const DEFAULT_LABEL_MAX: usize = 64;
 /// Default: replace the last history item when a new clip contains it.
 pub const DEFAULT_COALESCE_GROWING: bool = true;
+/// Default: do not store a selection that is only whitespace.
+pub const DEFAULT_SKIP_WHITESPACE_ONLY: bool = true;
 
 pub fn default_db_path() -> PathBuf {
     db_path_from_env(
@@ -50,6 +52,7 @@ pub struct HistoryStore {
     conn: Connection,
     limit: usize,
     coalesce_growing: bool,
+    skip_whitespace_only: bool,
 }
 
 impl HistoryStore {
@@ -78,6 +81,7 @@ impl HistoryStore {
             conn,
             limit: limit.max(1),
             coalesce_growing: DEFAULT_COALESCE_GROWING,
+            skip_whitespace_only: DEFAULT_SKIP_WHITESPACE_ONLY,
         };
         store.trim()?;
         Ok(store)
@@ -88,8 +92,13 @@ impl HistoryStore {
         self
     }
 
+    pub fn with_skip_whitespace_only(mut self, enabled: bool) -> Self {
+        self.skip_whitespace_only = enabled;
+        self
+    }
+
     pub fn record(&mut self, text: &str) -> rusqlite::Result<()> {
-        if text.is_empty() {
+        if text.is_empty() || (self.skip_whitespace_only && text.trim().is_empty()) {
             return Ok(());
         }
         let created_at = now_secs();
@@ -300,6 +309,26 @@ mod tests {
         let mut store = HistoryStore::open_in_memory(10).unwrap();
         store.record("").unwrap();
         assert!(store.entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_text_is_not_stored() {
+        let mut store = HistoryStore::open_in_memory(10).unwrap();
+        store.record("hello").unwrap();
+        store.record("   \n\t  ").unwrap();
+        store.record(" ").unwrap();
+        assert_eq!(store.entries().unwrap(), vec!["hello".to_owned()]);
+    }
+
+    #[test]
+    fn whitespace_only_text_is_stored_when_configured() {
+        let mut store = HistoryStore::open_in_memory(10)
+            .unwrap()
+            .with_skip_whitespace_only(false);
+        store.record("   \n\t  ").unwrap();
+        assert_eq!(store.entries().unwrap(), vec!["   \n\t  ".to_owned()]);
+        store.record("").unwrap();
+        assert_eq!(store.entries().unwrap(), vec!["   \n\t  ".to_owned()]);
     }
 
     #[test]

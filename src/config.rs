@@ -5,7 +5,10 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::{default_db_path, DEFAULT_COALESCE_GROWING, DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX};
+use crate::{
+    default_db_path, DEFAULT_COALESCE_GROWING, DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
+    DEFAULT_SKIP_WHITESPACE_ONLY,
+};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -39,6 +42,11 @@ pub enum SourceConfig {
         history_limit: usize,
         #[serde(default = "default_coalesce_growing", rename = "coalesce-growing")]
         coalesce_growing: bool,
+        #[serde(
+            default = "default_skip_whitespace_only",
+            rename = "skip-whitespace-only"
+        )]
+        skip_whitespace_only: bool,
     },
     File {
         name: String,
@@ -149,6 +157,10 @@ fn default_coalesce_growing() -> bool {
     DEFAULT_COALESCE_GROWING
 }
 
+fn default_skip_whitespace_only() -> bool {
+    DEFAULT_SKIP_WHITESPACE_ONLY
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,11 +196,13 @@ mod tests {
                 db,
                 history_limit,
                 coalesce_growing,
+                skip_whitespace_only,
                 ..
             } => {
                 assert_eq!(db.as_deref(), Some(Path::new("/config/history.sqlite")));
                 assert_eq!(*history_limit, DEFAULT_HISTORY_LIMIT);
                 assert!(*coalesce_growing);
+                assert!(*skip_whitespace_only);
             }
             _ => panic!("expected history source"),
         }
@@ -235,6 +249,27 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("path"));
+    }
+
+    #[test]
+    fn skip_whitespace_only_can_be_disabled() {
+        let config = parse_config(
+            r#"
+                [[sources]]
+                name = "history"
+                type = "clipboard-history"
+                skip-whitespace-only = false
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        match &config.sources[0] {
+            SourceConfig::ClipboardHistory {
+                skip_whitespace_only,
+                ..
+            } => assert!(!*skip_whitespace_only),
+            _ => panic!("expected history source"),
+        }
     }
 
     #[test]

@@ -80,6 +80,7 @@ impl Sources {
                     db,
                     history_limit,
                     coalesce_growing,
+                    skip_whitespace_only,
                     ..
                 } => {
                     let path = db.clone().unwrap_or_else(default_db_path);
@@ -90,7 +91,8 @@ impl Sources {
                                 path.display()
                             )
                         })?
-                        .with_coalesce_growing(*coalesce_growing);
+                        .with_coalesce_growing(*coalesce_growing)
+                        .with_skip_whitespace_only(*skip_whitespace_only);
                     Source::ClipboardHistory(store)
                 }
                 SourceConfig::File { path, format, .. } => Source::File(FileSource {
@@ -286,6 +288,28 @@ mod tests {
         let (dir, sources) = file_source("text", "old\n");
         std::fs::write(dir.path().join("records"), "new\n").unwrap();
         assert_eq!(sources.records("items").unwrap(), vec![Record::new("new")]);
+    }
+
+    #[test]
+    fn whitespace_history_respects_source_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = parse_config(
+            r#"
+                [[sources]]
+                name = "history"
+                type = "clipboard-history"
+                db = "history.sqlite"
+                skip-whitespace-only = false
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        let mut sources = Sources::from_config(&config).unwrap();
+        sources.record_history("   \n").unwrap();
+        assert_eq!(
+            sources.records("history").unwrap(),
+            vec![Record::new("   \n")]
+        );
     }
 
     #[test]
