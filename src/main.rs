@@ -1,4 +1,5 @@
 mod dbus;
+mod systemd;
 mod ui;
 
 use clap::Parser;
@@ -13,10 +14,20 @@ struct Args {
     /// TOML configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.toml)
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Install a systemd user unit bound to graphical-session.target and enable it
+    #[arg(long)]
+    install_systemd: bool,
 }
 
 fn main() {
     let args = Args::parse();
+    if args.install_systemd {
+        systemd::install(args.config.as_deref()).unwrap_or_else(|err| {
+            panic!("{err}");
+        });
+        return;
+    }
     let config = load_config(args.config.as_deref()).unwrap_or_else(|err| {
         panic!("{err}");
     });
