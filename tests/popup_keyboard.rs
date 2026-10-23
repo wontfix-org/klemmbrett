@@ -260,9 +260,9 @@ fn a_history_entry_can_be_picked_by_key_without_moving_the_pointer() {
     std::thread::sleep(Duration::from_millis(750));
 
     // A headless seat has no keyboard until wtype creates a virtual one, and
-    // GTK only binds a keyboard once the capability appears. The first key
-    // makes the seat grow a keyboard; the delay lets GTK bind it before the
-    // key that matters. On a real seat the keyboard is always present.
+    // the client only binds a keyboard once the capability appears. The first
+    // key makes the seat grow a keyboard; the delay lets the popup bind it
+    // before the key that matters. On a real seat the keyboard is always present.
     //
     // "a" would be row 10, which does not exist here, so it changes nothing.
     let typed = session
