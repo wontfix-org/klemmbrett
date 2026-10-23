@@ -203,7 +203,7 @@ pub use config::{
 };
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
-    DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
+    DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, DEFAULT_SKIP_WHITESPACE_ONLY,
 };
 pub use history_api::{HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 pub use popup::{

@@ -63,6 +63,7 @@ name = "history"
 type = "clipboard-history"
 history-limit = 50
 coalesce-growing = true
+skip-whitespace-only = true
 
 [[sources]]
 name = "snippets"
@@ -74,9 +75,11 @@ format = "yaml"
 Source names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history-limit` defaults to 50,
-and `coalesce-growing` defaults to true. Coalescing replaces the newest row
-when a new selection contains it, avoiding one row per character while a
-selection grows.
+`coalesce-growing` defaults to true, and `skip-whitespace-only` defaults to
+true. Coalescing replaces the newest row when a new selection contains it,
+avoiding one row per character while a selection grows. Whitespace-only
+selections (spaces, tabs, newlines) are not stored unless
+`skip-whitespace-only` is set to false.
 
 File sources are read again whenever their popup opens. `text` format uses one
 non-empty line per record. JSON and YAML files contain an array whose records

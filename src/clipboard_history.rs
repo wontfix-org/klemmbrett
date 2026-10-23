@@ -3,6 +3,8 @@
 use super::{Action, Backend, ClipboardSync, HistoryStore, Selection};
 
 /// Text that should be stored after `action`, if any.
+///
+/// Whether whitespace-only text is kept is decided later by [`HistoryStore`].
 pub fn history_candidate<'a>(action: &'a Action, last_text: &'a str) -> Option<&'a str> {
     match action {
         Action::Copied { text, .. } => Some(text.as_str()),
@@ -209,6 +211,15 @@ mod tests {
         let mut hist = history(Fake::new("hello", "hello"));
         hist.record_current();
         hist.backend_mut().user_sets(Selection::Primary, "");
+        hist.poll();
+        assert_eq!(hist.entries().unwrap(), vec!["hello".to_owned()]);
+    }
+
+    #[test]
+    fn a_whitespace_only_selection_is_not_recorded() {
+        let mut hist = history(Fake::new("hello", "hello"));
+        hist.record_current();
+        hist.backend_mut().user_sets(Selection::Primary, " \n\t ");
         hist.poll();
         assert_eq!(hist.entries().unwrap(), vec!["hello".to_owned()]);
     }
