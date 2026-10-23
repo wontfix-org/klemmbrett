@@ -7,7 +7,7 @@ SQLite clipboard history and text, JSON, or YAML files.
 A GTK popup lists a configured source. Entries longer than a configurable length are
 shown shortened. The first 35 items can be chosen with accelerator keys
 (`1`–`9`, then `a`–`z`); `Up`/`Down` and `Enter` also work, and `Escape`
-closes the popup. An Ayatana AppIndicator has a Sources submenu.
+closes the popup. A StatusNotifierItem tray icon has a Sources submenu.
 
 The popup takes keyboard focus as soon as it appears, without needing the
 pointer. It is a `wlr-layer-shell` surface that requests exclusive keyboard
@@ -26,7 +26,6 @@ Debian/Trixie packages needed in addition to a Rust toolchain:
 sudo apt install \
     libgtk-3-dev \
     libgtk-layer-shell-dev \
-    libayatana-appindicator3-dev \
     pkg-config
 ```
 
