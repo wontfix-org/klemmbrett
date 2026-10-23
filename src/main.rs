@@ -3,8 +3,7 @@ mod ui;
 
 use clap::Parser;
 use std::path::PathBuf;
-use std::rc::Rc;
-use klemmbrett::{load_config, ArboardBackend, ClipboardSync, Sources, POLL_INTERVAL};
+use klemmbrett::{load_config, ArboardBackend, ClipboardSync, Sources};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,22 +24,8 @@ fn main() {
         panic!("Invalid source configuration: {err}");
     });
 
-    gtk::init().expect("Failed to initialize GTK.");
-
     let backend = ArboardBackend::new().expect("Failed to initialize the Wayland clipboard.");
     let sync = ClipboardSync::new(backend);
 
-    let app = Rc::new(ui::App::new(sync, sources, config.popup.label_max));
-    app.record_current();
-    ui::install_styles();
-    ui::install_tray(app.clone());
-    dbus::spawn(app.clone());
-
-    let poller = app.clone();
-    glib::timeout_add_local(POLL_INTERVAL, move || {
-        poller.poll();
-        glib::ControlFlow::Continue
-    });
-
-    gtk::main();
+    ui::run(sync, sources, config.popup.label_max);
 }

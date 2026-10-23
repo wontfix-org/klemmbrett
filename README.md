@@ -4,7 +4,7 @@ Keeps the Wayland clipboard and primary selection holding the same text. Named
 popup sources can provide values to copy to the clipboard, including optional
 SQLite clipboard history and text, JSON, or YAML files.
 
-A GTK popup lists a configured source. Entries longer than a configurable length are
+A GPUI popup lists a configured source. Entries longer than a configurable length are
 shown shortened. The first 35 items can be chosen with accelerator keys
 (`1`–`9`, then `a`–`z`); `Up`/`Down` and `Enter` also work, and `Escape`
 closes the popup. A StatusNotifierItem tray icon has a Sources submenu.
@@ -20,12 +20,13 @@ labwc, and qtile's Wayland backend. GNOME does not implement it.
 
 ## Build
 
-Debian/Trixie packages needed in addition to a Rust toolchain:
+Debian/Trixie packages needed in addition to a Rust toolchain (1.95 or newer):
 
 ```sh
 sudo apt install \
-    libgtk-3-dev \
-    libgtk-layer-shell-dev \
+    libxkbcommon-dev \
+    libwayland-dev \
+    libvulkan-dev \
     pkg-config
 ```
 
