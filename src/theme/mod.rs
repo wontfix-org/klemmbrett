@@ -11,7 +11,8 @@ use parse::{parse_spec, State, ThemeSpec};
 use std::path::{Path, PathBuf};
 
 pub use parse::{
-    parse_document, parse_document_at, parse_widget_recipe, HclDocument, HclValue, RawSource,
+    parse_document, parse_document_at, parse_widget_recipe, HclDocument, HclValue, RawAction,
+    RawSource,
 };
 
 const DEFAULT_HCL: &str = include_str!("default.hcl");
@@ -470,6 +471,10 @@ fn shipped_theme(name: &str) -> Option<&'static str> {
         "gruvbox-dark" => Some(include_str!("../../themes/gruvbox-dark.hcl")),
         "catppuccin-mocha" => Some(include_str!("../../themes/catppuccin-mocha.hcl")),
         "dracula" => Some(include_str!("../../themes/dracula.hcl")),
+        "tokyo-night" => Some(include_str!("../../themes/tokyo-night.hcl")),
+        "rose-pine" => Some(include_str!("../../themes/rose-pine.hcl")),
+        "everforest" => Some(include_str!("../../themes/everforest.hcl")),
+        "kanagawa" => Some(include_str!("../../themes/kanagawa.hcl")),
         _ => None,
     }
 }
@@ -904,6 +909,46 @@ mod tests {
                     a: 255,
                 },
             ),
+            (
+                "tokyo-night",
+                include_str!("../../themes/tokyo-night.hcl"),
+                Rgba {
+                    r: 0x1a,
+                    g: 0x1b,
+                    b: 0x26,
+                    a: 255,
+                },
+            ),
+            (
+                "rose-pine",
+                include_str!("../../themes/rose-pine.hcl"),
+                Rgba {
+                    r: 0x19,
+                    g: 0x17,
+                    b: 0x24,
+                    a: 255,
+                },
+            ),
+            (
+                "everforest",
+                include_str!("../../themes/everforest.hcl"),
+                Rgba {
+                    r: 0x2d,
+                    g: 0x35,
+                    b: 0x3b,
+                    a: 255,
+                },
+            ),
+            (
+                "kanagawa",
+                include_str!("../../themes/kanagawa.hcl"),
+                Rgba {
+                    r: 0x1f,
+                    g: 0x1f,
+                    b: 0x28,
+                    a: 255,
+                },
+            ),
         ];
         for (name, source, background) in themes {
             let theme = parse_theme(source).unwrap_or_else(|err| panic!("{name}: {err}"));
@@ -912,6 +957,33 @@ mod tests {
                 theme.element().children,
                 vec![Widget::ElementIndex, Widget::ElementText],
                 "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn stylish_themes_round_the_card_and_rows() {
+        for name in ["tokyo-night", "rose-pine", "everforest", "kanagawa"] {
+            let theme = parse_theme(shipped_theme(name).unwrap())
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+            assert!(
+                theme.window().border_radius >= 12.0,
+                "{name} window radius {}",
+                theme.window().border_radius
+            );
+            assert!(
+                theme.element().border_radius >= 8.0,
+                "{name} row radius {}",
+                theme.element().border_radius
+            );
+            assert!(
+                theme.inputbar().border_radius >= 8.0,
+                "{name} inputbar radius {}",
+                theme.inputbar().border_radius
+            );
+            assert!(
+                theme.window().padding.horizontal() > 0.0,
+                "{name} should inset the list"
             );
         }
     }

@@ -152,17 +152,15 @@ impl Klemmbrett {
         }
     }
 
-    fn select_record(&mut self, source: &str, value: &str) {
-        match self.sources.action(source).unwrap_or_default() {
+    fn select_record(&mut self, source: &str, key: &str, label: &str, value: &str) {
+        let action = self.sources.action(source).unwrap_or_default();
+        match action {
             SelectAction::CopyToClipboard => self.restore(value),
-            SelectAction::XdgOpen => {
-                if let Err(err) = run_user_command(&self.launch, &["xdg-open", value]) {
-                    eprintln!("Failed to xdg-open {value:?}: {err}");
-                }
-            }
-            SelectAction::Exec => {
-                if let Err(err) = run_user_command(&self.launch, &[value]) {
-                    eprintln!("Failed to exec {value:?}: {err}");
+            exec @ SelectAction::Exec { .. } => {
+                let argv = exec.argv(key, label, value).expect("exec action has argv");
+                let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+                if let Err(err) = run_user_command(&self.launch, &argv) {
+                    eprintln!("Failed to exec {argv:?}: {err}");
                 }
             }
             SelectAction::ActivateWindow => {
@@ -573,16 +571,18 @@ impl PopupView {
     }
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(value) = self
-            .visible_entries()
-            .get(index)
-            .map(|record| record.value.clone())
-        else {
+        let Some((key, label, value)) = self.visible_entries().get(index).map(|record| {
+            (
+                record.key.clone(),
+                record.label.clone(),
+                record.value.clone(),
+            )
+        }) else {
             return;
         };
         let source = self.source_name.clone();
         self.app
-            .update(cx, |app, _cx| app.select_record(&source, &value));
+            .update(cx, |app, _cx| app.select_record(&source, &key, &label, &value));
         self.hide(window, cx);
     }
 }

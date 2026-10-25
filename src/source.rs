@@ -154,7 +154,7 @@ impl Sources {
         self.entries
             .iter()
             .find(|entry| entry.name == name)
-            .map(|entry| entry.action)
+            .map(|entry| entry.action.clone())
     }
 
     pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {
@@ -377,7 +377,12 @@ mod tests {
             Some(value) => std::env::set_var("PATH", value),
             None => std::env::remove_var("PATH"),
         }
-        assert_eq!(sources.action("run"), Some(SelectAction::Exec));
+        assert_eq!(
+            sources.action("run"),
+            Some(SelectAction::Exec {
+                command: vec!["${value}".into()]
+            })
+        );
         assert!(
             records
                 .iter()
@@ -423,7 +428,12 @@ mod tests {
         )
         .unwrap();
         let sources = Sources::from_config(&config).unwrap();
-        assert_eq!(sources.action("links"), Some(SelectAction::XdgOpen));
+        assert_eq!(
+            sources.action("links"),
+            Some(SelectAction::Exec {
+                command: vec!["xdg-open".into(), "${value}".into()]
+            })
+        );
     }
 
     #[test]
