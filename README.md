@@ -202,8 +202,8 @@ The process owns `org.wontfix.klemmbrett` on the session bus:
 | | |
 | --- | --- |
 | Name | `org.wontfix.klemmbrett` |
-| Object | `/org/wontfix/klemmbrett/History` |
-| Interface | `org.wontfix.klemmbrett.History` |
+| Object | `/org/wontfix/klemmbrett/Activate` |
+| Interface | `org.wontfix.klemmbrett.Activate` |
 | Method | `ShowMenu(sii)` — source name, then `x`, `y` in global compositor coordinates |
 
 `x` and `y` are the pointer location in the compositor's global layout (the
@@ -214,8 +214,8 @@ sliding so it stays on that output.
 ```sh
 busctl --user call \
     org.wontfix.klemmbrett \
-    /org/wontfix/klemmbrett/History \
-    org.wontfix.klemmbrett.History \
+    /org/wontfix/klemmbrett/Activate \
+    org.wontfix.klemmbrett.Activate \
     ShowMenu sii history 120 80
 ```
 
@@ -271,8 +271,8 @@ subprocess.check_call(
         "--user",
         "call",
         "org.wontfix.klemmbrett",
-        "/org/wontfix/klemmbrett/History",
-        "org.wontfix.klemmbrett.History",
+        "/org/wontfix/klemmbrett/Activate",
+        "org.wontfix.klemmbrett.Activate",
         "ShowMenu",
         "sii",
         "history",
@@ -320,8 +320,8 @@ async def _show_source(source, x, y):
     global _bus
     message = Message(
         destination="org.wontfix.klemmbrett",
-        path="/org/wontfix/klemmbrett/History",
-        interface="org.wontfix.klemmbrett.History",
+        path="/org/wontfix/klemmbrett/Activate",
+        interface="org.wontfix.klemmbrett.Activate",
         member="ShowMenu",
         signature="sii",
         body=[source, int(x), int(y)],

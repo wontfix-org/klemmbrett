@@ -189,14 +189,15 @@ impl<B: Backend> ClipboardSync<B> {
     }
 }
 
+mod activate_api;
 mod clipboard_history;
 mod config;
 mod history;
-mod history_api;
 mod popup;
 mod source;
 mod theme;
 
+pub use activate_api::{ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH, HISTORY_BUS_NAME};
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
     config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
@@ -206,7 +207,6 @@ pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
     DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, DEFAULT_SKIP_WHITESPACE_ONLY,
 };
-pub use history_api::{HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 pub use popup::{
     accelerator_for, filter_records, index_for_accelerator, menu_item_spec, place_at_location,
     place_on_outputs, position_on_outputs, MenuItemSpec, OutputGeom,

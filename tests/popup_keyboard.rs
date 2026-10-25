@@ -7,8 +7,8 @@
 //! so this drives a private headless sway and types into it.
 
 use klemmbrett::{
-    ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME, HISTORY_INTERFACE,
-    HISTORY_OBJECT_PATH,
+    ArboardBackend, Backend, HistoryStore, Selection, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH,
+    HISTORY_BUS_NAME,
 };
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -221,8 +221,8 @@ fn show_menu(session: &Session, source: &str, x: i32, y: i32) {
             .and_then(|conn| {
                 conn.call_method(
                     Some(HISTORY_BUS_NAME),
-                    HISTORY_OBJECT_PATH,
-                    Some(HISTORY_INTERFACE),
+                    ACTIVATE_OBJECT_PATH,
+                    Some(ACTIVATE_INTERFACE),
                     "ShowMenu",
                     &(source, x, y),
                 )

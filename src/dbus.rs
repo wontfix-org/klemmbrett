@@ -1,4 +1,4 @@
-use klemmbrett::{HistoryApi, HISTORY_BUS_NAME, HISTORY_OBJECT_PATH};
+use klemmbrett::{ActivateApi, ACTIVATE_OBJECT_PATH, HISTORY_BUS_NAME};
 use std::collections::HashSet;
 
 /// A request that must run on the GPUI thread.
@@ -14,7 +14,7 @@ pub fn spawn(source_names: HashSet<String>, tx: async_channel::Sender<UiCmd>) {
     std::thread::Builder::new()
         .name("klemmbrett-dbus".into())
         .spawn(move || {
-            let api = HistoryApi::new(move |source, x, y| {
+            let api = ActivateApi::new(move |source, x, y| {
                 if !source_names.contains(&source) {
                     let err = if source_names.is_empty() {
                         format!("unknown source {source:?}: no popup sources are configured")
@@ -33,8 +33,8 @@ pub fn spawn(source_names: HashSet<String>, tx: async_channel::Sender<UiCmd>) {
                 .expect("session bus")
                 .name(HISTORY_BUS_NAME)
                 .expect("request bus name")
-                .serve_at(HISTORY_OBJECT_PATH, api)
-                .expect("export history object")
+                .serve_at(ACTIVATE_OBJECT_PATH, api)
+                .expect("export activate object")
                 .build()
             {
                 Ok(_conn) => std::thread::park(),
