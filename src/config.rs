@@ -34,6 +34,35 @@ impl Default for PopupConfig {
     }
 }
 
+/// What happens when a popup row from this source is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SelectAction {
+    #[default]
+    CopyToClipboard,
+    XdgOpen,
+}
+
+impl SelectAction {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "copy-to-clipboard" => Some(Self::CopyToClipboard),
+            "xdg-open" => Some(Self::XdgOpen),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CopyToClipboard => "copy-to-clipboard",
+            Self::XdgOpen => "xdg-open",
+        }
+    }
+
+    fn supported() -> &'static str {
+        "copy-to-clipboard or xdg-open"
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SourceConfig {
     ClipboardHistory {
@@ -43,12 +72,14 @@ pub enum SourceConfig {
         coalesce_growing: bool,
         skip_whitespace_only: bool,
         presentation: Presentation,
+        action: SelectAction,
     },
     File {
         name: String,
         path: PathBuf,
         format: FileFormat,
         presentation: Presentation,
+        action: SelectAction,
     },
 }
 
@@ -64,6 +95,12 @@ impl SourceConfig {
             Self::ClipboardHistory { presentation, .. } | Self::File { presentation, .. } => {
                 presentation
             }
+        }
+    }
+
+    pub fn action(&self) -> SelectAction {
+        match self {
+            Self::ClipboardHistory { action, .. } | Self::File { action, .. } => *action,
         }
     }
 }
@@ -166,6 +203,7 @@ fn source_from_raw(
 ) -> Result<SourceConfig, String> {
     let name = raw.name;
     let presentation = source_presentation(&name, &raw.properties, doc, base_dir)?;
+    let action = parse_select_action(&name, &raw.properties)?;
     let ty = raw
         .properties
         .get("type")
@@ -185,6 +223,7 @@ fn source_from_raw(
                     "widget",
                     "theme",
                     "location",
+                    "action",
                 ],
             )?;
             let history_limit =
@@ -206,13 +245,16 @@ fn source_from_raw(
                 skip_whitespace_only: optional_bool(&raw.properties, "skip_whitespace_only")?
                     .unwrap_or(DEFAULT_SKIP_WHITESPACE_ONLY),
                 presentation,
+                action,
             })
         }
         "file" => {
             reject_unknown(
                 &name,
                 &raw.properties,
-                &["type", "path", "format", "widget", "theme", "location"],
+                &[
+                    "type", "path", "format", "widget", "theme", "location", "action",
+                ],
             )?;
             let mut path = required_path(&name, &raw.properties, "path")?;
             resolve_relative(&mut path, base_dir);
@@ -236,11 +278,27 @@ fn source_from_raw(
                 path,
                 format,
                 presentation,
+                action,
             })
         }
         other => Err(format!(
             "source {name:?}: unknown type {other}; expected clipboard-history or file"
         )),
+    }
+}
+
+fn parse_select_action(
+    source: &str,
+    properties: &BTreeMap<String, HclValue>,
+) -> Result<SelectAction, String> {
+    match optional_name(properties, "action")? {
+        None => Ok(SelectAction::CopyToClipboard),
+        Some(name) => SelectAction::parse(&name).ok_or_else(|| {
+            format!(
+                "source {source:?}: unknown action {name}; expected {}",
+                SelectAction::supported()
+            )
+        }),
     }
 }
 
@@ -486,15 +544,66 @@ mod tests {
                 assert_eq!(*history_limit, DEFAULT_HISTORY_LIMIT);
                 assert!(*coalesce_growing);
                 assert!(*skip_whitespace_only);
+                assert_eq!(config.sources[0].action(), SelectAction::CopyToClipboard);
             }
             _ => panic!("expected history source"),
         }
         match &config.sources[1] {
             SourceConfig::File { path, .. } => {
                 assert_eq!(path, Path::new("/config/snippets.json"));
+                assert_eq!(config.sources[1].action(), SelectAction::CopyToClipboard);
             }
             _ => panic!("expected file source"),
         }
+    }
+
+    #[test]
+    fn source_action_can_be_copy_to_clipboard() {
+        let config = parse_config(
+            r#"
+                source "history" {
+                    type   = "clipboard-history"
+                    action = "copy-to-clipboard"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.sources[0].action(), SelectAction::CopyToClipboard);
+    }
+
+    #[test]
+    fn source_action_can_be_xdg_open() {
+        let config = parse_config(
+            r#"
+                source "links" {
+                    type   = "file"
+                    path   = "links.yaml"
+                    format = "yaml"
+                    action = "xdg-open"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.sources[0].action(), SelectAction::XdgOpen);
+    }
+
+    #[test]
+    fn unknown_source_action_is_rejected() {
+        let error = parse_config(
+            r#"
+                source "history" {
+                    type   = "clipboard-history"
+                    action = "type-as-keys"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown action type-as-keys"), "{error}");
+        assert!(error.contains("copy-to-clipboard"), "{error}");
+        assert!(error.contains("xdg-open"), "{error}");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::config::{Config, FileFormat, SourceConfig};
+use crate::config::{Config, FileFormat, SelectAction, SourceConfig};
 use crate::theme::Presentation;
 use crate::{default_db_path, HistoryStore};
 
@@ -60,6 +60,7 @@ struct NamedSource {
     name: String,
     source: Source,
     presentation: Presentation,
+    action: SelectAction,
 }
 
 enum Source {
@@ -78,6 +79,7 @@ impl Sources {
         for source in &config.sources {
             let name = source.name().to_owned();
             let presentation = source.presentation().clone();
+            let action = source.action();
             let source = match source {
                 SourceConfig::ClipboardHistory {
                     db,
@@ -107,6 +109,7 @@ impl Sources {
                 name,
                 source,
                 presentation,
+                action,
             });
         }
 
@@ -133,6 +136,13 @@ impl Sources {
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| &entry.presentation)
+    }
+
+    pub fn action(&self, name: &str) -> Option<SelectAction> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.action)
     }
 
     pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {
@@ -324,6 +334,46 @@ mod tests {
             sources.records("history").unwrap(),
             vec![Record::new("   \n")]
         );
+    }
+
+    #[test]
+    fn configured_action_is_available_by_source_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("records"), "one\n").unwrap();
+        let config = parse_config(
+            r#"
+                source "items" {
+                    type   = "file"
+                    path   = "records"
+                    format = "text"
+                    action = "copy-to-clipboard"
+                }
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        let sources = Sources::from_config(&config).unwrap();
+        assert_eq!(sources.action("items"), Some(SelectAction::CopyToClipboard));
+    }
+
+    #[test]
+    fn xdg_open_action_is_available_by_source_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("records"), "https://example.com\n").unwrap();
+        let config = parse_config(
+            r#"
+                source "links" {
+                    type   = "file"
+                    path   = "records"
+                    format = "text"
+                    action = "xdg-open"
+                }
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        let sources = Sources::from_config(&config).unwrap();
+        assert_eq!(sources.action("links"), Some(SelectAction::XdgOpen));
     }
 
     #[test]

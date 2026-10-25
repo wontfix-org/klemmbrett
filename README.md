@@ -97,6 +97,7 @@ source "history" {
   coalesce_growing       = true
   skip_whitespace_only   = true
   widget                 = "filter"
+  action                 = "copy-to-clipboard"
 }
 
 source "snippets" {
@@ -105,14 +106,15 @@ source "snippets" {
   format = "yaml"
   widget = "menu"
   theme  = "dracula"
+  action = "xdg-open"
 }
 ```
 
 Source names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
-`coalesce_growing` defaults to true, and `skip_whitespace_only` defaults to
-true. Coalescing replaces the newest row when a new selection contains it,
+`coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
+true, and `action` defaults to `copy-to-clipboard`. Coalescing replaces the newest row when a new selection contains it,
 avoiding one row per character while a selection grows. Whitespace-only
 selections (spaces, tabs, newlines) are not stored unless
 `skip_whitespace_only` is set to false.
@@ -135,8 +137,10 @@ or the equivalent YAML:
 ```
 
 Every record requires a value. Its key and label default to the value when
-omitted, and keys must be unique within a source. The popup displays the label
-and copies the value.
+omitted, and keys must be unique within a source. The popup displays the label.
+Selecting a row runs that source's `action` on the value. `copy-to-clipboard`
+(the default) copies it to the clipboard. `xdg-open` launches the desktop
+handler for the value (a URL, file, or anything else `xdg-open` accepts).
 
 ## Popup theme and widgets
 
