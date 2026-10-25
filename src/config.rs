@@ -43,6 +43,7 @@ pub enum SelectAction {
     CopyToClipboard,
     XdgOpen,
     Exec,
+    ActivateWindow,
 }
 
 impl SelectAction {
@@ -51,6 +52,7 @@ impl SelectAction {
             "copy-to-clipboard" => Some(Self::CopyToClipboard),
             "xdg-open" => Some(Self::XdgOpen),
             "exec" => Some(Self::Exec),
+            "activate-window" => Some(Self::ActivateWindow),
             _ => None,
         }
     }
@@ -60,16 +62,18 @@ impl SelectAction {
             Self::CopyToClipboard => "copy-to-clipboard",
             Self::XdgOpen => "xdg-open",
             Self::Exec => "exec",
+            Self::ActivateWindow => "activate-window",
         }
     }
 
     fn supported() -> &'static str {
-        "copy-to-clipboard, xdg-open, or exec"
+        "copy-to-clipboard, xdg-open, exec, or activate-window"
     }
 
     fn default_for_type(ty: &str) -> Self {
         match ty {
             "executables" => Self::Exec,
+            "wayland-windows" => Self::ActivateWindow,
             _ => Self::CopyToClipboard,
         }
     }
@@ -98,6 +102,11 @@ pub enum SourceConfig {
         presentation: Presentation,
         action: SelectAction,
     },
+    WaylandWindows {
+        name: String,
+        presentation: Presentation,
+        action: SelectAction,
+    },
 }
 
 impl SourceConfig {
@@ -105,7 +114,8 @@ impl SourceConfig {
         match self {
             Self::ClipboardHistory { name, .. }
             | Self::File { name, .. }
-            | Self::Executables { name, .. } => name,
+            | Self::Executables { name, .. }
+            | Self::WaylandWindows { name, .. } => name,
         }
     }
 
@@ -113,7 +123,8 @@ impl SourceConfig {
         match self {
             Self::ClipboardHistory { presentation, .. }
             | Self::File { presentation, .. }
-            | Self::Executables { presentation, .. } => presentation,
+            | Self::Executables { presentation, .. }
+            | Self::WaylandWindows { presentation, .. } => presentation,
         }
     }
 
@@ -121,7 +132,8 @@ impl SourceConfig {
         match self {
             Self::ClipboardHistory { action, .. }
             | Self::File { action, .. }
-            | Self::Executables { action, .. } => *action,
+            | Self::Executables { action, .. }
+            | Self::WaylandWindows { action, .. } => *action,
         }
     }
 }
@@ -343,8 +355,20 @@ fn source_from_raw(
                 action,
             })
         }
+        "wayland-windows" => {
+            reject_unknown(
+                &name,
+                &raw.properties,
+                &["type", "widget", "theme", "location", "action"],
+            )?;
+            Ok(SourceConfig::WaylandWindows {
+                name,
+                presentation,
+                action,
+            })
+        }
         other => Err(format!(
-            "source {name:?}: unknown type {other}; expected clipboard-history, file, or executables"
+            "source {name:?}: unknown type {other}; expected clipboard-history, file, executables, or wayland-windows"
         )),
     }
 }
@@ -653,16 +677,24 @@ mod tests {
     }
 
     #[test]
-    fn executables_default_to_exec() {
+    fn executables_and_windows_default_to_their_actions() {
         let config = parse_config(
-            r#"source "run" { type = "executables" }"#,
+            r#"
+                source "run" { type = "executables" }
+                source "windows" { type = "wayland-windows" }
+            "#,
             Path::new("/config"),
         )
         .unwrap();
         assert_eq!(config.sources[0].action(), SelectAction::Exec);
+        assert_eq!(config.sources[1].action(), SelectAction::ActivateWindow);
         assert!(matches!(
             config.sources[0],
             SourceConfig::Executables { .. }
+        ));
+        assert!(matches!(
+            config.sources[1],
+            SourceConfig::WaylandWindows { .. }
         ));
     }
 

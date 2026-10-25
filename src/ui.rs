@@ -165,6 +165,11 @@ impl Klemmbrett {
                     eprintln!("Failed to exec {value:?}: {err}");
                 }
             }
+            SelectAction::ActivateWindow => {
+                if let Err(err) = self.sources.activate_window(value) {
+                    eprintln!("Failed to activate window {value:?}: {err}");
+                }
+            }
         }
     }
 

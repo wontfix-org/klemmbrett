@@ -2,7 +2,8 @@
 
 Keeps the Wayland clipboard and primary selection holding the same text. Named
 popup sources can provide values to copy, open, or run, including optional
-SQLite clipboard history, text/JSON/YAML files, and executables on `PATH`.
+SQLite clipboard history, text/JSON/YAML files, executables on `PATH`, and
+Wayland windows to switch to.
 
 A GPUI popup lists a configured source. Entries longer than a configurable length are
 shown shortened. A source can pack either today's accelerator menu or a
@@ -114,6 +115,11 @@ source "run" {
   type   = "executables"
   widget = "filter"
 }
+
+source "windows" {
+  type   = "wayland-windows"
+  widget = "filter"
+}
 ```
 
 Source names must be unique. Relative `db` and `path` values are resolved
@@ -121,7 +127,7 @@ relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
 `coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
 true, and `action` defaults to `copy-to-clipboard` except `executables`
-(`exec`). `launch` defaults to
+(`exec`) and `wayland-windows` (`activate-window`). `launch` defaults to
 `auto`: `systemd-run --user --scope` when klemmbrett itself is a systemd
 unit (`INVOCATION_ID` is set), otherwise a POSIX double-fork + `setsid`.
 Set `launch = "posix"`, `launch = "systemd-run"`, or a wrapper list such as
@@ -151,8 +157,10 @@ Every record requires a value. Its key and label default to the value when
 omitted, and keys must be unique within a source. The popup displays the label.
 Selecting a row runs that source's `action` on the value. `copy-to-clipboard`
 copies it to the clipboard. `xdg-open` and `exec` go through `launch` (`xdg-open`
-plus the value, or the value as a program). `executables` lists `PATH` (first
-basename wins); use `widget = "filter"` (the list is long).
+plus the value, or the value as a program). `activate-window` focuses a
+toplevel from a `wayland-windows` source via `zwlr_foreign_toplevel_manager_v1`.
+`executables` lists `PATH` (first basename wins). `wayland-windows` lists
+open windows; use `widget = "filter"` for both (the lists are long).
 
 ## Popup theme and widgets
 

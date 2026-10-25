@@ -198,6 +198,7 @@ mod launch;
 mod popup;
 mod source;
 mod theme;
+mod windows;
 
 pub use activate_api::{ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH, HISTORY_BUS_NAME};
 pub use clipboard_history::{history_candidate, ClipboardHistory};
