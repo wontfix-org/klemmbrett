@@ -238,6 +238,7 @@ Shipped palettes (`theme "nord" {}` or `theme = "nord"`):
 | `themes/rose-pine.hcl` | [Rosé Pine](https://rosepinetheme.com), rounded card |
 | `themes/everforest.hcl` | [Everforest](https://github.com/sainnhe/everforest) dark, rounded card |
 | `themes/kanagawa.hcl` | [Kanagawa](https://github.com/rebelot/kanagawa.nvim) wave, rounded card |
+| `themes/mbra.hcl` | Personal moss-on-black (qtile `#60845b`, Alacritty black) |
 
 ## D-Bus
 
