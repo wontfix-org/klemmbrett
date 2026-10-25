@@ -1,7 +1,7 @@
-//! Talks to the history object over the session bus, the same way a compositor
+//! Talks to the activate object over the session bus, the same way a compositor
 //! key binding would.
 
-use klemmbrett::{HistoryApi, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
+use klemmbrett::{ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ fn show_menu_forwards_the_source_and_pointer_coordinates() {
     };
 
     let (tx, rx) = mpsc::channel();
-    let api = HistoryApi::new(move |source, x, y| {
+    let api = ActivateApi::new(move |source, x, y| {
         if source != "snippets" {
             return Err(format!("unknown source {source:?}"));
         }
@@ -31,7 +31,7 @@ fn show_menu_forwards_the_source_and_pointer_coordinates() {
 
     let _server = match builder
         .name(name.as_str())
-        .and_then(|b| b.serve_at(HISTORY_OBJECT_PATH, api))
+        .and_then(|b| b.serve_at(ACTIVATE_OBJECT_PATH, api))
         .and_then(|b| b.build())
     {
         Ok(conn) => conn,
@@ -52,8 +52,8 @@ fn show_menu_forwards_the_source_and_pointer_coordinates() {
     client
         .call_method(
             Some(name.as_str()),
-            HISTORY_OBJECT_PATH,
-            Some(HISTORY_INTERFACE),
+            ACTIVATE_OBJECT_PATH,
+            Some(ACTIVATE_INTERFACE),
             "ShowMenu",
             &("snippets", 120_i32, 80_i32),
         )
@@ -67,8 +67,8 @@ fn show_menu_forwards_the_source_and_pointer_coordinates() {
     let error = client
         .call_method(
             Some(name.as_str()),
-            HISTORY_OBJECT_PATH,
-            Some(HISTORY_INTERFACE),
+            ACTIVATE_OBJECT_PATH,
+            Some(ACTIVATE_INTERFACE),
             "ShowMenu",
             &("missing", 120_i32, 80_i32),
         )
