@@ -35,6 +35,7 @@ Location is chosen separately from colors:
 
 Widget recipes used by a source are evaluated with `source.name` and
 `source.type` in scope, so packing can depend on the source.
+`source.type` is `clipboard-history`, `file`, or `executables`.
 
 ## Widget recipes
 

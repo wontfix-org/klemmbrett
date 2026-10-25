@@ -1,10 +1,11 @@
-//! Named sources that provide records for clipboard popups.
+//! Named sources that provide records for popups.
 
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::config::{Config, FileFormat, SelectAction, SourceConfig};
+use crate::executables::executables_on_path;
 use crate::theme::Presentation;
 use crate::{default_db_path, HistoryStore};
 
@@ -66,6 +67,7 @@ struct NamedSource {
 enum Source {
     ClipboardHistory(HistoryStore),
     File(FileSource),
+    Executables,
 }
 
 struct FileSource {
@@ -104,6 +106,7 @@ impl Sources {
                     path: path.clone(),
                     format: *format,
                 }),
+                SourceConfig::Executables { .. } => Source::Executables,
             };
             entries.push(NamedSource {
                 name,
@@ -157,6 +160,7 @@ impl Sources {
                 .map(|entries| entries.into_iter().map(Record::new).collect())
                 .map_err(|err| format!("failed to read history: {err}"))?,
             Source::File(source) => source.records()?,
+            Source::Executables => executables_on_path(&std::env::var("PATH").unwrap_or_default()),
         };
         validate_records(name, &records)?;
         Ok(records)
@@ -333,6 +337,31 @@ mod tests {
         assert_eq!(
             sources.records("history").unwrap(),
             vec![Record::new("   \n")]
+        );
+    }
+
+    #[test]
+    fn executables_source_uses_the_process_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("kb-path-test-bin");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config = parse_config(r#"source "run" { type = "executables" }"#, dir.path()).unwrap();
+        let previous = std::env::var_os("PATH");
+        std::env::set_var("PATH", dir.path());
+        let sources = Sources::from_config(&config).unwrap();
+        let records = sources.records("run").unwrap();
+        match previous {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        assert_eq!(sources.action("run"), Some(SelectAction::Exec));
+        assert!(
+            records
+                .iter()
+                .any(|record| record.key == "kb-path-test-bin"),
+            "{records:?}"
         );
     }
 

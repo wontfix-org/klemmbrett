@@ -160,6 +160,11 @@ impl Klemmbrett {
                     eprintln!("Failed to xdg-open {value:?}: {err}");
                 }
             }
+            SelectAction::Exec => {
+                if let Err(err) = run_user_command(&self.launch, &[value]) {
+                    eprintln!("Failed to exec {value:?}: {err}");
+                }
+            }
         }
     }
 
