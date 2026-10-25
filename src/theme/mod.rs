@@ -475,6 +475,7 @@ fn shipped_theme(name: &str) -> Option<&'static str> {
         "rose-pine" => Some(include_str!("../../themes/rose-pine.hcl")),
         "everforest" => Some(include_str!("../../themes/everforest.hcl")),
         "kanagawa" => Some(include_str!("../../themes/kanagawa.hcl")),
+        "mbra" => Some(include_str!("../../themes/mbra.hcl")),
         _ => None,
     }
 }
@@ -949,6 +950,16 @@ mod tests {
                     a: 255,
                 },
             ),
+            (
+                "mbra",
+                include_str!("../../themes/mbra.hcl"),
+                Rgba {
+                    r: 0x00,
+                    g: 0x00,
+                    b: 0x00,
+                    a: 255,
+                },
+            ),
         ];
         for (name, source, background) in themes {
             let theme = parse_theme(source).unwrap_or_else(|err| panic!("{name}: {err}"));
@@ -963,7 +974,7 @@ mod tests {
 
     #[test]
     fn stylish_themes_round_the_card_and_rows() {
-        for name in ["tokyo-night", "rose-pine", "everforest", "kanagawa"] {
+        for name in ["tokyo-night", "rose-pine", "everforest", "kanagawa", "mbra"] {
             let theme = parse_theme(shipped_theme(name).unwrap())
                 .unwrap_or_else(|err| panic!("{name}: {err}"));
             assert!(
