@@ -200,7 +200,10 @@ mod source;
 mod theme;
 mod windows;
 
-pub use activate_api::{ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH, HISTORY_BUS_NAME};
+pub use activate_api::{
+    request_show_menu, request_show_menu_on, ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH,
+    HISTORY_BUS_NAME,
+};
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
     config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,

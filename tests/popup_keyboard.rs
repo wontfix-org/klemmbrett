@@ -7,8 +7,7 @@
 //! so this drives a private headless sway and types into it.
 
 use klemmbrett::{
-    ArboardBackend, Backend, HistoryStore, Selection, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH,
-    HISTORY_BUS_NAME,
+    request_show_menu_on, ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME,
 };
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -218,15 +217,7 @@ fn show_menu(session: &Session, source: &str, x: i32, y: i32) {
     while Instant::now() < deadline {
         let attempt = zbus::blocking::connection::Builder::address(session.bus_address.as_str())
             .and_then(|builder| builder.build())
-            .and_then(|conn| {
-                conn.call_method(
-                    Some(HISTORY_BUS_NAME),
-                    ACTIVATE_OBJECT_PATH,
-                    Some(ACTIVATE_INTERFACE),
-                    "ShowMenu",
-                    &(source, x, y),
-                )
-            });
+            .and_then(|conn| request_show_menu_on(&conn, HISTORY_BUS_NAME, source, x, y));
         match attempt {
             Ok(_) => return,
             Err(err) => last_error = Some(err),
