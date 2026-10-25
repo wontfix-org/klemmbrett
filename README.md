@@ -102,6 +102,16 @@ source "history" {
   action                 = "copy-to-clipboard"
 }
 
+action "xdg-open" {
+  type    = "exec"
+  command = ["xdg-open", "${value}"]
+}
+
+action "private-firefox" {
+  type    = "exec"
+  command = ["firefox", "--private-window", "${value}"]
+}
+
 source "snippets" {
   type   = "file"
   path   = "snippets.yaml"
@@ -127,7 +137,13 @@ relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
 `coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
 true, and `action` defaults to `copy-to-clipboard` except `executables`
-(`exec`) and `wayland-windows` (`activate-window`). `launch` defaults to
+(`exec`) and `wayland-windows` (`activate-window`). Named `action` blocks
+extend a built-in handler (`copy-to-clipboard`, `exec`, or
+`activate-window`) with their own settings. `exec` takes an optional
+`command` list (default `["${value}"]`) and substitutes `${value}`,
+`${key}`, and `${label}` from the selected row. `xdg-open` is a shipped
+`exec` preset (`["xdg-open", "${value}"]`) unless the config defines that
+name. Built-in names cannot be redefined. `launch` defaults to
 `auto`: `systemd-run --user --scope` when klemmbrett itself is a systemd
 unit (`INVOCATION_ID` is set), otherwise a POSIX double-fork + `setsid`.
 Set `launch = "posix"`, `launch = "systemd-run"`, or a wrapper list such as
@@ -155,9 +171,9 @@ or the equivalent YAML:
 
 Every record requires a value. Its key and label default to the value when
 omitted, and keys must be unique within a source. The popup displays the label.
-Selecting a row runs that source's `action` on the value. `copy-to-clipboard`
-copies it to the clipboard. `xdg-open` and `exec` go through `launch` (`xdg-open`
-plus the value, or the value as a program). `activate-window` focuses a
+Selecting a row runs that source's `action` on the record. `copy-to-clipboard`
+copies the value to the clipboard. `exec` (including shipped `xdg-open`)
+goes through `launch`. `activate-window` focuses a
 toplevel from a `wayland-windows` source via `zwlr_foreign_toplevel_manager_v1`.
 `executables` lists `PATH` (first basename wins). `wayland-windows` lists
 open windows; use `widget = "filter"` for both (the lists are long).
@@ -218,6 +234,10 @@ Shipped palettes (`theme "nord" {}` or `theme = "nord"`):
 | `themes/gruvbox-dark.hcl` | [Gruvbox](https://github.com/morhetz/gruvbox) dark, medium contrast |
 | `themes/catppuccin-mocha.hcl` | [Catppuccin](https://github.com/catppuccin/palette) Mocha |
 | `themes/dracula.hcl` | [Dracula](https://draculatheme.com) |
+| `themes/tokyo-night.hcl` | [Tokyo Night](https://github.com/tokyo-night/tokyo-night-vscode-theme), rounded card |
+| `themes/rose-pine.hcl` | [Rosé Pine](https://rosepinetheme.com), rounded card |
+| `themes/everforest.hcl` | [Everforest](https://github.com/sainnhe/everforest) dark, rounded card |
+| `themes/kanagawa.hcl` | [Kanagawa](https://github.com/rebelot/kanagawa.nvim) wave, rounded card |
 
 ## D-Bus
 

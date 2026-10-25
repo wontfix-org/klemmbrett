@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::launch::Launch;
 use crate::theme::{
     parse_document_at, presentation_for_source, theme_from_document, HclDocument, HclValue,
-    Location, Presentation, RawSource,
+    Location, Presentation, RawAction, RawSource,
 };
 use crate::{
     default_db_path, Theme, DEFAULT_COALESCE_GROWING, DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
@@ -37,44 +37,54 @@ impl Default for PopupConfig {
 }
 
 /// What happens when a popup row from this source is chosen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SelectAction {
     #[default]
     CopyToClipboard,
-    XdgOpen,
-    Exec,
+    Exec {
+        command: Vec<String>,
+    },
     ActivateWindow,
 }
 
 impl SelectAction {
-    pub fn parse(name: &str) -> Option<Self> {
+    fn builtin(name: &str) -> Option<Self> {
         match name {
             "copy-to-clipboard" => Some(Self::CopyToClipboard),
-            "xdg-open" => Some(Self::XdgOpen),
-            "exec" => Some(Self::Exec),
+            "exec" => Some(Self::default_exec()),
             "activate-window" => Some(Self::ActivateWindow),
             _ => None,
         }
     }
 
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::CopyToClipboard => "copy-to-clipboard",
-            Self::XdgOpen => "xdg-open",
-            Self::Exec => "exec",
-            Self::ActivateWindow => "activate-window",
+    fn is_reserved(name: &str) -> bool {
+        matches!(name, "copy-to-clipboard" | "exec" | "activate-window")
+    }
+
+    fn default_exec() -> Self {
+        Self::Exec {
+            command: vec!["${value}".into()],
         }
     }
 
-    fn supported() -> &'static str {
-        "copy-to-clipboard, xdg-open, exec, or activate-window"
+    fn shipped_xdg_open() -> Self {
+        Self::Exec {
+            command: vec!["xdg-open".into(), "${value}".into()],
+        }
     }
 
     fn default_for_type(ty: &str) -> Self {
         match ty {
-            "executables" => Self::Exec,
+            "executables" => Self::default_exec(),
             "wayland-windows" => Self::ActivateWindow,
             _ => Self::CopyToClipboard,
+        }
+    }
+
+    pub fn argv(&self, key: &str, label: &str, value: &str) -> Option<Vec<String>> {
+        match self {
+            Self::Exec { command } => Some(interpolate_command(command, key, label, value)),
+            _ => None,
         }
     }
 }
@@ -133,7 +143,7 @@ impl SourceConfig {
             Self::ClipboardHistory { action, .. }
             | Self::File { action, .. }
             | Self::Executables { action, .. }
-            | Self::WaylandWindows { action, .. } => *action,
+            | Self::WaylandWindows { action, .. } => action.clone(),
         }
     }
 }
@@ -180,12 +190,13 @@ pub fn load_config(explicit: Option<&Path>) -> Result<Config, String> {
 pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
     let mut doc = parse_document_at(text, base_dir)?;
     let (label_max, launch) = parse_configuration(&doc.configuration)?;
+    let actions = collect_actions(&doc)?;
     let raw_sources = std::mem::take(&mut doc.sources);
     let mut sources = Vec::new();
     let mut names = HashSet::new();
 
     for raw in raw_sources {
-        let source = source_from_raw(raw, &doc, base_dir)?;
+        let source = source_from_raw(raw, &doc, base_dir, &actions)?;
         let name = source.name().to_owned();
         if name.trim().is_empty() {
             return Err("source name must not be empty".into());
@@ -261,10 +272,11 @@ fn source_from_raw(
     raw: RawSource,
     doc: &HclDocument,
     base_dir: &Path,
+    actions: &BTreeMap<String, SelectAction>,
 ) -> Result<SourceConfig, String> {
     let name = raw.name;
     let presentation = source_presentation(&name, &raw.properties, doc, base_dir)?;
-    let action = parse_select_action(&name, &raw.properties)?;
+    let action = parse_select_action(&name, &raw.properties, actions)?;
     let ty = raw
         .properties
         .get("type")
@@ -274,6 +286,7 @@ fn source_from_raw(
     match ty {
         "clipboard-history" => {
             reject_unknown(
+                "source",
                 &name,
                 &raw.properties,
                 &[
@@ -312,6 +325,7 @@ fn source_from_raw(
         }
         "file" => {
             reject_unknown(
+                "source",
                 &name,
                 &raw.properties,
                 &[
@@ -345,6 +359,7 @@ fn source_from_raw(
         }
         "executables" => {
             reject_unknown(
+                "source",
                 &name,
                 &raw.properties,
                 &["type", "widget", "theme", "location", "action"],
@@ -357,6 +372,7 @@ fn source_from_raw(
         }
         "wayland-windows" => {
             reject_unknown(
+                "source",
                 &name,
                 &raw.properties,
                 &["type", "widget", "theme", "location", "action"],
@@ -376,16 +392,156 @@ fn source_from_raw(
 fn parse_select_action(
     source: &str,
     properties: &BTreeMap<String, HclValue>,
+    actions: &BTreeMap<String, SelectAction>,
 ) -> Result<Option<SelectAction>, String> {
     match optional_name(properties, "action")? {
         None => Ok(None),
-        Some(name) => SelectAction::parse(&name).map(Some).ok_or_else(|| {
-            format!(
-                "source {source:?}: unknown action {name}; expected {}",
-                SelectAction::supported()
-            )
-        }),
+        Some(name) => resolve_action_name(&name, actions)
+            .map(Some)
+            .map_err(|err| format!("source {source:?}: {err}")),
     }
+}
+
+fn collect_actions(doc: &HclDocument) -> Result<BTreeMap<String, SelectAction>, String> {
+    let mut actions = BTreeMap::new();
+    for (name, raw) in &doc.actions {
+        if SelectAction::is_reserved(name) {
+            return Err(format!(
+                "action {name:?} is a built-in and cannot be redefined"
+            ));
+        }
+        actions.insert(name.clone(), action_from_raw(name, raw)?);
+    }
+    actions
+        .entry("xdg-open".into())
+        .or_insert_with(SelectAction::shipped_xdg_open);
+    Ok(actions)
+}
+
+fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> {
+    let ty = raw
+        .properties
+        .get("type")
+        .and_then(HclValue::as_ident)
+        .ok_or_else(|| format!("action {name:?}: type is required"))?;
+    match ty {
+        "copy-to-clipboard" => {
+            reject_unknown("action", name, &raw.properties, &["type"])?;
+            Ok(SelectAction::CopyToClipboard)
+        }
+        "activate-window" => {
+            reject_unknown("action", name, &raw.properties, &["type"])?;
+            Ok(SelectAction::ActivateWindow)
+        }
+        "exec" => {
+            reject_unknown("action", name, &raw.properties, &["type", "command"])?;
+            let command = match raw.properties.get("command") {
+                None => vec!["${value}".into()],
+                Some(value) => {
+                    let items = value.as_list().ok_or_else(|| {
+                        format!("action {name:?}: command must be a list of strings")
+                    })?;
+                    if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
+                        return Err(format!(
+                            "action {name:?}: command must be a non-empty list of strings"
+                        ));
+                    }
+                    for item in items {
+                        validate_placeholders(name, item)?;
+                    }
+                    items.to_vec()
+                }
+            };
+            Ok(SelectAction::Exec { command })
+        }
+        other => Err(format!(
+            "action {name:?}: unknown type {other}; expected copy-to-clipboard, exec, or activate-window"
+        )),
+    }
+}
+
+fn resolve_action_name(
+    name: &str,
+    actions: &BTreeMap<String, SelectAction>,
+) -> Result<SelectAction, String> {
+    if let Some(action) = actions.get(name) {
+        return Ok(action.clone());
+    }
+    SelectAction::builtin(name).ok_or_else(|| {
+        format!(
+            "unknown action {name}; expected {}",
+            supported_actions(actions)
+        )
+    })
+}
+
+fn supported_actions(actions: &BTreeMap<String, SelectAction>) -> String {
+    let mut names: Vec<&str> = vec!["copy-to-clipboard", "exec", "activate-window"];
+    for name in actions.keys() {
+        if !names.contains(&name.as_str()) {
+            names.push(name);
+        }
+    }
+    match names.as_slice() {
+        [] => String::new(),
+        [only] => (*only).to_owned(),
+        [left, right] => format!("{left} or {right}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
+fn validate_placeholders(action: &str, input: &str) -> Result<(), String> {
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            return Err(format!(
+                "action {action:?}: unclosed placeholder in {input:?}"
+            ));
+        };
+        let token = &after[..end];
+        if !matches!(token, "value" | "key" | "label") {
+            return Err(format!(
+                "action {action:?}: unknown placeholder ${{{token}}}; expected ${{value}}, ${{key}}, or ${{label}}"
+            ));
+        }
+        rest = &after[end + 1..];
+    }
+    Ok(())
+}
+
+pub fn interpolate_command(command: &[String], key: &str, label: &str, value: &str) -> Vec<String> {
+    command
+        .iter()
+        .map(|part| interpolate_arg(part, key, label, value))
+        .collect()
+}
+
+fn interpolate_arg(input: &str, key: &str, label: &str, value: &str) -> String {
+    let mut out = String::new();
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let replacement = match &after[..end] {
+            "value" => value,
+            "key" => key,
+            "label" => label,
+            _ => {
+                out.push_str(&rest[start..start + 2 + end + 1]);
+                rest = &after[end + 1..];
+                continue;
+            }
+        };
+        out.push_str(replacement);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn source_presentation(
@@ -430,14 +586,15 @@ fn optional_name(
 }
 
 fn reject_unknown(
-    source: &str,
+    kind: &str,
+    name: &str,
     properties: &BTreeMap<String, HclValue>,
     allowed: &[&str],
 ) -> Result<(), String> {
     for key in properties.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(format!(
-                "source {source:?}: unknown property {key}; supported: {}",
+                "{kind} {name:?}: unknown property {key}; supported: {}",
                 allowed.join(", ")
             ));
         }
@@ -673,7 +830,7 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.sources[0].action(), SelectAction::XdgOpen);
+        assert_eq!(config.sources[0].action(), SelectAction::shipped_xdg_open());
     }
 
     #[test]
@@ -686,7 +843,7 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.sources[0].action(), SelectAction::Exec);
+        assert_eq!(config.sources[0].action(), SelectAction::default_exec());
         assert_eq!(config.sources[1].action(), SelectAction::ActivateWindow);
         assert!(matches!(
             config.sources[0],
@@ -739,6 +896,133 @@ mod tests {
         assert!(error.contains("unknown action type-as-keys"), "{error}");
         assert!(error.contains("copy-to-clipboard"), "{error}");
         assert!(error.contains("xdg-open"), "{error}");
+    }
+
+    #[test]
+    fn custom_action_is_selectable_by_name() {
+        let config = parse_config(
+            r#"
+                action "private-firefox" {
+                    type    = "exec"
+                    command = ["firefox", "--private-window", "${value}"]
+                }
+                source "links" {
+                    type   = "file"
+                    path   = "links.yaml"
+                    format = "yaml"
+                    action = "private-firefox"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.sources[0].action(),
+            SelectAction::Exec {
+                command: vec![
+                    "firefox".into(),
+                    "--private-window".into(),
+                    "${value}".into()
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn exec_command_interpolates_key_label_and_value() {
+        assert_eq!(
+            interpolate_command(
+                &[
+                    "notify-send".into(),
+                    "${label}".into(),
+                    "${key}: ${value}".into()
+                ],
+                "url",
+                "Project website",
+                "https://example.com"
+            ),
+            vec!["notify-send", "Project website", "url: https://example.com"]
+        );
+    }
+
+    #[test]
+    fn unknown_command_placeholder_is_rejected() {
+        let error = parse_config(
+            r#"
+                action "bad" {
+                    type    = "exec"
+                    command = ["echo", "$${title}"]
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown placeholder ${title}"), "{error}");
+    }
+
+    #[test]
+    fn reserved_action_name_cannot_be_redefined() {
+        let error = parse_config(
+            r#"action "exec" { type = "copy-to-clipboard" }"#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("built-in"), "{error}");
+    }
+
+    #[test]
+    fn empty_exec_command_is_rejected() {
+        let error = parse_config(
+            r#"
+                action "open" {
+                    type    = "exec"
+                    command = []
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("non-empty"), "{error}");
+    }
+
+    #[test]
+    fn action_type_must_be_a_built_in() {
+        let error = parse_config(
+            r#"
+                action "open" { type = "exec" }
+                action "also" { type = "open" }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown type open"), "{error}");
+        assert!(error.contains("activate-window"), "{error}");
+    }
+
+    #[test]
+    fn shipped_xdg_open_can_be_overridden() {
+        let config = parse_config(
+            r#"
+                action "xdg-open" {
+                    type    = "exec"
+                    command = ["handlr", "open", "${value}"]
+                }
+                source "links" {
+                    type   = "file"
+                    path   = "links.yaml"
+                    format = "yaml"
+                    action = "xdg-open"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.sources[0].action(),
+            SelectAction::Exec {
+                command: vec!["handlr".into(), "open".into(), "${value}".into()]
+            }
+        );
     }
 
     #[test]

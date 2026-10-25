@@ -3,7 +3,7 @@
 use super::{color, units, Edges, Location, Orientation, Rgba, Widget};
 use hcl::eval::{Context, Evaluate, FuncArgs, FuncDef, ParamType};
 use hcl::{Block, Body, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -179,6 +179,7 @@ impl WidgetRecipe {
 pub struct HclDocument {
     pub configuration: BTreeMap<String, HclValue>,
     pub sources: Vec<RawSource>,
+    pub actions: BTreeMap<String, RawAction>,
     pub theme_refs: Vec<String>,
     pub named_widgets: BTreeMap<String, WidgetRecipe>,
     pub(super) theme: ThemeSpec,
@@ -188,6 +189,11 @@ pub struct HclDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawSource {
     pub name: String,
+    pub properties: BTreeMap<String, HclValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawAction {
     pub properties: BTreeMap<String, HclValue>,
 }
 
@@ -225,9 +231,10 @@ pub(super) fn parse_spec_at(text: &str, base_dir: &Path) -> Result<ThemeSpec, St
         || !doc.sources.is_empty()
         || !doc.theme_refs.is_empty()
         || !doc.named_widgets.is_empty()
+        || !doc.actions.is_empty()
     {
         return Err(
-            "configuration, source, widget, and theme belong in the config file, not a theme"
+            "configuration, source, action, widget, and theme belong in the config file, not a theme"
                 .into(),
         );
     }
@@ -297,6 +304,9 @@ fn eval_context<'a>(
     source.insert("name".into(), Value::from(source_name.unwrap_or_default()));
     source.insert("type".into(), Value::from(source_kind.unwrap_or_default()));
     ctx.declare_var("source", Value::Object(source));
+    ctx.declare_var("value", Value::from("${value}"));
+    ctx.declare_var("key", Value::from("${key}"));
+    ctx.declare_var("label", Value::from("${label}"));
     declare_funcs(&mut ctx);
     ctx
 }
@@ -584,6 +594,7 @@ fn import_block(
 }
 
 fn ingest_evaluated(body: &Body, doc: &mut HclDocument, allow_config: bool) -> Result<(), String> {
+    let mut seen_actions = HashSet::new();
     for block in body.blocks() {
         match block.identifier() {
             "import" | "locals" | "widget" => {}
@@ -602,6 +613,21 @@ fn ingest_evaluated(body: &Body, doc: &mut HclDocument, allow_config: bool) -> R
                     name,
                     properties: attributes_as_values(block.body())?,
                 });
+            }
+            "action" if allow_config => {
+                let name = one_label(block, "action")?;
+                if name.trim().is_empty() {
+                    return Err("action name must not be empty".into());
+                }
+                if !seen_actions.insert(name.clone()) {
+                    return Err(format!("action name {name:?} is configured more than once"));
+                }
+                doc.actions.insert(
+                    name,
+                    RawAction {
+                        properties: attributes_as_values(block.body())?,
+                    },
+                );
             }
             "media" => ingest_media(block, &mut doc.theme)?,
             "defaults" => {
@@ -702,7 +728,7 @@ fn widget_from_body(body: &Body) -> Result<WidgetRecipe, String> {
 fn apply_catalog(spec: &mut ThemeSpec, name: &str, block: &Block) -> Result<(), String> {
     let widget = parse_widget(name).ok_or_else(|| {
         format!(
-            "unknown block {name}; supported: configuration, source, widget, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
+            "unknown block {name}; supported: configuration, source, action, widget, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
         )
     })?;
     let state = match block.labels().first().map(|label| label.as_str()) {
@@ -965,6 +991,7 @@ fn reject_labels(block: &Block, kind: &str) -> Result<(), String> {
 fn merge_document(into: &mut HclDocument, from: HclDocument) {
     into.configuration.extend(from.configuration);
     into.sources.extend(from.sources);
+    into.actions.extend(from.actions);
     into.theme_refs.extend(from.theme_refs);
     into.named_widgets.extend(from.named_widgets);
     into.theme.merge(from.theme);
@@ -1346,6 +1373,59 @@ window { padding = 3 }
     fn parse_spec_rejects_named_widget_blocks() {
         let error = parse_spec(r#"widget "filter" { location = "center" }"#).unwrap_err();
         assert!(error.contains("belong in the config file"), "{error}");
+    }
+
+    #[test]
+    fn parse_spec_rejects_named_action_blocks() {
+        let error = parse_spec(
+            r#"
+                action "xdg-open" {
+                    type    = "exec"
+                    command = ["xdg-open", "${value}"]
+                }
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.contains("belong in the config file"), "{error}");
+    }
+
+    #[test]
+    fn document_parses_named_actions() {
+        let doc = parse_document(
+            r#"
+                action "xdg-open" {
+                    type    = "exec"
+                    command = ["xdg-open", "${value}"]
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.actions["xdg-open"]
+                .properties
+                .get("type")
+                .and_then(HclValue::as_ident),
+            Some("exec")
+        );
+        assert_eq!(
+            doc.actions["xdg-open"]
+                .properties
+                .get("command")
+                .and_then(HclValue::as_list),
+            Some(["xdg-open".to_string(), "${value}".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn duplicate_action_names_in_one_file_are_rejected() {
+        let error = parse_document(
+            r#"
+                action "open" { type = "exec" }
+                action "open" { type = "copy-to-clipboard" }
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.contains("configured more than once"), "{error}");
     }
 
     #[test]
