@@ -201,7 +201,7 @@ pub use activate_api::{ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH, HI
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
     config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
-    PopupConfig, SourceConfig,
+    PopupConfig, SelectAction, SourceConfig,
 };
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
