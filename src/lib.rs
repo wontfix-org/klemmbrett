@@ -192,6 +192,7 @@ impl<B: Backend> ClipboardSync<B> {
 mod activate_api;
 mod clipboard_history;
 mod config;
+mod executables;
 mod history;
 mod launch;
 mod popup;

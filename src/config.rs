@@ -42,6 +42,7 @@ pub enum SelectAction {
     #[default]
     CopyToClipboard,
     XdgOpen,
+    Exec,
 }
 
 impl SelectAction {
@@ -49,6 +50,7 @@ impl SelectAction {
         match name {
             "copy-to-clipboard" => Some(Self::CopyToClipboard),
             "xdg-open" => Some(Self::XdgOpen),
+            "exec" => Some(Self::Exec),
             _ => None,
         }
     }
@@ -57,15 +59,19 @@ impl SelectAction {
         match self {
             Self::CopyToClipboard => "copy-to-clipboard",
             Self::XdgOpen => "xdg-open",
+            Self::Exec => "exec",
         }
     }
 
     fn supported() -> &'static str {
-        "copy-to-clipboard or xdg-open"
+        "copy-to-clipboard, xdg-open, or exec"
     }
 
-    fn default_for_type(_ty: &str) -> Self {
-        Self::CopyToClipboard
+    fn default_for_type(ty: &str) -> Self {
+        match ty {
+            "executables" => Self::Exec,
+            _ => Self::CopyToClipboard,
+        }
     }
 }
 
@@ -87,26 +93,35 @@ pub enum SourceConfig {
         presentation: Presentation,
         action: SelectAction,
     },
+    Executables {
+        name: String,
+        presentation: Presentation,
+        action: SelectAction,
+    },
 }
 
 impl SourceConfig {
     pub fn name(&self) -> &str {
         match self {
-            Self::ClipboardHistory { name, .. } | Self::File { name, .. } => name,
+            Self::ClipboardHistory { name, .. }
+            | Self::File { name, .. }
+            | Self::Executables { name, .. } => name,
         }
     }
 
     pub fn presentation(&self) -> &Presentation {
         match self {
-            Self::ClipboardHistory { presentation, .. } | Self::File { presentation, .. } => {
-                presentation
-            }
+            Self::ClipboardHistory { presentation, .. }
+            | Self::File { presentation, .. }
+            | Self::Executables { presentation, .. } => presentation,
         }
     }
 
     pub fn action(&self) -> SelectAction {
         match self {
-            Self::ClipboardHistory { action, .. } | Self::File { action, .. } => *action,
+            Self::ClipboardHistory { action, .. }
+            | Self::File { action, .. }
+            | Self::Executables { action, .. } => *action,
         }
     }
 }
@@ -316,8 +331,20 @@ fn source_from_raw(
                 action,
             })
         }
+        "executables" => {
+            reject_unknown(
+                &name,
+                &raw.properties,
+                &["type", "widget", "theme", "location", "action"],
+            )?;
+            Ok(SourceConfig::Executables {
+                name,
+                presentation,
+                action,
+            })
+        }
         other => Err(format!(
-            "source {name:?}: unknown type {other}; expected clipboard-history or file"
+            "source {name:?}: unknown type {other}; expected clipboard-history, file, or executables"
         )),
     }
 }
@@ -623,6 +650,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.sources[0].action(), SelectAction::XdgOpen);
+    }
+
+    #[test]
+    fn executables_default_to_exec() {
+        let config = parse_config(
+            r#"source "run" { type = "executables" }"#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.sources[0].action(), SelectAction::Exec);
+        assert!(matches!(
+            config.sources[0],
+            SourceConfig::Executables { .. }
+        ));
     }
 
     #[test]
