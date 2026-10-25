@@ -102,6 +102,7 @@ pub enum HclValue {
     Number(f32),
     String(String),
     Bool(bool),
+    List(Vec<String>),
 }
 
 impl HclValue {
@@ -112,6 +113,13 @@ impl HclValue {
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::String(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub fn as_list(&self) -> Option<&[String]> {
+        match self {
+            Self::List(items) => Some(items),
             _ => None,
         }
     }
@@ -924,8 +932,18 @@ fn value_to_hcl(value: &Value) -> Result<HclValue, String> {
     if let Some(text) = value.as_str() {
         return Ok(HclValue::String(text.to_owned()));
     }
+    if let Some(items) = value.as_array() {
+        let mut list = Vec::with_capacity(items.len());
+        for item in items {
+            let text = item
+                .as_str()
+                .ok_or_else(|| format!("expected a list of strings, found {item}"))?;
+            list.push(text.to_owned());
+        }
+        return Ok(HclValue::List(list));
+    }
     Err(format!(
-        "expected number, string, or boolean, found {value}"
+        "expected number, string, boolean, or list, found {value}"
     ))
 }
 
