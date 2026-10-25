@@ -5,8 +5,10 @@ popup sources can provide values to copy to the clipboard, including optional
 SQLite clipboard history and text, JSON, or YAML files.
 
 A GPUI popup lists a configured source. Entries longer than a configurable length are
-shown shortened. The first 35 items can be chosen with accelerator keys
-(`1`–`9`, then `a`–`z`); `Up`/`Down` and `Enter` also work, and `Escape`
+shown shortened. A source can pack either today's accelerator menu or a
+filter: `widget: filter` adds an input bar and types into a case-insensitive
+label filter; without that, the first 35 items can be chosen with accelerator keys
+(`1`–`9`, then `a`–`z`). `Up`/`Down` and `Enter` also work, and `Escape`
 closes the popup. A StatusNotifierItem tray icon has a Sources submenu.
 
 The popup takes keyboard focus as soon as it appears, without needing the
@@ -43,7 +45,7 @@ klemmbrett
 To use a different configuration file:
 
 ```sh
-klemmbrett --config /path/to/config.toml
+klemmbrett --config /path/to/config.hcl
 ```
 
 Install a systemd user unit bound to `graphical-session.target` so the
@@ -55,8 +57,8 @@ klemmbrett --install-systemd
 
 That writes `$XDG_CONFIG_HOME/systemd/user/klemmbrett.service` (normally
 `~/.config/systemd/user/klemmbrett.service`) as a `Type=dbus` unit for
-`org.klemmbrett`, and a session D-Bus service file at
-`$XDG_DATA_HOME/dbus-1/services/org.klemmbrett.service`. The unit is
+`org.wontfix.klemmbrett`, and a session D-Bus service file at
+`$XDG_DATA_HOME/dbus-1/services/org.wontfix.klemmbrett.service`. The unit is
 pulled in by `graphical-session.target` so history is recorded from
 login. The D-Bus file is a fallback: a `ShowMenu` call still starts the
 unit if the bus name is missing. If this process can see
@@ -66,37 +68,54 @@ Pass `--config` as well to pin that file in `ExecStart`.
 ## Configuration
 
 The default configuration is
-`$XDG_CONFIG_HOME/klemmbrett/config.toml` (normally
-`~/.config/klemmbrett/config.toml`). If it does not exist, clipboard/primary
+`$XDG_CONFIG_HOME/klemmbrett/config.hcl` (normally
+`~/.config/klemmbrett/config.hcl`). If it does not exist, clipboard/primary
 selection syncing still runs, but no popup sources or history database are
-initialized.
+initialized. A leftover `config.toml` in that directory is
+rejected with a convert hint.
 
-```toml
-[popup]
-label-max = 64
+```hcl
+configuration {
+  label_max = 64
+}
 
-[[sources]]
-name = "history"
-type = "clipboard-history"
-history-limit = 50
-coalesce-growing = true
-skip-whitespace-only = true
+theme "nord" {}
 
-[[sources]]
-name = "snippets"
-type = "file"
-path = "snippets.yaml"
-format = "yaml"
+widget "filter" {
+  location = "center"
+  window { children = ["inputbar", "listview"] }
+  inputbar {
+    children = ["prompt", "entry"]
+    padding  = 8
+    spacing  = 8
+  }
+}
+
+source "history" {
+  type                   = "clipboard-history"
+  history_limit          = 50
+  coalesce_growing       = true
+  skip_whitespace_only   = true
+  widget                 = "filter"
+}
+
+source "snippets" {
+  type   = "file"
+  path   = "snippets.yaml"
+  format = "yaml"
+  widget = "menu"
+  theme  = "dracula"
+}
 ```
 
 Source names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file. The history `db` defaults to
-`$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history-limit` defaults to 50,
-`coalesce-growing` defaults to true, and `skip-whitespace-only` defaults to
+`$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
+`coalesce_growing` defaults to true, and `skip_whitespace_only` defaults to
 true. Coalescing replaces the newest row when a new selection contains it,
 avoiding one row per character while a selection grows. Whitespace-only
 selections (spaces, tabs, newlines) are not stored unless
-`skip-whitespace-only` is set to false.
+`skip_whitespace_only` is set to false.
 
 File sources are read again whenever their popup opens. `text` format uses one
 non-empty line per record. JSON and YAML files contain an array whose records
@@ -119,15 +138,72 @@ Every record requires a value. Its key and label default to the value when
 omitted, and keys must be unique within a source. The popup displays the label
 and copies the value.
 
+## Popup theme and widgets
+
+A full catalog and property reference is in [`docs/theming.md`](docs/theming.md).
+
+The same `config.hcl` styles the popup. `theme "nord" {}` is a file-wide
+default palette; `theme = "dracula"` on a source replaces it for that source
+only. Named `widget` blocks pack the tree and set `location` (`pointer`,
+`center`, `north east`). `widget = "menu"` and `widget = "filter"` are
+shipped. A source with no `widget` keeps the list-only card at the pointer.
+
+If `window` packs an `inputbar`, typing filters labels and accelerators are
+off. Otherwise `1`–`9` / `a`–`z` still pick a row.
+
+```hcl
+theme "nord" {}
+
+element "selected" { background_color = hex("5e81ac") }
+element { children = ["element-text", "element-index"] }
+```
+
+Catalog: `overlay`, `window`, `listview`, `element`, `element-index`,
+`element-text`, `inputbar`, `prompt`, `entry`. `element` accepts the states
+`selected` and `hover` as a label. `window` may pack `inputbar` and
+`listview`; `inputbar` may pack `prompt` and `entry`; `element` may pack
+`element-index` and `element-text` (order and `orientation` are honored).
+`enabled = false` hides a widget.
+
+Properties: `enabled`, `padding`, `margin`, `border`, `border_radius`,
+`border_color`, `background_color`, `background_image`, `text_color`,
+`spacing`, `orientation`, `children`, `width`, `height`, `max_height`,
+`font_size`, `location`. Lengths are numbers (pixels) or `px()`, `em()`,
+`ch()`, `mm()`, `pct()` / `vpct()` (of a 1920×1080 monitor at load). HCL
+`+` / `-` / `*` / `/` replace `calc()`. Padding/border/margin take a number
+or a list of 1–4 numbers. Colors are `hex()`, `rgb[a]()`, `hsl[a]()`,
+`hwb()`, `cmyk()`, `color("SeaGreen")`, or `transparent()`. `locals` and
+`local.name` replace CSS variables; `env("NAME", default)` and `inherit()`
+work. `import "extra.hcl" {}` merges another file (`optional = true` if
+missing); `media { min_width = 120 … }` is evaluated against that same
+canvas.
+
+`window { location = "north east" }` uses the 9-point grid; `pointer` sits
+at the pointer. A source `location` still overrides.
+
+`background_image` accepts a color and otherwise paints transparent. Extra
+widgets (preview) are not implemented.
+
+Shipped palettes (`theme "nord" {}` or `theme = "nord"`):
+
+| File | Palette |
+| --- | --- |
+| `themes/solarized-dark.hcl` | [Solarized](https://ethanschoonover.com/solarized/) dark (`base03` / `base0`) |
+| `themes/solarized-light.hcl` | Solarized light (`base3` / `base00`) |
+| `themes/nord.hcl` | [Nord](https://www.nordtheme.com/docs/colors-and-palettes) polar night |
+| `themes/gruvbox-dark.hcl` | [Gruvbox](https://github.com/morhetz/gruvbox) dark, medium contrast |
+| `themes/catppuccin-mocha.hcl` | [Catppuccin](https://github.com/catppuccin/palette) Mocha |
+| `themes/dracula.hcl` | [Dracula](https://draculatheme.com) |
+
 ## D-Bus
 
-The process owns `org.klemmbrett` on the session bus:
+The process owns `org.wontfix.klemmbrett` on the session bus:
 
 | | |
 | --- | --- |
-| Name | `org.klemmbrett` |
-| Object | `/org/klemmbrett/History` |
-| Interface | `org.klemmbrett.History` |
+| Name | `org.wontfix.klemmbrett` |
+| Object | `/org/wontfix/klemmbrett/History` |
+| Interface | `org.wontfix.klemmbrett.History` |
 | Method | `ShowMenu(sii)` — source name, then `x`, `y` in global compositor coordinates |
 
 `x` and `y` are the pointer location in the compositor's global layout (the
@@ -137,9 +213,9 @@ sliding so it stays on that output.
 
 ```sh
 busctl --user call \
-    org.klemmbrett \
-    /org/klemmbrett/History \
-    org.klemmbrett.History \
+    org.wontfix.klemmbrett \
+    /org/wontfix/klemmbrett/History \
+    org.wontfix.klemmbrett.History \
     ShowMenu sii history 120 80
 ```
 
@@ -194,9 +270,9 @@ subprocess.check_call(
         "busctl",
         "--user",
         "call",
-        "org.klemmbrett",
-        "/org/klemmbrett/History",
-        "org.klemmbrett.History",
+        "org.wontfix.klemmbrett",
+        "/org/wontfix/klemmbrett/History",
+        "org.wontfix.klemmbrett.History",
         "ShowMenu",
         "sii",
         "history",
@@ -242,31 +318,20 @@ async def _session_bus():
 
 async def _show_source(source, x, y):
     global _bus
+    message = Message(
+        destination="org.wontfix.klemmbrett",
+        path="/org/wontfix/klemmbrett/History",
+        interface="org.wontfix.klemmbrett.History",
+        member="ShowMenu",
+        signature="sii",
+        body=[source, int(x), int(y)],
+    )
     try:
-        bus = await _session_bus()
-        reply = await bus.call(
-            Message(
-                destination="org.klemmbrett",
-                path="/org/klemmbrett/History",
-                interface="org.klemmbrett.History",
-                member="ShowMenu",
-                signature="sii",
-                body=[source, int(x), int(y)],
-            )
-        )
+        reply = await (await _session_bus()).call(message)
     except Exception:
+        # The cached connection can go stale; drop it and try once more.
         _bus = None
-        bus = await _session_bus()
-        reply = await bus.call(
-            Message(
-                destination="org.klemmbrett",
-                path="/org/klemmbrett/History",
-                interface="org.klemmbrett.History",
-                member="ShowMenu",
-                signature="sii",
-                body=[source, int(x), int(y)],
-            )
-        )
+        reply = await (await _session_bus()).call(message)
     if reply.message_type == MessageType.ERROR:
         logger.error(
             "Klemmbrett ShowMenu failed: %s %s",

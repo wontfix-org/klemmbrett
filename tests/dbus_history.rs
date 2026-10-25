@@ -22,7 +22,7 @@ fn show_menu_forwards_the_source_and_pointer_coordinates() {
     });
 
     let name = format!(
-        "org.klemmbrett.test{}",
+        "org.wontfix.klemmbrett.test{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

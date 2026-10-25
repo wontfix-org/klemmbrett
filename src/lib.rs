@@ -195,6 +195,7 @@ mod history;
 mod history_api;
 mod popup;
 mod source;
+mod theme;
 
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
@@ -207,10 +208,14 @@ pub use history::{
 };
 pub use history_api::{HistoryApi, HISTORY_BUS_NAME, HISTORY_INTERFACE, HISTORY_OBJECT_PATH};
 pub use popup::{
-    accelerator_for, index_for_accelerator, menu_item_spec, place_on_outputs, position_on_outputs,
-    MenuItemSpec, OutputGeom,
+    accelerator_for, filter_records, index_for_accelerator, menu_item_spec, place_at_location,
+    place_on_outputs, position_on_outputs, MenuItemSpec, OutputGeom,
 };
 pub use source::{Record, Sources};
+pub use theme::{
+    parse_document, parse_theme, Edges, HclDocument, HclValue, Location, Orientation, Presentation,
+    RawSource, Rgba, Style, Theme, Widget,
+};
 
 #[cfg(target_os = "linux")]
 pub use arboard_backend::ArboardBackend;

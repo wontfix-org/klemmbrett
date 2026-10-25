@@ -7,7 +7,8 @@
 //! so this drives a private headless sway and types into it.
 
 use klemmbrett::{
-    ArboardBackend, Backend, HistoryStore, Selection, HISTORY_INTERFACE, HISTORY_OBJECT_PATH,
+    ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME, HISTORY_INTERFACE,
+    HISTORY_OBJECT_PATH,
 };
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -159,11 +160,11 @@ impl Session {
     }
 
     fn start_app(&mut self, db: &std::path::Path) {
-        let config = self.runtime_dir.join("config.toml");
+        let config = self.runtime_dir.join("config.hcl");
         fs::write(
             &config,
             format!(
-                "[[sources]]\nname = \"history\"\ntype = \"clipboard-history\"\ndb = {:?}\n",
+                "source \"history\" {{\n    type = \"clipboard-history\"\n    db   = {:?}\n}}\n",
                 db
             ),
         )
@@ -219,7 +220,7 @@ fn show_menu(session: &Session, source: &str, x: i32, y: i32) {
             .and_then(|builder| builder.build())
             .and_then(|conn| {
                 conn.call_method(
-                    Some("org.klemmbrett"),
+                    Some(HISTORY_BUS_NAME),
                     HISTORY_OBJECT_PATH,
                     Some(HISTORY_INTERFACE),
                     "ShowMenu",
