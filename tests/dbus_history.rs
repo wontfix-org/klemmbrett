@@ -1,7 +1,7 @@
 //! Talks to the activate object over the session bus, the same way a compositor
 //! key binding would.
 
-use klemmbrett::{ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH};
+use klemmbrett::{request_show_menu, ActivateApi, ACTIVATE_OBJECT_PATH};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -41,37 +41,14 @@ fn show_menu_forwards_the_source_and_pointer_coordinates() {
         }
     };
 
-    let client = match zbus::blocking::Connection::session() {
-        Ok(conn) => conn,
-        Err(err) => {
-            eprintln!("skipping: could not connect to the session bus: {err}");
-            return;
-        }
-    };
-
-    client
-        .call_method(
-            Some(name.as_str()),
-            ACTIVATE_OBJECT_PATH,
-            Some(ACTIVATE_INTERFACE),
-            "ShowMenu",
-            &("snippets", 120_i32, 80_i32),
-        )
-        .expect("ShowMenu should succeed");
+    request_show_menu(&name, "snippets", 120, 80).expect("ShowMenu should succeed");
 
     let (source, x, y) = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("ShowMenu should deliver the source and coordinates to the UI thread");
     assert_eq!((source.as_str(), x, y), ("snippets", 120, 80));
 
-    let error = client
-        .call_method(
-            Some(name.as_str()),
-            ACTIVATE_OBJECT_PATH,
-            Some(ACTIVATE_INTERFACE),
-            "ShowMenu",
-            &("missing", 120_i32, 80_i32),
-        )
+    let error = request_show_menu(&name, "missing", 120, 80)
         .expect_err("an unknown source should be rejected");
     assert!(error.to_string().contains("unknown source"));
 }

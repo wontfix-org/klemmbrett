@@ -66,6 +66,16 @@ unit if the bus name is missing. If this process can see
 `WAYLAND_DISPLAY`, that value is imported into the systemd user manager.
 Pass `--config` as well to pin that file in `ExecStart`.
 
+To open a configured source without spelling out `busctl`:
+
+```sh
+klemmbrett activate history
+klemmbrett activate history 120 80
+```
+
+`x` and `y` are compositor global coordinates and default to `0` `0`.
+The running daemon (or D-Bus activation) still serves the request.
+
 ## Configuration
 
 The default configuration is
@@ -257,6 +267,12 @@ The popup is placed on the output that contains that point, flipping or
 sliding so it stays on that output.
 
 ```sh
+klemmbrett activate history 120 80
+```
+
+That is the same call as:
+
+```sh
 busctl --user call \
     org.wontfix.klemmbrett \
     /org/wontfix/klemmbrett/Activate \
@@ -310,21 +326,7 @@ def coords():
 
 
 x, y = coords()
-subprocess.check_call(
-    [
-        "busctl",
-        "--user",
-        "call",
-        "org.wontfix.klemmbrett",
-        "/org/wontfix/klemmbrett/Activate",
-        "org.wontfix.klemmbrett.Activate",
-        "ShowMenu",
-        "sii",
-        "history",
-        str(x),
-        str(y),
-    ]
-)
+subprocess.check_call(["klemmbrett", "activate", "history", str(x), str(y)])
 ```
 
 ```sh
@@ -337,11 +339,18 @@ In `~/.config/sway/config`:
 bindsym $mod+v exec ~/.config/sway/clip-history.py
 ```
 
+Without pointer coordinates the popup still opens at the origin:
+
+```
+bindsym $mod+v exec klemmbrett activate history
+```
+
 ## Qtile key binding
 
-Qtile's Wayland backend exposes the pointer directly. The example uses
+Qtile's Wayland backend exposes the pointer directly. `lazy.spawn` can run
+`klemmbrett activate history`, or the example below uses
 [dbus-fast](https://github.com/Bluetooth-Devices/dbus-fast) on Qtile's asyncio
-loop (`libqtile.utils.create_task`) so the binding does not fork `busctl`.
+loop (`libqtile.utils.create_task`) so the binding does not fork a helper.
 Qtile already talks to D-Bus through dbus-fast (notifications, StatusNotifier,
 and related widgets), so this matches the compositor's own stack.
 
