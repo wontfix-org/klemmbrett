@@ -5,6 +5,8 @@
 //! own menu key handling stays inert without one. See `ui.rs`.
 
 use super::shorten_label;
+use crate::theme::Location;
+use crate::Record;
 
 /// How a history row should appear in the popup.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +99,60 @@ pub fn position_on_outputs(
 /// would leave the output, the box flips so the opposite edge sits on the
 /// pointer; it then slides to stay inside the output. A popup larger than the
 /// output is pinned to the origin.
+const NORTH_INSET: i32 = 8;
+
+/// Places the card on the output that contains `(x, y)` according to `location`.
+pub fn place_at_location(
+    location: Location,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    outputs: &[OutputGeom],
+    primary: usize,
+) -> Option<(usize, i32, i32)> {
+    match location {
+        Location::Pointer => place_on_outputs(x, y, width, height, outputs, primary),
+        _ => {
+            let (index, _, _) = position_on_outputs(x, y, outputs, primary)?;
+            let output = outputs[index];
+            let width = width.min(output.width).max(0);
+            let height = height.min(output.height).max(0);
+            let max_x = (output.width - width).max(0);
+            let max_y = (output.height - height).max(0);
+            let inset_x = NORTH_INSET.min(max_x);
+            let inset_y = NORTH_INSET.min(max_y);
+            let margin_x = match location {
+                Location::West | Location::NorthWest | Location::SouthWest => inset_x,
+                Location::East | Location::NorthEast | Location::SouthEast => {
+                    max_x.saturating_sub(inset_x)
+                }
+                _ => max_x / 2,
+            };
+            let margin_y = match location {
+                Location::North | Location::NorthEast | Location::NorthWest => inset_y,
+                Location::South | Location::SouthEast | Location::SouthWest => {
+                    max_y.saturating_sub(inset_y)
+                }
+                _ => max_y / 2,
+            };
+            Some((index, margin_x, margin_y))
+        }
+    }
+}
+
+/// Rows whose label contains `query` (case-insensitive). An empty query keeps all rows.
+pub fn filter_records<'a>(records: &'a [Record], query: &str) -> Vec<&'a Record> {
+    if query.is_empty() {
+        return records.iter().collect();
+    }
+    let query = query.to_lowercase();
+    records
+        .iter()
+        .filter(|record| record.label.to_lowercase().contains(&query))
+        .collect()
+}
+
 pub fn place_on_outputs(
     x: i32,
     y: i32,
@@ -287,5 +343,46 @@ mod tests {
     #[test]
     fn no_outputs_means_no_placement() {
         assert_eq!(place_on_outputs(0, 0, 10, 10, &[], 0), None);
+    }
+
+    #[test]
+    fn center_places_the_card_in_the_middle_of_the_output() {
+        assert_eq!(
+            place_at_location(Location::Center, 100, 80, 200, 100, &output(), 0),
+            Some((0, 860, 490))
+        );
+    }
+
+    #[test]
+    fn north_places_the_card_at_the_top_of_the_output() {
+        assert_eq!(
+            place_at_location(Location::North, 100, 80, 200, 100, &output(), 0),
+            Some((0, 860, 8))
+        );
+    }
+
+    #[test]
+    fn south_east_places_the_card_at_the_bottom_right() {
+        assert_eq!(
+            place_at_location(Location::SouthEast, 100, 80, 200, 100, &output(), 0),
+            Some((0, 1712, 972))
+        );
+    }
+
+    #[test]
+    fn filter_matches_labels_case_insensitively() {
+        let records = [
+            Record::new("Alpha"),
+            Record::new("beta"),
+            Record::new("Alphabet"),
+        ];
+        assert_eq!(filter_records(&records, "").len(), 3);
+        assert_eq!(
+            filter_records(&records, "alp")
+                .iter()
+                .map(|record| record.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Alphabet"]
+        );
     }
 }

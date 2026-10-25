@@ -12,14 +12,15 @@
 use crate::dbus::{self, UiCmd};
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
-    div, point, prelude::*, px, rgb, size, transparent_black, uniform_list, App, Bounds, Context,
-    DisplayId, Entity, FocusHandle, Focusable, KeyDownEvent, LinuxWindowBackground, MouseButton,
-    Pixels, QuitMode, ScrollStrategy, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
+    div, point, prelude::*, px, rgba, size, uniform_list, App, Bounds, Context, DisplayId, Entity,
+    FocusHandle, Focusable, KeyDownEvent, LinuxWindowBackground, MouseButton, Pixels, QuitMode,
+    ScrollStrategy, Styled, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
     WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use klemmbrett::{
-    history_candidate, index_for_accelerator, menu_item_spec, place_on_outputs, ArboardBackend,
-    Backend, ClipboardSync, OutputGeom, Record, Selection, Sources, POLL_INTERVAL,
+    filter_records, history_candidate, index_for_accelerator, menu_item_spec, place_at_location,
+    ArboardBackend, Backend, ClipboardSync, Edges, Location, Orientation, OutputGeom, Record,
+    Selection, Sources, Style, Theme, Widget, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -27,16 +28,12 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 
 const TRAY_ICON_NAME: &str = "edit-paste";
 const TRAY_ICON_SIZES: [i32; 4] = [16, 22, 24, 32];
-const ROW_HEIGHT: f32 = 28.0;
-const CHAR_WIDTH: f32 = 9.0;
-const BORDER: f32 = 1.0;
-const MAX_POPUP_HEIGHT: f32 = 600.0;
 
 enum ClipCmd {
     Restore(String),
 }
 
-pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usize) {
+pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usize, theme: Theme) {
     let (tx, rx) = async_channel::unbounded::<UiCmd>();
     let source_names: HashSet<_> = sources.names().into_iter().collect();
     dbus::spawn(source_names, tx.clone());
@@ -46,7 +43,7 @@ pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usi
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(sources, label_max, clip_tx));
+            let app = cx.new(|_cx| Klemmbrett::new(sources, label_max, theme, clip_tx));
             app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
@@ -107,15 +104,22 @@ fn spawn_clipboard(
 struct Klemmbrett {
     sources: Sources,
     label_max: usize,
+    theme: Theme,
     popup: Option<WindowHandle<PopupView>>,
     clip_tx: mpsc::Sender<ClipCmd>,
 }
 
 impl Klemmbrett {
-    fn new(sources: Sources, label_max: usize, clip_tx: mpsc::Sender<ClipCmd>) -> Self {
+    fn new(
+        sources: Sources,
+        label_max: usize,
+        theme: Theme,
+        clip_tx: mpsc::Sender<ClipCmd>,
+    ) -> Self {
         Self {
             sources,
             label_max: label_max.max(1),
+            theme,
             popup: None,
             clip_tx,
         }
@@ -138,10 +142,12 @@ impl Klemmbrett {
     }
 
     fn prewarm_popup(&mut self, cx: &mut Context<Self>) {
-        let Some(placement) = popup_placement(cx, 0, 0, 1, self.label_max) else {
+        let Some(placement) =
+            popup_placement(cx, 0, 0, 1, self.label_max, &self.theme, Location::Pointer)
+        else {
             return;
         };
-        self.open_popup(Vec::new(), placement, false, cx);
+        self.open_popup(Vec::new(), placement, false, String::new(), cx);
     }
 
     fn show_source_menu(&mut self, source: &str, x: i32, y: i32, cx: &mut Context<Self>) {
@@ -152,22 +158,39 @@ impl Klemmbrett {
                 return;
             }
         };
+        let presentation = self
+            .sources
+            .presentation(source)
+            .cloned()
+            .unwrap_or_else(|| klemmbrett::Presentation {
+                theme: self.theme.clone(),
+                location: Location::Pointer,
+            });
 
-        let Some(placement) = popup_placement(cx, x, y, entries.len(), self.label_max) else {
+        let Some(placement) = popup_placement(
+            cx,
+            x,
+            y,
+            entries.len(),
+            self.label_max,
+            &presentation.theme,
+            presentation.location,
+        ) else {
             eprintln!("Failed to place the popup: no displays.");
             return;
         };
 
-        if self.reuse_popup(&entries, &placement, cx) {
+        if self.reuse_popup(&entries, &placement, source, cx) {
             return;
         }
-        self.open_popup(entries, placement, true, cx);
+        self.open_popup(entries, placement, true, source.to_owned(), cx);
     }
 
     fn reuse_popup(
         &mut self,
         entries: &[Record],
         placement: &PopupPlacement,
+        source: &str,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(handle) = self.popup else {
@@ -178,7 +201,7 @@ impl Klemmbrett {
                 return false;
             }
             window.resize(placement.output_size);
-            view.reload(entries.to_vec(), placement.card, cx);
+            view.reload(entries.to_vec(), placement, source, cx);
             view.reveal(window, cx);
             true
         }) {
@@ -200,15 +223,16 @@ impl Klemmbrett {
         entries: Vec<Record>,
         placement: PopupPlacement,
         visible: bool,
+        source: String,
         cx: &mut Context<Self>,
     ) {
         let app = cx.entity();
         let options = overlay_options(&placement, visible);
         match cx.open_window(options, move |window, cx| {
             let view = if visible {
-                cx.new(|cx| PopupView::shown(app, entries, placement, cx))
+                cx.new(|cx| PopupView::shown(app, entries, placement, source, cx))
             } else {
-                cx.new(|cx| PopupView::new(app, entries, placement, cx))
+                cx.new(|cx| PopupView::new(app, entries, placement, source, cx))
             };
             if visible {
                 let focus = view.read(cx).focus_handle.clone();
@@ -228,6 +252,7 @@ struct PopupPlacement {
     output_size: gpui::Size<Pixels>,
     card: Bounds<Pixels>,
     label_max: usize,
+    theme: Theme,
 }
 
 fn popup_placement(
@@ -236,6 +261,8 @@ fn popup_placement(
     y: i32,
     rows: usize,
     label_max: usize,
+    theme: &Theme,
+    location: Location,
 ) -> Option<PopupPlacement> {
     let displays = cx.displays();
     if displays.is_empty() {
@@ -257,10 +284,16 @@ fn popup_placement(
         ));
     }
 
-    let width = ((label_max as f32 * CHAR_WIDTH) + 56.0).clamp(200.0, 520.0);
-    let height = (rows.max(1) as f32 * ROW_HEIGHT + BORDER * 2.0).min(MAX_POPUP_HEIGHT);
-    let (index, margin_x, margin_y) =
-        place_on_outputs(x, y, width as i32, height as i32, &outputs, primary)?;
+    let (width, height) = theme.card_size(rows, label_max);
+    let (index, margin_x, margin_y) = place_at_location(
+        location,
+        x,
+        y,
+        width as i32,
+        height as i32,
+        &outputs,
+        primary,
+    )?;
     let output_size = displays[index].bounds().size;
 
     Some(PopupPlacement {
@@ -271,6 +304,7 @@ fn popup_placement(
             size(px(width), px(height)),
         ),
         label_max,
+        theme: theme.clone(),
     })
 }
 
@@ -313,6 +347,9 @@ struct PopupView {
     entries: Vec<Record>,
     selected: usize,
     label_max: usize,
+    theme: Theme,
+    source_name: String,
+    query: String,
     display_id: DisplayId,
     card: Bounds<Pixels>,
     visible: bool,
@@ -325,6 +362,7 @@ impl PopupView {
         app: Entity<Klemmbrett>,
         entries: Vec<Record>,
         placement: PopupPlacement,
+        source: String,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -333,6 +371,9 @@ impl PopupView {
             entries,
             selected: 0,
             label_max: placement.label_max,
+            theme: placement.theme,
+            source_name: source,
+            query: String::new(),
             display_id: placement.display_id,
             card: placement.card,
             visible: false,
@@ -345,19 +386,38 @@ impl PopupView {
         app: Entity<Klemmbrett>,
         entries: Vec<Record>,
         placement: PopupPlacement,
+        source: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut view = Self::new(app, entries, placement, cx);
+        let mut view = Self::new(app, entries, placement, source, cx);
         view.visible = true;
         view
     }
 
-    fn reload(&mut self, entries: Vec<Record>, card: Bounds<Pixels>, cx: &mut Context<Self>) {
+    fn reload(
+        &mut self,
+        entries: Vec<Record>,
+        placement: &PopupPlacement,
+        source: &str,
+        cx: &mut Context<Self>,
+    ) {
         self.entries = entries;
-        self.card = card;
+        self.card = placement.card;
+        self.theme = placement.theme.clone();
+        self.label_max = placement.label_max;
+        self.source_name = source.to_owned();
+        self.query.clear();
         self.selected = 0;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
+    }
+
+    fn visible_entries(&self) -> Vec<&Record> {
+        if self.theme.has_inputbar() {
+            filter_records(&self.entries, &self.query)
+        } else {
+            self.entries.iter().collect()
+        }
     }
 
     fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -393,13 +453,19 @@ impl PopupView {
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
+        let filter = self.theme.has_inputbar();
         match key {
             "escape" => {
                 self.hide(window, cx);
                 cx.stop_propagation();
                 return;
             }
-            "enter" | "space" => {
+            "enter" => {
+                self.activate(self.selected, window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            "space" if !filter => {
                 self.activate(self.selected, window, cx);
                 cx.stop_propagation();
                 return;
@@ -414,10 +480,26 @@ impl PopupView {
                 cx.stop_propagation();
                 return;
             }
+            "backspace" if filter => {
+                self.query.pop();
+                self.clamp_selection();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            }
             _ => {}
         }
 
         if mods.control || mods.alt || mods.platform {
+            return;
+        }
+        if filter {
+            if let Some(ch) = typed_filter_char(event) {
+                self.query.push(ch);
+                self.clamp_selection();
+                cx.notify();
+                cx.stop_propagation();
+            }
             return;
         }
         let typed = event
@@ -434,8 +516,17 @@ impl PopupView {
         }
     }
 
+    fn clamp_selection(&mut self) {
+        let count = self.visible_entries().len();
+        if count == 0 {
+            self.selected = 0;
+        } else {
+            self.selected = self.selected.min(count - 1);
+        }
+    }
+
     fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let count = self.entries.len() as i32;
+        let count = self.visible_entries().len() as i32;
         if count == 0 {
             return;
         }
@@ -446,7 +537,11 @@ impl PopupView {
     }
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(value) = self.entries.get(index).map(|record| record.value.clone()) else {
+        let Some(value) = self
+            .visible_entries()
+            .get(index)
+            .map(|record| record.value.clone())
+        else {
             return;
         };
         self.app.update(cx, |app, _cx| app.restore(&value));
@@ -470,18 +565,34 @@ impl Render for PopupView {
             }
         }
 
-        let rows = if self.entries.is_empty() {
-            popup_row(0, None, "No entries", false, |_, _, _| {}).into_any()
+        let theme = self.theme.clone();
+        let visible = self.visible_entries();
+        let show_list = theme
+            .window()
+            .packed_children(&theme)
+            .contains(&Widget::ListView)
+            && theme.listview().enabled;
+        let rows = if !show_list {
+            div().flex_1().into_any()
+        } else if visible.is_empty() {
+            popup_row(0, None, "No entries", false, &theme, |_, _, _| {}).into_any()
         } else {
             let selected = self.selected;
             let label_max = self.label_max;
-            let specs: Vec<_> = self
-                .entries
+            let show_accelerators = !theme.has_inputbar();
+            let specs: Vec<_> = visible
                 .iter()
                 .enumerate()
-                .map(|(index, record)| menu_item_spec(index, &record.label, label_max))
+                .map(|(index, record)| {
+                    let mut spec = menu_item_spec(index, &record.label, label_max);
+                    if !show_accelerators {
+                        spec.accelerator = None;
+                    }
+                    spec
+                })
                 .collect();
             let view = cx.weak_entity();
+            let list_theme = theme.clone();
             uniform_list("history-rows", specs.len(), move |range, _window, _cx| {
                 range
                     .map(|index| {
@@ -491,6 +602,7 @@ impl Render for PopupView {
                             spec.accelerator,
                             &spec.text,
                             index == selected,
+                            &list_theme,
                             activate_row(view.clone(), index),
                         )
                     })
@@ -498,42 +610,91 @@ impl Render for PopupView {
             })
             .track_scroll(&self.scroll)
             .size_full()
+            .flex_1()
             .into_any()
         };
 
         let card = self.card;
-        div()
-            .id("klemmbrett-overlay")
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .relative()
-            .bg(transparent_black())
-            .on_key_down(cx.listener(|this, event, window, cx| this.on_key(event, window, cx)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _event, window, cx| this.hide(window, cx)),
-            )
-            .child(
-                div()
-                    .id("klemmbrett-popup")
-                    .absolute()
-                    .left(card.origin.x)
-                    .top(card.origin.y)
-                    .w(card.size.width)
-                    .h(card.size.height)
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
-                    .bg(rgb(0x2b2b2b))
-                    .border_1()
-                    .border_color(rgb(0x555555))
-                    .text_color(rgb(0xe8e8e8))
-                    .text_sm()
-                    .line_height(px(ROW_HEIGHT))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(rows),
-            )
+        let window_style = theme.window();
+        let font_size = window_style.font_size.unwrap_or(14.0);
+        let mut card_el = apply_box(
+            div()
+                .id("klemmbrett-popup")
+                .absolute()
+                .left(card.origin.x)
+                .top(card.origin.y)
+                .w(card.size.width)
+                .h(card.size.height)
+                .overflow_hidden()
+                .text_size(px(font_size))
+                .line_height(px(theme.row_extent()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+            window_style,
+        );
+        let mut rows = Some(rows);
+        for child in window_style.packed_children(&theme) {
+            card_el = match child {
+                Widget::InputBar => card_el.child(inputbar(&theme, &self.source_name, &self.query)),
+                Widget::ListView => match rows.take() {
+                    Some(rows) => card_el.child(rows),
+                    None => card_el,
+                },
+                _ => card_el,
+            };
+        }
+        apply_box(
+            div()
+                .id("klemmbrett-overlay")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .relative(),
+            theme.overlay(),
+        )
+        .on_key_down(cx.listener(|this, event, window, cx| this.on_key(event, window, cx)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _event, window, cx| this.hide(window, cx)),
+        )
+        .child(card_el)
     }
+}
+
+fn typed_filter_char(event: &KeyDownEvent) -> Option<char> {
+    let ch = event.keystroke.key_char.as_deref()?.chars().next()?;
+    (!ch.is_control()).then_some(ch)
+}
+
+fn inputbar(theme: &Theme, prompt: &str, query: &str) -> gpui::Div {
+    let style = theme.inputbar();
+    let mut bar = apply_box(
+        div()
+            .w_full()
+            .h(px(style.height.unwrap_or(36.0)))
+            .flex_none()
+            .overflow_hidden(),
+        style,
+    );
+    for child in style.packed_children(theme) {
+        bar = match child {
+            Widget::Prompt => bar.child(apply_box(
+                div()
+                    .flex_none()
+                    .whitespace_nowrap()
+                    .child(prompt.to_owned()),
+                theme.prompt(),
+            )),
+            Widget::Entry => bar.child(apply_box(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(format!("{query}│")),
+                theme.entry(),
+            )),
+            _ => bar,
+        };
+    }
+    bar
 }
 
 fn activate_row(
@@ -550,30 +711,91 @@ fn popup_row(
     accelerator: Option<char>,
     text: &str,
     selected: bool,
+    theme: &Theme,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(index)
-        .w_full()
-        .h(px(ROW_HEIGHT))
-        .flex_none()
-        .flex()
-        .flex_row()
-        .items_center()
-        .px_2()
-        .gap_2()
-        .overflow_hidden()
-        .when(selected, |row| row.bg(rgb(0x3d5a80)))
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(
-            div()
-                .w(px(16.))
-                .flex_none()
-                .whitespace_nowrap()
-                .text_color(rgb(0x888888))
-                .child(accelerator.map(|c| c.to_string()).unwrap_or_default()),
-        )
-        .child(div().flex_1().min_w_0().truncate().child(text.to_owned()))
+    let style = theme.row_style(selected);
+    let hover = theme.element_hover();
+    let height = theme.row_extent();
+    let mut row = apply_box(
+        div()
+            .id(index)
+            .w_full()
+            .h(px(height))
+            .flex_none()
+            .overflow_hidden(),
+        style,
+    )
+    .hover(move |row| row.bg(paint(hover.background)))
+    .on_mouse_down(MouseButton::Left, on_click);
+
+    for child in style.packed_children(theme) {
+        row = match child {
+            Widget::ElementIndex => row.child(element_index(accelerator, theme.element_index())),
+            Widget::ElementText => row.child(element_text(text, theme.element_text())),
+            _ => row,
+        };
+    }
+    row
+}
+
+fn element_index(accelerator: Option<char>, style: &Style) -> gpui::Div {
+    apply_box(
+        div()
+            .w(px(style.width.unwrap_or(16.0)))
+            .flex_none()
+            .whitespace_nowrap()
+            .child(accelerator.map(|c| c.to_string()).unwrap_or_default()),
+        style,
+    )
+}
+
+fn element_text(text: &str, style: &Style) -> gpui::Div {
+    apply_box(
+        div().flex_1().min_w_0().truncate().child(text.to_owned()),
+        style,
+    )
+}
+
+fn apply_box<E: Styled>(element: E, style: &Style) -> E {
+    let mut element = apply_padding(element, style.padding)
+        .bg(paint(style.background))
+        .border_color(paint(style.border_color))
+        .rounded(px(style.border_radius))
+        .text_color(paint(style.text_color));
+    element = apply_border(element, style.border);
+    match style.orientation {
+        Orientation::Horizontal => element
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(style.spacing)),
+        Orientation::Vertical => element.flex().flex_col().gap(px(style.spacing)),
+    }
+}
+
+fn apply_padding<E: Styled>(element: E, padding: Edges) -> E {
+    element
+        .pt(px(padding.top))
+        .pr(px(padding.right))
+        .pb(px(padding.bottom))
+        .pl(px(padding.left))
+}
+
+fn apply_border<E: Styled>(element: E, border: Edges) -> E {
+    if border.top == border.right && border.right == border.bottom && border.bottom == border.left {
+        element.border(px(border.top))
+    } else {
+        element
+            .border_l(px(border.left))
+            .border_r(px(border.right))
+            .border_t(px(border.top))
+            .border_b(px(border.bottom))
+    }
+}
+
+fn paint(color: klemmbrett::Rgba) -> gpui::Rgba {
+    rgba(color.to_u32())
 }
 
 fn install_tray(sources: Vec<String>, tx: async_channel::Sender<UiCmd>) {

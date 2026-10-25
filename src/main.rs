@@ -11,7 +11,7 @@ use std::path::PathBuf;
     about = "Keep Wayland selections in sync and copy values from configurable popup sources."
 )]
 struct Args {
-    /// TOML configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.toml)
+    /// HCL configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.hcl)
     #[arg(long)]
     config: Option<PathBuf>,
 
@@ -38,5 +38,5 @@ fn main() {
     let backend = ArboardBackend::new().expect("Failed to initialize the Wayland clipboard.");
     let sync = ClipboardSync::new(backend);
 
-    ui::run(sync, sources, config.popup.label_max);
+    ui::run(sync, sources, config.popup.label_max, config.popup.theme);
 }

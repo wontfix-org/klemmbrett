@@ -261,16 +261,16 @@ mod tests {
     fn unit_can_pin_a_config_file() {
         let unit = unit_file(
             Path::new("/usr/bin/klemmbrett"),
-            Some(Path::new("/etc/klemmbrett.toml")),
+            Some(Path::new("/etc/klemmbrett.hcl")),
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.toml\n"));
+        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.hcl\n"));
         let service = dbus_service_file(
             Path::new("/usr/bin/klemmbrett"),
-            Some(Path::new("/etc/klemmbrett.toml")),
+            Some(Path::new("/etc/klemmbrett.hcl")),
         )
         .unwrap();
-        assert!(service.contains("Exec=/usr/bin/klemmbrett --config /etc/klemmbrett.toml\n"));
+        assert!(service.contains("Exec=/usr/bin/klemmbrett --config /etc/klemmbrett.hcl\n"));
     }
 
     #[test]

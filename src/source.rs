@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::config::{Config, FileFormat, SourceConfig};
+use crate::theme::Presentation;
 use crate::{default_db_path, HistoryStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +59,7 @@ pub struct Sources {
 struct NamedSource {
     name: String,
     source: Source,
+    presentation: Presentation,
 }
 
 enum Source {
@@ -75,6 +77,7 @@ impl Sources {
         let mut entries = Vec::with_capacity(config.sources.len());
         for source in &config.sources {
             let name = source.name().to_owned();
+            let presentation = source.presentation().clone();
             let source = match source {
                 SourceConfig::ClipboardHistory {
                     db,
@@ -100,7 +103,11 @@ impl Sources {
                     format: *format,
                 }),
             };
-            entries.push(NamedSource { name, source });
+            entries.push(NamedSource {
+                name,
+                source,
+                presentation,
+            });
         }
 
         let sources = Self { entries };
@@ -119,6 +126,13 @@ impl Sources {
             .iter()
             .map(|entry| entry.name.clone())
             .collect()
+    }
+
+    pub fn presentation(&self, name: &str) -> Option<&Presentation> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| &entry.presentation)
     }
 
     pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {
@@ -208,11 +222,11 @@ mod tests {
         let config = parse_config(
             &format!(
                 r#"
-                    [[sources]]
-                    name = "items"
-                    type = "file"
-                    path = "records"
-                    format = "{format}"
+                    source "items" {{
+                        type   = "file"
+                        path   = "records"
+                        format = "{format}"
+                    }}
                 "#
             ),
             dir.path(),
@@ -269,11 +283,11 @@ mod tests {
         .unwrap();
         let config = parse_config(
             r#"
-                [[sources]]
-                name = "items"
-                type = "file"
-                path = "records"
-                format = "json"
+                source "items" {
+                    type   = "file"
+                    path   = "records"
+                    format = "json"
+                }
             "#,
             dir.path(),
         )
@@ -295,11 +309,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = parse_config(
             r#"
-                [[sources]]
-                name = "history"
-                type = "clipboard-history"
-                db = "history.sqlite"
-                skip-whitespace-only = false
+                source "history" {
+                    type                 = "clipboard-history"
+                    db                   = "history.sqlite"
+                    skip_whitespace_only = false
+                }
             "#,
             dir.path(),
         )
@@ -318,11 +332,11 @@ mod tests {
         std::fs::write(dir.path().join("records"), "one\n").unwrap();
         let config = parse_config(
             r#"
-                [[sources]]
-                name = "items"
-                type = "file"
-                path = "records"
-                format = "text"
+                source "items" {
+                    type   = "file"
+                    path   = "records"
+                    format = "text"
+                }
             "#,
             dir.path(),
         )
