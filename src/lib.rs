@@ -193,6 +193,7 @@ mod activate_api;
 mod clipboard_history;
 mod config;
 mod history;
+mod launch;
 mod popup;
 mod source;
 mod theme;
@@ -207,6 +208,7 @@ pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
     DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, DEFAULT_SKIP_WHITESPACE_ONLY,
 };
+pub use launch::{running_as_systemd_unit, spawn_detached, Launch, ResolvedLaunch};
 pub use popup::{
     accelerator_for, filter_records, index_for_accelerator, menu_item_spec, place_at_location,
     place_on_outputs, position_on_outputs, MenuItemSpec, OutputGeom,

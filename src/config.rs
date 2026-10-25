@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::launch::Launch;
 use crate::theme::{
     parse_document_at, presentation_for_source, theme_from_document, HclDocument, HclValue,
     Location, Presentation, RawSource,
@@ -16,6 +17,7 @@ use crate::{
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     pub popup: PopupConfig,
+    pub launch: Launch,
     pub sources: Vec<SourceConfig>,
 }
 
@@ -60,6 +62,10 @@ impl SelectAction {
 
     fn supported() -> &'static str {
         "copy-to-clipboard or xdg-open"
+    }
+
+    fn default_for_type(_ty: &str) -> Self {
+        Self::CopyToClipboard
     }
 }
 
@@ -146,7 +152,7 @@ pub fn load_config(explicit: Option<&Path>) -> Result<Config, String> {
 
 pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
     let mut doc = parse_document_at(text, base_dir)?;
-    let label_max = configuration_label_max(&doc.configuration)?;
+    let (label_max, launch) = parse_configuration(&doc.configuration)?;
     let raw_sources = std::mem::take(&mut doc.sources);
     let mut sources = Vec::new();
     let mut names = HashSet::new();
@@ -170,20 +176,23 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
             label_max: label_max.max(1),
             theme,
         },
+        launch,
         sources,
     })
 }
 
-fn configuration_label_max(configuration: &BTreeMap<String, HclValue>) -> Result<usize, String> {
+fn parse_configuration(
+    configuration: &BTreeMap<String, HclValue>,
+) -> Result<(usize, Launch), String> {
     for key in configuration.keys() {
-        if key != "label_max" {
+        if key != "label_max" && key != "launch" {
             return Err(format!(
-                "unknown configuration property {key}; supported: label_max"
+                "unknown configuration property {key}; supported: label_max, launch"
             ));
         }
     }
-    match configuration.get("label_max") {
-        None => Ok(DEFAULT_LABEL_MAX),
+    let label_max = match configuration.get("label_max") {
+        None => DEFAULT_LABEL_MAX,
         Some(value) => {
             let number = value
                 .as_number()
@@ -191,8 +200,33 @@ fn configuration_label_max(configuration: &BTreeMap<String, HclValue>) -> Result
             if number < 1.0 {
                 return Err("label_max must be at least 1".into());
             }
-            Ok(number as usize)
+            number as usize
         }
+    };
+    let launch = match configuration.get("launch") {
+        None => Launch::Auto,
+        Some(value) => parse_launch(value)?,
+    };
+    Ok((label_max, launch))
+}
+
+fn parse_launch(value: &HclValue) -> Result<Launch, String> {
+    if let Some(items) = value.as_list() {
+        if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
+            return Err("launch wrapper must be a non-empty list of strings".into());
+        }
+        return Ok(Launch::Wrapper(items.to_vec()));
+    }
+    let name = value
+        .as_ident()
+        .ok_or_else(|| "launch must be auto, posix, systemd-run, or a command list".to_string())?;
+    match name {
+        "auto" => Ok(Launch::Auto),
+        "posix" => Ok(Launch::Posix),
+        "systemd-run" => Ok(Launch::SystemdRun),
+        other => Err(format!(
+            "unknown launch {other}; expected auto, posix, systemd-run, or a command list"
+        )),
     }
 }
 
@@ -209,6 +243,7 @@ fn source_from_raw(
         .get("type")
         .and_then(HclValue::as_ident)
         .ok_or_else(|| format!("source {name:?}: type is required"))?;
+    let action = action.unwrap_or_else(|| SelectAction::default_for_type(ty));
     match ty {
         "clipboard-history" => {
             reject_unknown(
@@ -290,10 +325,10 @@ fn source_from_raw(
 fn parse_select_action(
     source: &str,
     properties: &BTreeMap<String, HclValue>,
-) -> Result<SelectAction, String> {
+) -> Result<Option<SelectAction>, String> {
     match optional_name(properties, "action")? {
-        None => Ok(SelectAction::CopyToClipboard),
-        Some(name) => SelectAction::parse(&name).ok_or_else(|| {
+        None => Ok(None),
+        Some(name) => SelectAction::parse(&name).map(Some).ok_or_else(|| {
             format!(
                 "source {source:?}: unknown action {name}; expected {}",
                 SelectAction::supported()
@@ -446,6 +481,7 @@ mod tests {
         assert!(config.sources.is_empty());
         assert_eq!(config.popup.label_max, DEFAULT_LABEL_MAX);
         assert_eq!(config.popup.theme, Theme::default());
+        assert_eq!(config.launch, crate::Launch::Auto);
     }
 
     #[test]
@@ -587,6 +623,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.sources[0].action(), SelectAction::XdgOpen);
+    }
+
+    #[test]
+    fn launch_can_be_a_preset_or_a_wrapper() {
+        let config = parse_config(
+            r#"configuration { launch = "posix" }"#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.launch, crate::Launch::Posix);
+        let config = parse_config(
+            r#"configuration { launch = ["uwsm", "app", "--"] }"#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.launch,
+            crate::Launch::Wrapper(vec!["uwsm".into(), "app".into(), "--".into()])
+        );
+    }
+
+    #[test]
+    fn empty_launch_wrapper_is_rejected() {
+        let error =
+            parse_config(r#"configuration { launch = [] }"#, Path::new("/config")).unwrap_err();
+        assert!(error.contains("non-empty"), "{error}");
     }
 
     #[test]

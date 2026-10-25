@@ -1,7 +1,7 @@
 # klemmbrett
 
 Keeps the Wayland clipboard and primary selection holding the same text. Named
-popup sources can provide values to copy to the clipboard, including optional
+popup sources can provide values to copy or open, including optional
 SQLite clipboard history and text, JSON, or YAML files.
 
 A GPUI popup lists a configured source. Entries longer than a configurable length are
@@ -77,6 +77,7 @@ rejected with a convert hint.
 ```hcl
 configuration {
   label_max = 64
+  launch    = "auto"
 }
 
 theme "nord" {}
@@ -114,7 +115,11 @@ Source names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
 `coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
-true, and `action` defaults to `copy-to-clipboard`. Coalescing replaces the newest row when a new selection contains it,
+true, and `action` defaults to `copy-to-clipboard`. `launch` defaults to
+`auto`: `systemd-run --user --scope` when klemmbrett itself is a systemd
+unit (`INVOCATION_ID` is set), otherwise a POSIX double-fork + `setsid`.
+Set `launch = "posix"`, `launch = "systemd-run"`, or a wrapper list such as
+`launch = ["uwsm", "app", "--"]` to override. Coalescing replaces the newest row when a new selection contains it,
 avoiding one row per character while a selection grows. Whitespace-only
 selections (spaces, tabs, newlines) are not stored unless
 `skip_whitespace_only` is set to false.
@@ -139,8 +144,8 @@ or the equivalent YAML:
 Every record requires a value. Its key and label default to the value when
 omitted, and keys must be unique within a source. The popup displays the label.
 Selecting a row runs that source's `action` on the value. `copy-to-clipboard`
-(the default) copies it to the clipboard. `xdg-open` launches the desktop
-handler for the value (a URL, file, or anything else `xdg-open` accepts).
+copies it to the clipboard. `xdg-open` goes through `launch` (`xdg-open` plus
+the value).
 
 ## Popup theme and widgets
 

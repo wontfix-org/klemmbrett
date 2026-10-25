@@ -3268,6 +3268,7 @@ dependencies = [
  "gpui_ce_platform",
  "hcl-rs",
  "ksni",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

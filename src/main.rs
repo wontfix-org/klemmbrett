@@ -38,5 +38,11 @@ fn main() {
     let backend = ArboardBackend::new().expect("Failed to initialize the Wayland clipboard.");
     let sync = ClipboardSync::new(backend);
 
-    ui::run(sync, sources, config.popup.label_max, config.popup.theme);
+    ui::run(
+        sync,
+        sources,
+        config.popup.label_max,
+        config.popup.theme,
+        config.launch,
+    );
 }

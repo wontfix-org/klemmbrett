@@ -19,12 +19,12 @@ use gpui::{
 };
 use klemmbrett::{
     filter_records, history_candidate, index_for_accelerator, menu_item_spec, place_at_location,
-    ArboardBackend, Backend, ClipboardSync, Edges, Location, Orientation, OutputGeom, Record,
-    SelectAction, Selection, Sources, Style, Theme, Widget, POLL_INTERVAL,
+    spawn_detached, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location, Orientation,
+    OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Sources, Style, Theme, Widget,
+    POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
-use std::process::Stdio;
 use std::sync::mpsc::{self, RecvTimeoutError};
 
 const TRAY_ICON_NAME: &str = "edit-paste";
@@ -34,7 +34,13 @@ enum ClipCmd {
     Restore(String),
 }
 
-pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usize, theme: Theme) {
+pub fn run(
+    sync: ClipboardSync<ArboardBackend>,
+    sources: Sources,
+    label_max: usize,
+    theme: Theme,
+    launch: Launch,
+) {
     let (tx, rx) = async_channel::unbounded::<UiCmd>();
     let source_names: HashSet<_> = sources.names().into_iter().collect();
     dbus::spawn(source_names, tx.clone());
@@ -44,7 +50,7 @@ pub fn run(sync: ClipboardSync<ArboardBackend>, sources: Sources, label_max: usi
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(sources, label_max, theme, clip_tx));
+            let app = cx.new(|_cx| Klemmbrett::new(sources, label_max, theme, clip_tx, launch));
             app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
@@ -102,24 +108,9 @@ fn spawn_clipboard(
     tx
 }
 
-fn xdg_open(value: &str) -> Result<(), String> {
-    open_with("xdg-open", value)
-}
-
-fn open_with(program: &str, value: &str) -> Result<(), String> {
-    let mut child = std::process::Command::new(program)
-        .arg(value)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| format!("failed to run {program}: {err}"))?;
-    let _ = std::thread::Builder::new()
-        .name("klemmbrett-xdg-open".into())
-        .spawn(move || {
-            let _ = child.wait();
-        });
-    Ok(())
+fn run_user_command(launch: &ResolvedLaunch, program_and_args: &[&str]) -> Result<(), String> {
+    let argv = launch.argv(program_and_args);
+    spawn_detached(&argv)
 }
 
 struct Klemmbrett {
@@ -128,6 +119,7 @@ struct Klemmbrett {
     theme: Theme,
     popup: Option<WindowHandle<PopupView>>,
     clip_tx: mpsc::Sender<ClipCmd>,
+    launch: ResolvedLaunch,
 }
 
 impl Klemmbrett {
@@ -136,6 +128,7 @@ impl Klemmbrett {
         label_max: usize,
         theme: Theme,
         clip_tx: mpsc::Sender<ClipCmd>,
+        launch: Launch,
     ) -> Self {
         Self {
             sources,
@@ -143,6 +136,7 @@ impl Klemmbrett {
             theme,
             popup: None,
             clip_tx,
+            launch: launch.resolve(),
         }
     }
 
@@ -162,7 +156,7 @@ impl Klemmbrett {
         match self.sources.action(source).unwrap_or_default() {
             SelectAction::CopyToClipboard => self.restore(value),
             SelectAction::XdgOpen => {
-                if let Err(err) = xdg_open(value) {
+                if let Err(err) = run_user_command(&self.launch, &["xdg-open", value]) {
                     eprintln!("Failed to xdg-open {value:?}: {err}");
                 }
             }
@@ -1010,9 +1004,7 @@ fn rgba_to_argb(
 
 #[cfg(test)]
 mod tests {
-    use super::{open_with, rgba_to_argb};
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
+    use super::rgba_to_argb;
 
     #[test]
     fn rgba_pixels_become_network_order_argb() {
@@ -1032,33 +1024,5 @@ mod tests {
     #[test]
     fn a_truncated_row_is_rejected() {
         assert_eq!(rgba_to_argb(&[255, 0], 1, 1, 4, 4, true), None);
-    }
-
-    #[test]
-    fn open_with_passes_the_value_as_one_argument() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out");
-        let script = dir.path().join("open");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\nprintf '%s' \"$1\" >\"{}\"\n", out.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        open_with(script.to_str().unwrap(), "https://example.com").unwrap();
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let mut written = String::new();
-        while Instant::now() < deadline {
-            if let Ok(text) = std::fs::read_to_string(&out) {
-                written = text;
-                if !written.is_empty() {
-                    break;
-                }
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(written, "https://example.com");
     }
 }
