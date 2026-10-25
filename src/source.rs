@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::config::{Config, FileFormat, SelectAction, SourceConfig};
 use crate::executables::executables_on_path;
 use crate::theme::Presentation;
+use crate::windows::WindowList;
 use crate::{default_db_path, HistoryStore};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +56,7 @@ impl From<SerializedRecord> for Record {
 
 pub struct Sources {
     entries: Vec<NamedSource>,
+    windows: Option<WindowList>,
 }
 
 struct NamedSource {
@@ -68,6 +70,7 @@ enum Source {
     ClipboardHistory(HistoryStore),
     File(FileSource),
     Executables,
+    WaylandWindows,
 }
 
 struct FileSource {
@@ -77,6 +80,11 @@ struct FileSource {
 
 impl Sources {
     pub fn from_config(config: &Config) -> Result<Self, String> {
+        let windows = config
+            .sources
+            .iter()
+            .any(|source| matches!(source, SourceConfig::WaylandWindows { .. }))
+            .then(WindowList::start);
         let mut entries = Vec::with_capacity(config.sources.len());
         for source in &config.sources {
             let name = source.name().to_owned();
@@ -107,6 +115,7 @@ impl Sources {
                     format: *format,
                 }),
                 SourceConfig::Executables { .. } => Source::Executables,
+                SourceConfig::WaylandWindows { .. } => Source::WaylandWindows,
             };
             entries.push(NamedSource {
                 name,
@@ -116,7 +125,7 @@ impl Sources {
             });
         }
 
-        let sources = Self { entries };
+        let sources = Self { entries, windows };
         // Validate file readability, format, and keys at startup. Files are
         // still reloaded when opened so changes do not require a restart.
         for entry in &sources.entries {
@@ -161,9 +170,21 @@ impl Sources {
                 .map_err(|err| format!("failed to read history: {err}"))?,
             Source::File(source) => source.records()?,
             Source::Executables => executables_on_path(&std::env::var("PATH").unwrap_or_default()),
+            Source::WaylandWindows => self
+                .windows
+                .as_ref()
+                .ok_or_else(|| "wayland window list is not running".to_string())?
+                .records()?,
         };
         validate_records(name, &records)?;
         Ok(records)
+    }
+
+    pub fn activate_window(&self, key: &str) -> Result<(), String> {
+        self.windows
+            .as_ref()
+            .ok_or_else(|| "no wayland-windows source is configured".to_string())?
+            .activate(key)
     }
 
     pub fn record_history(&mut self, text: &str) -> Result<(), String> {
