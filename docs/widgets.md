@@ -47,6 +47,8 @@ action arguments are expanded when the row is selected.
 | `wayland-windows` | `activate-window` | Open toplevels via `zwlr_foreign_toplevel_manager_v1` |
 
 `executables` and `wayland-windows` lists are long; use `layout = "filter"`.
+`layout = "prompt"` is inputbar-only: Enter returns the typed text as
+`key`, `label`, and `value`. Provider records are unused.
 
 ### clipboard-history
 

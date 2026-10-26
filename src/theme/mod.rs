@@ -289,6 +289,13 @@ impl Theme {
             && self.inputbar.enabled
     }
 
+    pub fn has_listview(&self) -> bool {
+        self.window()
+            .packed_children(self)
+            .contains(&Widget::ListView)
+            && self.listview.enabled
+    }
+
     pub fn style(&self, widget: Widget) -> &Style {
         match widget {
             Widget::Overlay => &self.overlay,
@@ -320,8 +327,12 @@ impl Theme {
             (label_max as f32 * self.char_width() + self.width_chrome())
                 .clamp(MIN_CARD_WIDTH, MAX_CARD_WIDTH)
         });
-        let height = (rows.max(1) as f32 * self.row_extent() + self.height_chrome())
-            .min(self.window.max_height.unwrap_or(600.0));
+        let height = if self.has_listview() {
+            (rows.max(1) as f32 * self.row_extent() + self.height_chrome())
+                .min(self.window.max_height.unwrap_or(600.0))
+        } else {
+            self.height_chrome()
+        };
         (width, height)
     }
 
@@ -445,6 +456,7 @@ fn shipped_layout(name: &str) -> Option<&'static str> {
     match name.trim_end_matches(".hcl") {
         "menu" => Some(include_str!("../../layouts/menu.hcl")),
         "filter" => Some(include_str!("../../layouts/filter.hcl")),
+        "prompt" => Some(include_str!("../../layouts/prompt.hcl")),
         _ => None,
     }
 }
@@ -836,10 +848,49 @@ mod tests {
         .unwrap();
         assert_eq!(presentation.location, Location::Center);
         assert!(presentation.theme.has_inputbar());
+        assert!(presentation.theme.has_listview());
         assert_eq!(
             presentation.theme.inputbar().children,
             vec![Widget::Prompt, Widget::Entry]
         );
+    }
+
+    #[test]
+    fn shipped_prompt_layout_is_inputbar_only() {
+        let presentation = presentation_for_widget(
+            &parse_document("").unwrap(),
+            None,
+            Some("prompt"),
+            None,
+            None,
+            None,
+            Path::new("."),
+        )
+        .unwrap();
+        assert_eq!(presentation.location, Location::Center);
+        assert!(presentation.theme.has_inputbar());
+        assert!(!presentation.theme.has_listview());
+        assert_eq!(
+            presentation.theme.window().children,
+            vec![Widget::InputBar]
+        );
+        assert_eq!(
+            presentation.theme.inputbar().children,
+            vec![Widget::Prompt, Widget::Entry]
+        );
+        let (_, short) = presentation.theme.card_size(0, 16);
+        let (_, tall) = presentation.theme.card_size(50, 16);
+        assert_eq!(short, tall);
+        assert!(short > 0.0);
+        assert!(short < Theme::default().card_size(10, 16).1);
+    }
+
+    #[test]
+    fn window_may_omit_listview() {
+        let theme = parse_theme(r#"window { children = ["inputbar"] }"#).unwrap();
+        assert_eq!(theme.window().children, vec![Widget::InputBar]);
+        assert!(theme.has_inputbar());
+        assert!(!theme.has_listview());
     }
 
     #[test]
