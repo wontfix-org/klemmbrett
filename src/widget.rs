@@ -63,7 +63,7 @@ struct NamedWidget {
     name: String,
     provider: Provider,
     presentation: Presentation,
-    action: SelectAction,
+    actions: Vec<SelectAction>,
     transforms: Vec<Transform>,
 }
 
@@ -90,7 +90,7 @@ impl Widgets {
         for widget in &config.widgets {
             let name = widget.name().to_owned();
             let presentation = widget.presentation().clone();
-            let action = widget.action();
+            let actions = widget.actions().to_vec();
             let transforms = widget.transforms().to_vec();
             let provider = match widget {
                 WidgetConfig::ClipboardHistory {
@@ -123,7 +123,7 @@ impl Widgets {
                 name,
                 provider,
                 presentation,
-                action,
+                actions,
                 transforms,
             });
         }
@@ -153,11 +153,11 @@ impl Widgets {
             .map(|entry| &entry.presentation)
     }
 
-    pub fn action(&self, name: &str) -> Option<SelectAction> {
+    pub fn actions(&self, name: &str) -> Option<&[SelectAction]> {
         self.entries
             .iter()
             .find(|entry| entry.name == name)
-            .map(|entry| entry.action.clone())
+            .map(|entry| entry.actions.as_slice())
     }
 
     pub fn transforms(&self, name: &str) -> Option<&[Transform]> {
@@ -387,11 +387,14 @@ mod tests {
             None => std::env::remove_var("PATH"),
         }
         assert_eq!(
-            widgets.action("run"),
-            Some(SelectAction::Launch {
-                command: vec!["${value}".into()],
-                args: Default::default(),
-            })
+            widgets.actions("run"),
+            Some(
+                [SelectAction::Launch {
+                    command: vec!["${value}".into()],
+                    args: Default::default(),
+                }]
+                .as_slice()
+            )
         );
         assert!(
             records
@@ -462,8 +465,8 @@ mod tests {
         let widgets = Widgets::from_config(&config).unwrap();
         assert_eq!(
             widgets
-                .action("items")
-                .and_then(|action| action.argv("one", "Readable", "payload")),
+                .actions("items")
+                .and_then(|actions| actions.first()?.argv("one", "Readable", "payload")),
             Some(vec![
                 "notify-send".into(),
                 "Readable".into(),
@@ -488,7 +491,10 @@ mod tests {
         )
         .unwrap();
         let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(widgets.action("items"), Some(SelectAction::CopyToClipboard));
+        assert_eq!(
+            widgets.actions("items"),
+            Some([SelectAction::CopyToClipboard].as_slice())
+        );
     }
 
     #[test]
@@ -508,11 +514,14 @@ mod tests {
         .unwrap();
         let widgets = Widgets::from_config(&config).unwrap();
         assert_eq!(
-            widgets.action("links"),
-            Some(SelectAction::Launch {
-                command: vec!["xdg-open".into(), "${value}".into()],
-                args: Default::default(),
-            })
+            widgets.actions("links"),
+            Some(
+                [SelectAction::Launch {
+                    command: vec!["xdg-open".into(), "${value}".into()],
+                    args: Default::default(),
+                }]
+                .as_slice()
+            )
         );
     }
 

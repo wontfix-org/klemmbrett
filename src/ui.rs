@@ -165,30 +165,32 @@ impl Klemmbrett {
                 }
             }
         }
-        let action = self.widgets.action(widget).unwrap_or_default();
-        match action {
-            SelectAction::CopyToClipboard => self.restore(&value),
-            launch @ SelectAction::Launch { .. } => {
-                let argv = launch
-                    .argv(key, label, &value)
-                    .expect("launch action has argv");
-                let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-                if let Err(err) = run_user_command(&self.launch, &argv) {
-                    eprintln!("Failed to launch {argv:?}: {err}");
+        let actions = self.widgets.actions(widget).unwrap_or_default().to_vec();
+        for action in &actions {
+            match action {
+                SelectAction::CopyToClipboard => self.restore(&value),
+                launch @ SelectAction::Launch { .. } => {
+                    let argv = launch
+                        .argv(key, label, &value)
+                        .expect("launch action has argv");
+                    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+                    if let Err(err) = run_user_command(&self.launch, &argv) {
+                        eprintln!("Failed to launch {argv:?}: {err}");
+                    }
                 }
-            }
-            exec @ SelectAction::Exec { .. } => {
-                let argv = exec.argv(key, label, &value).expect("exec action has argv");
-                let stdin = exec
-                    .stdin(key, label, &value)
-                    .expect("exec action has stdin");
-                if let Err(err) = run_waited_command(&argv, &stdin) {
-                    eprintln!("Failed to exec {argv:?}: {err}");
+                exec @ SelectAction::Exec { .. } => {
+                    let argv = exec.argv(key, label, &value).expect("exec action has argv");
+                    let stdin = exec
+                        .stdin(key, label, &value)
+                        .expect("exec action has stdin");
+                    if let Err(err) = run_waited_command(&argv, &stdin) {
+                        eprintln!("Failed to exec {argv:?}: {err}");
+                    }
                 }
-            }
-            SelectAction::ActivateWindow => {
-                if let Err(err) = self.widgets.activate_window(&value) {
-                    eprintln!("Failed to activate window {value:?}: {err}");
+                SelectAction::ActivateWindow => {
+                    if let Err(err) = self.widgets.activate_window(&value) {
+                        eprintln!("Failed to activate window {value:?}: {err}");
+                    }
                 }
             }
         }

@@ -1,8 +1,8 @@
 # Widgets, transforms, and actions
 
 A **widget** is a named list of records. Selecting a row runs that widget's
-**transform** pipeline, then its **action**. The second label is the
-provider, action type, or transform type (`widget "history"
+**transform** pipeline, then its **actions** in order. The second label is
+the provider, action type, or transform type (`widget "history"
 "clipboard-history"`, `action "notify" "exec"`, `transform "jq" "exec"`).
 Widget names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file.
@@ -14,13 +14,15 @@ widget "history" "clipboard-history" {
 }
 ```
 
-`action = "name"` keeps the named action's defaults. To pass arguments,
-use a block instead (not both on the same widget):
+`action = "name"` keeps the named action's defaults. To pass arguments or
+run more than one action, use `action "name" { }` blocks (not together
+with `action =` on the same widget):
 
 ```hcl
 widget "links" "file" {
   path     = "links.yaml"
   format   = "yaml"
+  action "copy-to-clipboard" {}
   action "notify" {
     title = "${label}"
   }
