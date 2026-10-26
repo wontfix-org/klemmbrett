@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 pub use parse::{
     parse_document, parse_document_at, parse_layout_recipe, HclDocument, HclValue, RawAction,
-    RawTransform, RawTransformInvocation, RawWidget,
+    RawActionInvocation, RawTransform, RawTransformInvocation, RawWidget,
 };
 
 const DEFAULT_HCL: &str = include_str!("default.hcl");

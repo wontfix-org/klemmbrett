@@ -191,11 +191,19 @@ pub struct HclDocument {
 pub struct RawWidget {
     pub name: String,
     pub properties: BTreeMap<String, HclValue>,
+    pub action: Option<RawActionInvocation>,
     pub transforms: Vec<RawTransformInvocation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawAction {
+    pub properties: BTreeMap<String, HclValue>,
+    pub args: BTreeMap<String, HclValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawActionInvocation {
+    pub name: String,
     pub properties: BTreeMap<String, HclValue>,
 }
 
@@ -230,7 +238,7 @@ fn parse_document_stack(
         ..HclDocument::default()
     };
     ingest_raw(&raw, &mut doc, base_dir, stack, true)?;
-    let placeholders = transform_placeholders(&raw);
+    let placeholders = interpolation_placeholders(&raw);
     let evaluated = evaluate_body(&raw, &doc.locals, None, None, &placeholders)?;
     ingest_evaluated(&evaluated, &mut doc, true)?;
     Ok(doc)
@@ -299,10 +307,10 @@ fn evaluate_body(
     body.evaluate(&ctx).map_err(eval_err)
 }
 
-fn transform_placeholders(body: &Body) -> Vec<String> {
+fn interpolation_placeholders(body: &Body) -> Vec<String> {
     let mut names = Vec::new();
     for block in body.blocks() {
-        if block.identifier() != "transform" {
+        if !matches!(block.identifier(), "action" | "transform") {
             continue;
         }
         for nested in block.body().blocks() {
@@ -665,19 +673,11 @@ fn ingest_evaluated(body: &Body, doc: &mut HclDocument, allow_config: bool) -> R
                 doc.transforms.insert(name, transform);
             }
             "action" if allow_config => {
-                let name = one_label(block, "action")?;
-                if name.trim().is_empty() {
-                    return Err("action name must not be empty".into());
-                }
+                let (name, action) = raw_action_from_block(block)?;
                 if !seen_actions.insert(name.clone()) {
                     return Err(format!("action name {name:?} is configured more than once"));
                 }
-                doc.actions.insert(
-                    name,
-                    RawAction {
-                        properties: attributes_as_values(block.body())?,
-                    },
-                );
+                doc.actions.insert(name, action);
             }
             "media" => ingest_media(block, &mut doc.theme)?,
             "defaults" => {
@@ -984,6 +984,39 @@ fn value_widgets(value: &Value) -> Result<Vec<Widget>, String> {
         .collect()
 }
 
+fn raw_action_from_block(block: &Block) -> Result<(String, RawAction), String> {
+    let name = one_label(block, "action")?;
+    if name.trim().is_empty() {
+        return Err("action name must not be empty".into());
+    }
+    let mut properties = BTreeMap::new();
+    for attr in block.body().attributes() {
+        properties.insert(
+            attr.key().to_owned(),
+            value_to_hcl(&to_value(attr.expr())?)?,
+        );
+    }
+    let mut args = BTreeMap::new();
+    let mut seen_args = false;
+    for nested in block.body().blocks() {
+        if nested.identifier() != "args" {
+            return Err(format!(
+                "action {name:?}: unknown block {}; expected args",
+                nested.identifier()
+            ));
+        }
+        reject_labels(nested, "args")?;
+        if seen_args {
+            return Err(format!(
+                "action {name:?}: args is configured more than once"
+            ));
+        }
+        seen_args = true;
+        args = attributes_as_values(nested.body())?;
+    }
+    Ok((name, RawAction { properties, args }))
+}
+
 fn raw_transform_from_block(block: &Block) -> Result<(String, RawTransform), String> {
     let name = one_label(block, "transform")?;
     if name.trim().is_empty() {
@@ -1026,26 +1059,46 @@ fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
             value_to_hcl(&to_value(attr.expr())?)?,
         );
     }
+    let mut action = None;
     let mut transforms = Vec::new();
     for nested in block.body().blocks() {
-        if nested.identifier() != "transform" {
-            return Err(format!(
-                "widget {name:?}: unknown block {}; expected transform",
-                nested.identifier()
-            ));
+        match nested.identifier() {
+            "transform" => {
+                let transform = one_label(nested, "transform")?;
+                if transform.trim().is_empty() {
+                    return Err(format!("widget {name:?}: transform name must not be empty"));
+                }
+                transforms.push(RawTransformInvocation {
+                    name: transform,
+                    properties: attributes_as_values(nested.body())?,
+                });
+            }
+            "action" => {
+                if action.is_some() {
+                    return Err(format!(
+                        "widget {name:?}: action is configured more than once"
+                    ));
+                }
+                let action_name = one_label(nested, "action")?;
+                if action_name.trim().is_empty() {
+                    return Err(format!("widget {name:?}: action name must not be empty"));
+                }
+                action = Some(RawActionInvocation {
+                    name: action_name,
+                    properties: attributes_as_values(nested.body())?,
+                });
+            }
+            other => {
+                return Err(format!(
+                    "widget {name:?}: unknown block {other}; expected action or transform"
+                ));
+            }
         }
-        let transform = one_label(nested, "transform")?;
-        if transform.trim().is_empty() {
-            return Err(format!("widget {name:?}: transform name must not be empty"));
-        }
-        transforms.push(RawTransformInvocation {
-            name: transform,
-            properties: attributes_as_values(nested.body())?,
-        });
     }
     Ok(RawWidget {
         name,
         properties,
+        action,
         transforms,
     })
 }
@@ -1604,6 +1657,52 @@ window { padding = 3 }
                 .get("command")
                 .and_then(HclValue::as_list),
             Some(["xdg-open".to_string(), "${value}".to_string()].as_slice())
+        );
+        assert!(doc.actions["xdg-open"].args.is_empty());
+    }
+
+    #[test]
+    fn document_parses_named_action_args_and_widget_invocations() {
+        let doc = parse_document(
+            r#"
+                action "notify" {
+                    type = "exec"
+                    args {
+                        title = "klemmbrett"
+                        body  = "${value}"
+                    }
+                    command = ["notify-send", "${title}", "${body}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action "notify" {
+                        title = "${label}"
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.actions["notify"]
+                .args
+                .get("title")
+                .and_then(HclValue::as_text),
+            Some("klemmbrett")
+        );
+        assert_eq!(
+            doc.actions["notify"]
+                .args
+                .get("body")
+                .and_then(HclValue::as_text),
+            Some("${value}")
+        );
+        let action = doc.widgets[0].action.as_ref().expect("widget action");
+        assert_eq!(action.name, "notify");
+        assert_eq!(
+            action.properties.get("title").and_then(HclValue::as_text),
+            Some("${label}")
         );
     }
 

@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use crate::launch::Launch;
 use crate::theme::{
     parse_document_at, presentation_for_widget, theme_from_document, HclDocument, HclValue,
-    Location, Presentation, RawAction, RawTransform, RawTransformInvocation, RawWidget,
+    Location, Presentation, RawAction, RawActionInvocation, RawTransform, RawTransformInvocation,
+    RawWidget,
 };
 use crate::{
     default_db_path, Theme, DEFAULT_COALESCE_GROWING, DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
@@ -43,6 +44,7 @@ pub enum SelectAction {
     CopyToClipboard,
     Exec {
         command: Vec<String>,
+        args: BTreeMap<String, String>,
     },
     ActivateWindow,
 }
@@ -64,12 +66,14 @@ impl SelectAction {
     fn default_exec() -> Self {
         Self::Exec {
             command: vec!["${value}".into()],
+            args: BTreeMap::new(),
         }
     }
 
     fn shipped_xdg_open() -> Self {
         Self::Exec {
             command: vec!["xdg-open".into(), "${value}".into()],
+            args: BTreeMap::new(),
         }
     }
 
@@ -83,7 +87,12 @@ impl SelectAction {
 
     pub fn argv(&self, key: &str, label: &str, value: &str) -> Option<Vec<String>> {
         match self {
-            Self::Exec { command } => Some(interpolate_command(command, key, label, value)),
+            Self::Exec { command, args } => {
+                let extras = interpolate_arg_map(args, key, label, value);
+                Some(interpolate_command_with(
+                    command, key, label, value, &extras,
+                ))
+            }
             _ => None,
         }
     }
@@ -304,7 +313,7 @@ fn widget_from_raw(
 ) -> Result<WidgetConfig, String> {
     let name = raw.name;
     let presentation = widget_presentation(&name, &raw.properties, doc, base_dir)?;
-    let action = parse_select_action(&name, &raw.properties, actions)?;
+    let action = parse_select_action(&name, &raw.properties, raw.action.as_ref(), actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
     let ty = raw
         .properties
@@ -425,13 +434,20 @@ fn widget_from_raw(
 fn parse_select_action(
     widget: &str,
     properties: &BTreeMap<String, HclValue>,
+    invocation: Option<&RawActionInvocation>,
     actions: &BTreeMap<String, SelectAction>,
 ) -> Result<Option<SelectAction>, String> {
-    match optional_name(properties, "action")? {
-        None => Ok(None),
-        Some(name) => resolve_action_name(&name, actions)
+    match (optional_name(properties, "action")?, invocation) {
+        (Some(_), Some(_)) => Err(format!(
+            "widget {widget:?}: action cannot be set as both a name and a block"
+        )),
+        (None, None) => Ok(None),
+        (Some(name), None) => resolve_action_name(&name, actions)
             .map(Some)
             .map_err(|err| format!("widget {widget:?}: {err}")),
+        (None, Some(invocation)) => {
+            resolve_action_invocation(widget, invocation, actions).map(Some)
+        }
     }
 }
 
@@ -460,14 +476,21 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
     match ty {
         "copy-to-clipboard" => {
             reject_unknown("action", name, &raw.properties, &["type"])?;
+            reject_action_args(name, raw)?;
             Ok(SelectAction::CopyToClipboard)
         }
         "activate-window" => {
             reject_unknown("action", name, &raw.properties, &["type"])?;
+            reject_action_args(name, raw)?;
             Ok(SelectAction::ActivateWindow)
         }
         "exec" => {
             reject_unknown("action", name, &raw.properties, &["type", "command"])?;
+            let args = declared_arg_defaults("action", name, &raw.args)?;
+            for default in args.values() {
+                validate_placeholders("action", name, default, &[])?;
+            }
+            let extra: Vec<&str> = args.keys().map(String::as_str).collect();
             let command = match raw.properties.get("command") {
                 None => vec!["${value}".into()],
                 Some(value) => {
@@ -480,12 +503,12 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
                         ));
                     }
                     for item in items {
-                        validate_placeholders("action", name, item, &[])?;
+                        validate_placeholders("action", name, item, &extra)?;
                     }
                     items.to_vec()
                 }
             };
-            Ok(SelectAction::Exec { command })
+            Ok(SelectAction::Exec { command, args })
         }
         other => Err(format!(
             "action {name:?}: unknown type {other}; expected copy-to-clipboard, exec, or activate-window"
@@ -513,23 +536,7 @@ fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<NamedTrans
             "transform {name:?}: command must be a non-empty list of strings"
         ));
     }
-    let mut args = BTreeMap::new();
-    for (arg, value) in &raw.args {
-        if arg.trim().is_empty() {
-            return Err(format!(
-                "transform {name:?}: argument name must not be empty"
-            ));
-        }
-        if matches!(arg.as_str(), "value" | "key" | "label") {
-            return Err(format!(
-                "transform {name:?}: argument {arg} is reserved; use a different name"
-            ));
-        }
-        let default = value.as_text().ok_or_else(|| {
-            format!("transform {name:?}: argument {arg} default must be a string")
-        })?;
-        args.insert(arg.clone(), default.to_owned());
-    }
+    let args = declared_arg_defaults("transform", name, &raw.args)?;
     let extra: Vec<&str> = args.keys().map(String::as_str).collect();
     for item in command {
         validate_placeholders("transform", name, item, &extra)?;
@@ -538,6 +545,85 @@ fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<NamedTrans
         command: command.to_vec(),
         args,
     })
+}
+
+fn reject_action_args(name: &str, raw: &RawAction) -> Result<(), String> {
+    if raw.args.is_empty() {
+        return Ok(());
+    }
+    Err(format!("action {name:?}: args are only supported for exec"))
+}
+
+fn declared_arg_defaults(
+    kind: &str,
+    name: &str,
+    raw: &BTreeMap<String, HclValue>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut args = BTreeMap::new();
+    for (arg, value) in raw {
+        if arg.trim().is_empty() {
+            return Err(format!("{kind} {name:?}: argument name must not be empty"));
+        }
+        if matches!(arg.as_str(), "value" | "key" | "label") {
+            return Err(format!(
+                "{kind} {name:?}: argument {arg} is reserved; use a different name"
+            ));
+        }
+        let default = value
+            .as_text()
+            .ok_or_else(|| format!("{kind} {name:?}: argument {arg} default must be a string"))?;
+        args.insert(arg.clone(), default.to_owned());
+    }
+    Ok(args)
+}
+
+fn resolve_action_invocation(
+    widget: &str,
+    invocation: &RawActionInvocation,
+    actions: &BTreeMap<String, SelectAction>,
+) -> Result<SelectAction, String> {
+    let mut action = resolve_action_name(&invocation.name, actions)
+        .map_err(|err| format!("widget {widget:?}: {err}"))?;
+    match &mut action {
+        SelectAction::Exec { args, .. } => {
+            *args = overlay_action_args(widget, &invocation.name, args, &invocation.properties)?;
+        }
+        _ if invocation.properties.is_empty() => {}
+        _ => {
+            let extra = invocation
+                .properties
+                .keys()
+                .next()
+                .expect("non-empty argument map");
+            return Err(format!(
+                "widget {widget:?}: action {:?}: unknown argument {extra}",
+                invocation.name
+            ));
+        }
+    }
+    Ok(action)
+}
+
+fn overlay_action_args(
+    widget: &str,
+    action: &str,
+    defaults: &BTreeMap<String, String>,
+    properties: &BTreeMap<String, HclValue>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut args = defaults.clone();
+    for (key, value) in properties {
+        if !defaults.contains_key(key) {
+            return Err(format!(
+                "widget {widget:?}: action {action:?}: unknown argument {key}"
+            ));
+        }
+        let text = value.as_text().ok_or_else(|| {
+            format!("widget {widget:?}: action {action:?}: {key} must be a string")
+        })?;
+        validate_placeholders("widget", widget, text, &[])?;
+        args.insert(key.clone(), text.to_owned());
+    }
+    Ok(args)
 }
 
 fn resolve_transforms(
@@ -651,8 +737,20 @@ fn validate_placeholders(
     Ok(())
 }
 
-pub fn interpolate_command(command: &[String], key: &str, label: &str, value: &str) -> Vec<String> {
-    interpolate_command_with(command, key, label, value, &BTreeMap::new())
+fn interpolate_arg_map(
+    args: &BTreeMap<String, String>,
+    key: &str,
+    label: &str,
+    value: &str,
+) -> BTreeMap<String, String> {
+    args.iter()
+        .map(|(name, template)| {
+            (
+                name.clone(),
+                interpolate_arg(template, key, label, value, &BTreeMap::new()),
+            )
+        })
+        .collect()
 }
 
 pub fn interpolate_command_with(
@@ -1084,7 +1182,8 @@ mod tests {
                     "firefox".into(),
                     "--private-window".into(),
                     "${value}".into()
-                ]
+                ],
+                args: BTreeMap::new(),
             }
         );
     }
@@ -1092,7 +1191,7 @@ mod tests {
     #[test]
     fn exec_command_interpolates_key_label_and_value() {
         assert_eq!(
-            interpolate_command(
+            interpolate_command_with(
                 &[
                     "notify-send".into(),
                     "${label}".into(),
@@ -1100,7 +1199,8 @@ mod tests {
                 ],
                 "url",
                 "Project website",
-                "https://example.com"
+                "https://example.com",
+                &BTreeMap::new()
             ),
             vec!["notify-send", "Project website", "url: https://example.com"]
         );
@@ -1161,6 +1261,217 @@ mod tests {
     }
 
     #[test]
+    fn widget_action_can_override_declared_args() {
+        let config = parse_config(
+            r#"
+                action "notify" {
+                    type = "exec"
+                    args {
+                        title = "klemmbrett"
+                        body  = "${value}"
+                    }
+                    command = ["notify-send", "${title}", "${body}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action "notify" {
+                        title = "${label}"
+                        body  = "${key}: ${value}"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].action(),
+            SelectAction::Exec {
+                command: vec!["notify-send".into(), "${title}".into(), "${body}".into()],
+                args: BTreeMap::from([
+                    ("title".into(), "${label}".into()),
+                    ("body".into(), "${key}: ${value}".into()),
+                ]),
+            }
+        );
+        assert_eq!(
+            config.widgets[0].action().argv("url", "Site", "https://ex"),
+            Some(vec![
+                "notify-send".into(),
+                "Site".into(),
+                "url: https://ex".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn omitted_action_argument_uses_the_default() {
+        let config = parse_config(
+            r#"
+                action "notify" {
+                    type = "exec"
+                    args {
+                        title = "klemmbrett"
+                        body  = "${value}"
+                    }
+                    command = ["notify-send", "${title}", "${body}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action   = "notify"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].action().argv("url", "Site", "https://ex"),
+            Some(vec![
+                "notify-send".into(),
+                "klemmbrett".into(),
+                "https://ex".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn empty_action_block_keeps_defaults() {
+        let config = parse_config(
+            r#"
+                action "notify" {
+                    type = "exec"
+                    args {
+                        title = "klemmbrett"
+                    }
+                    command = ["notify-send", "${title}", "${value}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action "notify" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        match config.widgets[0].action() {
+            SelectAction::Exec { args, .. } => {
+                assert_eq!(
+                    args,
+                    BTreeMap::from([("title".into(), "klemmbrett".into())])
+                );
+            }
+            other => panic!("expected exec action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extra_action_argument_is_rejected() {
+        let error = parse_config(
+            r#"
+                action "open" {
+                    type    = "exec"
+                    command = ["xdg-open", "${value}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action "open" {
+                        title = "nope"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown argument title"), "{error}");
+    }
+
+    #[test]
+    fn reserved_action_argument_name_is_rejected() {
+        let error = parse_config(
+            r#"
+                action "echo" {
+                    type = "exec"
+                    args {
+                        value = "ignored"
+                    }
+                    command = ["echo", "${value}"]
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("reserved"), "{error}");
+    }
+
+    #[test]
+    fn widget_action_argument_unknown_placeholder_is_rejected() {
+        let error = parse_config(
+            r#"
+                action "notify" {
+                    type = "exec"
+                    args {
+                        title = "klemmbrett"
+                    }
+                    command = ["notify-send", "${title}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action "notify" {
+                        title = "$${expr}"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown placeholder ${expr}"), "{error}");
+    }
+
+    #[test]
+    fn action_name_and_block_together_are_rejected() {
+        let error = parse_config(
+            r#"
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action   = "xdg-open"
+                    action "xdg-open" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("both a name and a block"), "{error}");
+    }
+
+    #[test]
+    fn copy_to_clipboard_cannot_declare_args() {
+        let error = parse_config(
+            r#"
+                action "copy" {
+                    type = "copy-to-clipboard"
+                    args {
+                        title = "nope"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("only supported for exec"), "{error}");
+    }
+
+    #[test]
     fn shipped_xdg_open_can_be_overridden() {
         let config = parse_config(
             r#"
@@ -1181,7 +1492,8 @@ mod tests {
         assert_eq!(
             config.widgets[0].action(),
             SelectAction::Exec {
-                command: vec!["handlr".into(), "open".into(), "${value}".into()]
+                command: vec!["handlr".into(), "open".into(), "${value}".into()],
+                args: BTreeMap::new(),
             }
         );
     }

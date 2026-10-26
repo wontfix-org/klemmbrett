@@ -393,7 +393,8 @@ mod tests {
         assert_eq!(
             widgets.action("run"),
             Some(SelectAction::Exec {
-                command: vec!["${value}".into()]
+                command: vec!["${value}".into()],
+                args: Default::default(),
             })
         );
         assert!(
@@ -440,6 +441,44 @@ mod tests {
     }
 
     #[test]
+    fn configured_action_args_are_available_by_widget_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("records"), "one\n").unwrap();
+        let config = parse_config(
+            r#"
+                action "notify" {
+                    type = "exec"
+                    args {
+                        title = "klemmbrett"
+                    }
+                    command = ["notify-send", "${title}", "${value}"]
+                }
+                widget "items" {
+                    provider = "file"
+                    path     = "records"
+                    format   = "text"
+                    action "notify" {
+                        title = "${label}"
+                    }
+                }
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        let widgets = Widgets::from_config(&config).unwrap();
+        assert_eq!(
+            widgets
+                .action("items")
+                .and_then(|action| action.argv("one", "Readable", "payload")),
+            Some(vec![
+                "notify-send".into(),
+                "Readable".into(),
+                "payload".into()
+            ])
+        );
+    }
+
+    #[test]
     fn configured_action_is_available_by_widget_name() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("records"), "one\n").unwrap();
@@ -479,7 +518,8 @@ mod tests {
         assert_eq!(
             widgets.action("links"),
             Some(SelectAction::Exec {
-                command: vec!["xdg-open".into(), "${value}".into()]
+                command: vec!["xdg-open".into(), "${value}".into()],
+                args: Default::default(),
             })
         );
     }

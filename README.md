@@ -153,7 +153,34 @@ true, and `action` defaults to `copy-to-clipboard` except `executables`
 extend a built-in handler (`copy-to-clipboard`, `exec`, or
 `activate-window`) with their own settings. `exec` takes an optional
 `command` list (default `["${value}"]`) and substitutes `${value}`,
-`${key}`, and `${label}` from the selected row. `xdg-open` is a shipped
+`${key}`, `${label}`, and names declared in `args`. `args` gives each extra
+name a default; a widget may override those names on `action "name" { }`.
+Widget-passed values and defaults may use `${value}`, `${key}`, and
+`${label}` — they are expanded when the row is selected, then substituted
+into `command`. `action = "name"` still works and keeps the defaults:
+
+```hcl
+action "notify" {
+  type = "exec"
+  args {
+    title = "klemmbrett"
+    body  = "${value}"
+  }
+  command = ["notify-send", "${title}", "${body}"]
+}
+
+widget "links" {
+  provider = "file"
+  path     = "links.yaml"
+  format   = "yaml"
+  action "notify" {
+    title = "${label}"
+    body  = "${key}: ${value}"
+  }
+}
+```
+
+`xdg-open` is a shipped
 `exec` preset (`["xdg-open", "${value}"]`) unless the config defines that
 name. Built-in names cannot be redefined. `launch` defaults to
 `auto`: `systemd-run --user --scope` when klemmbrett itself is a systemd
