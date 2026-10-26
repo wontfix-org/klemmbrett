@@ -218,18 +218,36 @@ focuses a toplevel from a `wayland-windows` widget via
 wins). `wayland-windows` lists open windows; use `layout = "filter"` for both
 (the lists are long).
 
-Named `transform` blocks run a command and replace the selected value with
-stdout (one trailing newline is stripped). The current value is written to
-stdin. `${value}`, `${key}`, `${label}`, and names declared in `args` are
-substituted in `command`. `args` gives each extra name a default; a widget
-may override those names on its `transform "name"` step:
+Named `transform` blocks rewrite the selected value before the action.
+`type` is required. `exec` runs a command and replaces the value with
+stdout (one trailing newline is stripped). `stdin` is written to the
+command and defaults to `${value}`. `${value}`, `${key}`, `${label}`, and
+names declared in `args` are substituted in `command` and `stdin`. `args`
+gives each extra name a default; a widget may override those names on its
+`transform "name"` step. `exec` waits for the command and does not use
+`launch`; a failing command skips the action.
+
+`regex` applies `pattern` to the current value and substitutes `replace`
+for every match. `on_miss` is `keep` (default: leave the value unchanged)
+or `fail` (skip the action). Named captures use `(?P<name>…)` or
+`(?<name>…)` and `$name` / `${name}` in `replace`. Capture names must not
+collide with `value`, `key`, `label`, or declared args — those are
+expanded first.
 
 ```hcl
 transform "jq" {
+  type = "exec"
   args {
     expr = ".data"
   }
   command = ["jq", "-r", "${expr}"]
+}
+
+transform "ticket" {
+  type    = "regex"
+  pattern = "https://[^/]+/browse/(?P<ticket>[A-Z]+-\\d+)"
+  replace = "${ticket}"
+  on_miss = "fail"
 }
 
 widget "payloads" {
@@ -239,12 +257,10 @@ widget "payloads" {
   transform "jq" {
     expr = ".title"
   }
+  transform "ticket" {}
   action = "copy-to-clipboard"
 }
 ```
-
-Transforms wait for the command; they do not use `launch`. A failing command
-skips the action.
 
 ## Popup theme and widgets
 

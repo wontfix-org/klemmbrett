@@ -310,22 +310,57 @@ fn evaluate_body(
 fn interpolation_placeholders(body: &Body) -> Vec<String> {
     let mut names = Vec::new();
     for block in body.blocks() {
-        if !matches!(block.identifier(), "action" | "transform") {
-            continue;
-        }
-        for nested in block.body().blocks() {
-            if nested.identifier() != "args" {
-                continue;
-            }
-            for attr in nested.body().attributes() {
-                let name = attr.key();
-                if !name.is_empty() && !names.iter().any(|seen| seen == name) {
-                    names.push(name.to_owned());
+        match block.identifier() {
+            "action" | "transform" => collect_passthrough_names(block.body(), &mut names),
+            "widget" => {
+                for nested in block.body().blocks() {
+                    if matches!(nested.identifier(), "action" | "transform") {
+                        collect_passthrough_names(nested.body(), &mut names);
+                    }
                 }
             }
+            _ => {}
         }
     }
     names
+}
+
+fn collect_passthrough_names(body: &Body, names: &mut Vec<String>) {
+    for attr in body.attributes() {
+        push_placeholder_name(attr.key(), names);
+        collect_template_names(&attr.expr().to_string(), names);
+    }
+    for nested in body.blocks() {
+        if nested.identifier() != "args" {
+            continue;
+        }
+        for attr in nested.body().attributes() {
+            push_placeholder_name(attr.key(), names);
+            collect_template_names(&attr.expr().to_string(), names);
+        }
+    }
+}
+
+fn collect_template_names(text: &str, names: &mut Vec<String>) {
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        push_placeholder_name(&after[..end], names);
+        rest = &after[end + 1..];
+    }
+}
+
+fn push_placeholder_name(name: &str, names: &mut Vec<String>) {
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || names.iter().any(|seen| seen == name)
+    {
+        return;
+    }
+    names.push(name.to_owned());
 }
 
 fn eval_err(err: impl std::fmt::Display) -> String {
