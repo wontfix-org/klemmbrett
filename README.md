@@ -183,12 +183,41 @@ or the equivalent YAML:
 
 Every record requires a value. Its key and label default to the value when
 omitted, and keys must be unique within a widget. The popup displays the label.
-Selecting a row runs that widget's `action` on the record. `copy-to-clipboard`
-copies the value to the clipboard. `exec` (including shipped `xdg-open`)
-goes through `launch`. `activate-window` focuses a
-toplevel from a `wayland-windows` widget via `zwlr_foreign_toplevel_manager_v1`.
-`executables` lists `PATH` (first basename wins). `wayland-windows` lists
-open windows; use `layout = "filter"` for both (the lists are long).
+Selecting a row runs that widget's `transform` pipeline, then its `action`.
+`copy-to-clipboard` copies the (possibly rewritten) value to the clipboard.
+`exec` (including shipped `xdg-open`) goes through `launch`. `activate-window`
+focuses a toplevel from a `wayland-windows` widget via
+`zwlr_foreign_toplevel_manager_v1`. `executables` lists `PATH` (first basename
+wins). `wayland-windows` lists open windows; use `layout = "filter"` for both
+(the lists are long).
+
+Named `transform` blocks run a command and replace the selected value with
+stdout (one trailing newline is stripped). The current value is written to
+stdin. `${value}`, `${key}`, `${label}`, and names declared in `args` are
+substituted in `command`. `args` gives each extra name a default; a widget
+may override those names on its `transform "name"` step:
+
+```hcl
+transform "jq" {
+  args {
+    expr = ".data"
+  }
+  command = ["jq", "-r", "${expr}"]
+}
+
+widget "payloads" {
+  provider = "file"
+  path     = "payloads.yaml"
+  format   = "yaml"
+  transform "jq" {
+    expr = ".title"
+  }
+  action = "copy-to-clipboard"
+}
+```
+
+Transforms wait for the command; they do not use `launch`. A failing command
+skips the action.
 
 ## Popup theme and widgets
 
