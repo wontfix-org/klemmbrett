@@ -146,16 +146,17 @@ mode. Default `text_color` is `hex("888888")`.
 
 ### element-marker
 
-Multi-select mark (`>` when the row is checked, empty otherwise). `width`
-is the column width (default 16). Packed automatically when the widget
-sets `multi = true`, unless `enabled = false`. Default `text_color` is
-`hex("888888")`. Style it from a layout:
+Multi-select mark (`text` when the row is checked, empty otherwise).
+`text` defaults to `>`. `width` is the column width (default 16). Packed
+automatically when the widget sets `multi = true`, unless `enabled =
+false`. Default `text_color` is `hex("888888")`. Style it from a layout:
 
 ```hcl
 element {
   children = ["element-marker", "element-index", "element-text"]
 }
 element-marker {
+  text       = "✓"
   width      = 12
   text_color = hex("a3be8c")
 }
@@ -276,6 +277,12 @@ width is automatic.
 
 Type: placement name (see [Location](#location)). Meaningful on `window` and
 as the recipe-level widget property.
+
+### text
+
+Type: string. Meaningful on `element-marker` (the mark when the row is
+checked; default `>`). An empty string draws nothing. Other catalog
+elements parse it and ignore it.
 
 ### inherit()
 

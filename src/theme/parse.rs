@@ -31,6 +31,7 @@ pub(super) struct Props {
     pub max_height: Option<f32>,
     pub font_size: Option<f32>,
     pub location: Option<Location>,
+    pub text: Option<String>,
     pub inherit: Vec<String>,
 }
 
@@ -54,6 +55,9 @@ impl Props {
         overlay(&mut self.max_height, other.max_height);
         overlay(&mut self.font_size, other.font_size);
         overlay(&mut self.location, other.location);
+        if other.text.is_some() {
+            self.text = other.text.clone();
+        }
         for name in &other.inherit {
             if !self.inherit.iter().any(|existing| existing == name) {
                 self.inherit.push(name.clone());
@@ -911,9 +915,10 @@ fn apply_prop(
         "max_height" => props.max_height = Some(value_number_on(value, name, axis)?),
         "font_size" => props.font_size = Some(value_number_on(value, name, axis)?),
         "location" => props.location = Some(value_location(value)?),
+        "text" => props.text = Some(value_text(value, name)?),
         other => {
             return Err(format!(
-                "unknown property {other}; supported: enabled, padding, margin, border, border_radius, border_color, background_color, background_image, text_color, spacing, orientation, children, width, height, max_height, font_size, location"
+                "unknown property {other}; supported: enabled, padding, margin, border, border_radius, border_color, background_color, background_image, text_color, spacing, orientation, children, width, height, max_height, font_size, location, text"
             ));
         }
     }
@@ -922,6 +927,13 @@ fn apply_prop(
 
 fn is_inherit(value: &Value) -> bool {
     value.as_str() == Some("inherit")
+}
+
+fn value_text(value: &Value, name: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("{name} must be a string"))
 }
 
 fn value_bool(value: &Value, name: &str) -> Result<bool, String> {
@@ -1433,6 +1445,7 @@ mod tests {
     fn unknown_property_is_rejected() {
         let error = parse_spec("window { colour = hex(\"fff\") }").unwrap_err();
         assert!(error.contains("unknown property colour"), "{error}");
+        assert!(error.contains("text"), "{error}");
     }
 
     #[test]

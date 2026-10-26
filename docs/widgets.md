@@ -55,8 +55,8 @@ Shift-Tab toggle and move up (fzf `--multi`). Enter runs transforms and
 actions for each checked row, in the order they were marked. If nothing
 is checked, Enter runs the current row. Click and accelerator keys still
 pick one row. `select` and `deselect` override those keys (`"tab"` and
-`"shift-tab"` by default; `"btab"` is Shift-Tab). The `>` mark is
-`element-marker` in the layout.
+`"shift-tab"` by default; `"btab"` is Shift-Tab). The mark is
+`element-marker` in the layout (`text` defaults to `>`).
 
 ```hcl
 widget "links" "file" {
