@@ -163,6 +163,27 @@ fn place_on_output(
     Some((margin_x, margin_y))
 }
 
+/// Toggle `record` in the checked set, preserving selection order.
+pub fn toggle_record(checked: &mut Vec<Record>, record: &Record) {
+    if let Some(index) = checked.iter().position(|item| item.key == record.key) {
+        checked.remove(index);
+    } else {
+        checked.push(record.clone());
+    }
+}
+
+/// Rows to run on confirm: the checked set, or the current row when none are marked.
+pub fn activation_records<'a>(
+    checked: &'a [Record],
+    current: Option<&'a Record>,
+) -> Vec<&'a Record> {
+    if checked.is_empty() {
+        current.into_iter().collect()
+    } else {
+        checked.iter().collect()
+    }
+}
+
 /// Rows whose label contains `query` (case-insensitive). An empty query keeps all rows.
 pub fn filter_records<'a>(records: &'a [Record], query: &str) -> Vec<&'a Record> {
     if query.is_empty() {
@@ -437,6 +458,47 @@ mod tests {
                 .map(|record| record.label.as_str())
                 .collect::<Vec<_>>(),
             ["Alpha", "Alphabet"]
+        );
+    }
+
+    #[test]
+    fn toggle_record_preserves_order_and_unmarks() {
+        let one = Record::new("one");
+        let two = Record::new("two");
+        let mut checked = Vec::new();
+        toggle_record(&mut checked, &one);
+        toggle_record(&mut checked, &two);
+        assert_eq!(
+            checked.iter().map(|record| record.key.as_str()).collect::<Vec<_>>(),
+            ["one", "two"]
+        );
+        toggle_record(&mut checked, &one);
+        assert_eq!(
+            checked.iter().map(|record| record.key.as_str()).collect::<Vec<_>>(),
+            ["two"]
+        );
+    }
+
+    #[test]
+    fn empty_checked_set_activates_the_current_row() {
+        let current = Record::new("now");
+        let checked = Vec::new();
+        let records = activation_records(&checked, Some(&current));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, "now");
+        assert!(activation_records(&checked, None).is_empty());
+    }
+
+    #[test]
+    fn checked_rows_are_activated_in_mark_order() {
+        let current = Record::new("now");
+        let checked = vec![Record::new("one"), Record::new("two")];
+        assert_eq!(
+            activation_records(&checked, Some(&current))
+                .iter()
+                .map(|record| record.key.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"]
         );
     }
 }

@@ -18,8 +18,9 @@ use gpui::{
     WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use klemmbrett::{
-    filter_records, history_candidate, index_for_accelerator, menu_item_spec, place_at_location,
-    run_transform, run_waited_command, spawn_detached, ArboardBackend, Backend, ClipboardSync,
+    activation_records, filter_records, history_candidate, index_for_accelerator, menu_item_spec,
+    place_at_location, run_transform, run_waited_command, spawn_detached, toggle_record,
+    ArboardBackend, Backend, ClipboardSync,
     Edges, Launch, Location, Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction,
     Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
 };
@@ -420,6 +421,7 @@ struct PopupView {
     visible: bool,
     seen_active: bool,
     scroll: UniformListScrollHandle,
+    checked: Vec<Record>,
 }
 
 impl PopupView {
@@ -444,6 +446,7 @@ impl PopupView {
             visible: false,
             seen_active: false,
             scroll: UniformListScrollHandle::new(),
+            checked: Vec::new(),
         }
     }
 
@@ -473,6 +476,7 @@ impl PopupView {
         self.widget_name = widget.to_owned();
         self.query.clear();
         self.selected = 0;
+        self.checked.clear();
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
@@ -519,6 +523,26 @@ impl PopupView {
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
         let filter = self.theme.has_inputbar();
+        if self.theme.has_listview() && !mods.platform {
+            if let Some(multi) = self.widget_multi(cx) {
+                if multi
+                    .select
+                    .matches(key, mods.shift, mods.control, mods.alt)
+                {
+                    self.toggle_and_move(1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if multi
+                    .deselect
+                    .matches(key, mods.shift, mods.control, mods.alt)
+                {
+                    self.toggle_and_move(-1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+            }
+        }
         match key {
             "escape" => {
                 self.hide(window, cx);
@@ -526,7 +550,7 @@ impl PopupView {
                 return;
             }
             "enter" => {
-                self.activate(self.selected, window, cx);
+                self.confirm(window, cx);
                 cx.stop_propagation();
                 return;
             }
@@ -601,25 +625,70 @@ impl PopupView {
         cx.notify();
     }
 
-    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let (key, label, value) = if !self.theme.has_listview() {
-            let text = self.query.clone();
-            (text.clone(), text.clone(), text)
-        } else {
-            let Some((key, label, value)) = self.visible_entries().get(index).map(|record| {
-                (
-                    record.key.clone(),
-                    record.label.clone(),
-                    record.value.clone(),
-                )
-            }) else {
-                return;
-            };
-            (key, label, value)
+    fn widget_multi(&self, cx: &Context<Self>) -> Option<klemmbrett::MultiSelect> {
+        self.app.read(cx).widgets.multi(&self.widget_name).cloned()
+    }
+
+    fn toggle_and_move(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let Some(record) = self
+            .visible_entries()
+            .get(self.selected)
+            .map(|record| (*record).clone())
+        else {
+            return;
         };
+        toggle_record(&mut self.checked, &record);
+        self.move_selection(delta, cx);
+        cx.notify();
+    }
+
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.theme.has_listview() {
+            let text = self.query.clone();
+            self.submit_records(
+                &[Record {
+                    key: text.clone(),
+                    label: text.clone(),
+                    value: text,
+                }],
+                window,
+                cx,
+            );
+            return;
+        }
+        if self.widget_multi(cx).is_some() {
+            let visible = self.visible_entries();
+            let current = visible.get(self.selected).copied();
+            let records: Vec<Record> = activation_records(&self.checked, current)
+                .into_iter()
+                .cloned()
+                .collect();
+            self.submit_records(&records, window, cx);
+            return;
+        }
+        self.activate(self.selected, window, cx);
+    }
+
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(record) = self.visible_entries().get(index).map(|record| Record {
+            key: record.key.clone(),
+            label: record.label.clone(),
+            value: record.value.clone(),
+        }) else {
+            return;
+        };
+        self.submit_records(&[record], window, cx);
+    }
+
+    fn submit_records(&mut self, records: &[Record], window: &mut Window, cx: &mut Context<Self>) {
+        if records.is_empty() {
+            return;
+        }
         let widget = self.widget_name.clone();
         self.app.update(cx, |app, _cx| {
-            app.select_record(&widget, &key, &label, &value)
+            for record in records {
+                app.select_record(&widget, &record.key, &record.label, &record.value);
+            }
         });
         self.hide(window, cx);
     }
@@ -647,11 +716,16 @@ impl Render for PopupView {
         let rows = if !show_list {
             div().flex_1().into_any()
         } else if visible.is_empty() {
-            popup_row(0, None, "No entries", false, &theme, |_, _, _| {}).into_any()
+            popup_row(0, None, "No entries", false, false, &theme, |_, _, _| {}).into_any()
         } else {
             let selected = self.selected;
             let label_max = self.label_max;
             let show_accelerators = !theme.has_inputbar();
+            let checked: std::collections::HashSet<&str> = self
+                .checked
+                .iter()
+                .map(|record| record.key.as_str())
+                .collect();
             let specs: Vec<_> = visible
                 .iter()
                 .enumerate()
@@ -660,7 +734,7 @@ impl Render for PopupView {
                     if !show_accelerators {
                         spec.accelerator = None;
                     }
-                    spec
+                    (spec, checked.contains(record.key.as_str()))
                 })
                 .collect();
             let view = cx.weak_entity();
@@ -668,12 +742,13 @@ impl Render for PopupView {
             uniform_list("history-rows", specs.len(), move |range, _window, _cx| {
                 range
                     .map(|index| {
-                        let spec = &specs[index];
+                        let (spec, marked) = &specs[index];
                         popup_row(
                             index,
                             spec.accelerator,
                             &spec.text,
                             index == selected,
+                            *marked,
                             &list_theme,
                             activate_row(view.clone(), index),
                         )
@@ -783,6 +858,7 @@ fn popup_row(
     accelerator: Option<char>,
     text: &str,
     selected: bool,
+    marked: bool,
     theme: &Theme,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
@@ -803,12 +879,24 @@ fn popup_row(
 
     for child in style.packed_children(theme) {
         row = match child {
+            Widget::ElementMarker => row.child(element_marker(marked, theme.element_marker())),
             Widget::ElementIndex => row.child(element_index(accelerator, theme.element_index())),
             Widget::ElementText => row.child(element_text(text, theme.element_text())),
             _ => row,
         };
     }
     row
+}
+
+fn element_marker(marked: bool, style: &Style) -> gpui::Div {
+    apply_box(
+        div()
+            .w(px(style.width.unwrap_or(16.0)))
+            .flex_none()
+            .whitespace_nowrap()
+            .child(if marked { ">" } else { "" }),
+        style,
+    )
 }
 
 fn element_index(accelerator: Option<char>, style: &Style) -> gpui::Div {

@@ -163,11 +163,19 @@ impl LayoutRecipe {
         &self,
         widget_name: Option<&str>,
         widget_provider: Option<&str>,
+        widget_multi: bool,
     ) -> Result<Self, String> {
         let Some(raw) = &self.raw else {
             return Ok(self.clone());
         };
-        let evaluated = evaluate_body(raw, &self.locals, widget_name, widget_provider, &[])?;
+        let evaluated = evaluate_body(
+            raw,
+            &self.locals,
+            widget_name,
+            widget_provider,
+            widget_multi,
+            &[],
+        )?;
         let mut recipe = layout_from_body(&evaluated)?;
         recipe.raw = self.raw.clone();
         recipe.locals = self.locals.clone();
@@ -242,7 +250,7 @@ fn parse_document_stack(
     };
     ingest_raw(&raw, &mut doc, base_dir, stack, true)?;
     let placeholders = interpolation_placeholders(&raw);
-    let evaluated = evaluate_body(&raw, &doc.locals, None, None, &placeholders)?;
+    let evaluated = evaluate_body(&raw, &doc.locals, None, None, false, &placeholders)?;
     ingest_evaluated(&evaluated, &mut doc, true)?;
     Ok(doc)
 }
@@ -271,7 +279,7 @@ pub(super) fn parse_spec_at(text: &str, base_dir: &Path) -> Result<ThemeSpec, St
 pub fn parse_layout_recipe(text: &str) -> Result<LayoutRecipe, String> {
     let raw = parse_hcl(text)?;
     let locals = locals_from_body(&raw)?;
-    let evaluated = evaluate_body(&raw, &locals, None, None, &[])?;
+    let evaluated = evaluate_body(&raw, &locals, None, None, false, &[])?;
     let mut recipe = layout_from_body(&evaluated)?;
     recipe.raw = Some(raw);
     recipe.locals = locals;
@@ -285,7 +293,7 @@ fn parse_hcl(text: &str) -> Result<Body, String> {
 fn locals_from_body(body: &Body) -> Result<Value, String> {
     let mut locals = hcl::Map::new();
     let empty = Value::Object(hcl::Map::new());
-    let ctx = eval_context(&empty, None, None, &[]);
+    let ctx = eval_context(&empty, None, None, false, &[]);
     for block in body.blocks() {
         if block.identifier() != "locals" {
             continue;
@@ -304,9 +312,16 @@ fn evaluate_body(
     locals: &Value,
     widget_name: Option<&str>,
     widget_provider: Option<&str>,
+    widget_multi: bool,
     placeholders: &[String],
 ) -> Result<Body, String> {
-    let ctx = eval_context(locals, widget_name, widget_provider, placeholders);
+    let ctx = eval_context(
+        locals,
+        widget_name,
+        widget_provider,
+        widget_multi,
+        placeholders,
+    );
     body.evaluate(&ctx).map_err(eval_err)
 }
 
@@ -374,6 +389,7 @@ fn eval_context<'a>(
     locals: &'a Value,
     widget_name: Option<&'a str>,
     widget_provider: Option<&'a str>,
+    widget_multi: bool,
     placeholders: &'a [String],
 ) -> Context<'a> {
     let mut ctx = Context::new();
@@ -391,6 +407,7 @@ fn eval_context<'a>(
         "provider".into(),
         Value::from(widget_provider.unwrap_or_default()),
     );
+    widget.insert("multi".into(), Value::from(widget_multi));
     ctx.declare_var("widget", Value::Object(widget));
     ctx.declare_var("value", Value::from("${value}"));
     ctx.declare_var("key", Value::from("${key}"));
@@ -635,7 +652,7 @@ fn ingest_raw(
                     locals: doc.locals.clone(),
                     ..LayoutRecipe::default()
                 };
-                let evaluated = evaluate_body(block.body(), &doc.locals, None, None, &[])?;
+                let evaluated = evaluate_body(block.body(), &doc.locals, None, None, false, &[])?;
                 let parsed = layout_from_body(&evaluated)?;
                 recipe.location = parsed.location;
                 recipe.spec = parsed.spec;
@@ -816,7 +833,7 @@ fn layout_from_body(body: &Body) -> Result<LayoutRecipe, String> {
 fn apply_catalog(spec: &mut ThemeSpec, name: &str, block: &Block) -> Result<(), String> {
     let widget = parse_widget(name).ok_or_else(|| {
         format!(
-            "unknown block {name}; supported: configuration, widget, action, transform, layout, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
+            "unknown block {name}; supported: configuration, widget, action, transform, layout, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, element-marker, inputbar, prompt, entry"
         )
     })?;
     let state = match block.labels().first().map(|label| label.as_str()) {
@@ -843,7 +860,7 @@ fn apply_catalog(spec: &mut ThemeSpec, name: &str, block: &Block) -> Result<(), 
 
 fn to_value(expr: &hcl::Expression) -> Result<Value, String> {
     let empty = Value::Object(hcl::Map::new());
-    let ctx = eval_context(&empty, None, None, &[]);
+    let ctx = eval_context(&empty, None, None, false, &[]);
     expr.evaluate(&ctx).map_err(eval_err)
 }
 
@@ -1265,6 +1282,7 @@ fn parse_widget(name: &str) -> Option<Widget> {
         "element" => Widget::Element,
         "element-index" => Widget::ElementIndex,
         "element-text" => Widget::ElementText,
+        "element-marker" => Widget::ElementMarker,
         "inputbar" => Widget::InputBar,
         "prompt" => Widget::Prompt,
         "entry" => Widget::Entry,

@@ -30,6 +30,7 @@ pub enum Widget {
     Element,
     ElementIndex,
     ElementText,
+    ElementMarker,
     InputBar,
     Prompt,
     Entry,
@@ -44,6 +45,7 @@ impl Widget {
             Self::Element => "element",
             Self::ElementIndex => "element-index",
             Self::ElementText => "element-text",
+            Self::ElementMarker => "element-marker",
             Self::InputBar => "inputbar",
             Self::Prompt => "prompt",
             Self::Entry => "entry",
@@ -225,6 +227,7 @@ pub struct Theme {
     element_hover: Style,
     element_index: Style,
     element_text: Style,
+    element_marker: Style,
     inputbar: Style,
     prompt: Style,
     entry: Style,
@@ -270,6 +273,10 @@ impl Theme {
         &self.element_text
     }
 
+    pub fn element_marker(&self) -> &Style {
+        &self.element_marker
+    }
+
     pub fn inputbar(&self) -> &Style {
         &self.inputbar
     }
@@ -304,6 +311,7 @@ impl Theme {
             Widget::Element => &self.element,
             Widget::ElementIndex => &self.element_index,
             Widget::ElementText => &self.element_text,
+            Widget::ElementMarker => &self.element_marker,
             Widget::InputBar => &self.inputbar,
             Widget::Prompt => &self.prompt,
             Widget::Entry => &self.entry,
@@ -353,6 +361,9 @@ impl Theme {
         if children.len() > 1 {
             chrome += self.element.spacing * (children.len() - 1) as f32;
         }
+        if children.contains(&Widget::ElementMarker) {
+            chrome += self.element_marker.width.unwrap_or(16.0);
+        }
         if children.contains(&Widget::ElementIndex) {
             chrome += self.element_index.width.unwrap_or(16.0);
         }
@@ -391,7 +402,7 @@ fn theme_from_specs(specs: impl IntoIterator<Item = ThemeSpec>) -> Result<Theme,
 }
 
 pub fn theme_from_document(doc: &HclDocument, base_dir: &Path) -> Result<Theme, String> {
-    presentation_for_widget(doc, None, None, None, None, None, base_dir)
+    presentation_for_widget(doc, None, None, None, None, None, false, base_dir)
         .map(|presentation| presentation.theme)
 }
 
@@ -402,6 +413,7 @@ pub fn presentation_for_widget(
     widget_location: Option<Location>,
     widget_name: Option<&str>,
     widget_provider: Option<&str>,
+    widget_multi: bool,
     base_dir: &Path,
 ) -> Result<Presentation, String> {
     let mut specs = Vec::new();
@@ -416,11 +428,14 @@ pub fn presentation_for_widget(
     let mut recipe_location = None;
     if let Some(name) = widget_layout {
         let recipe = resolve_layout_recipe(name, &doc.named_layouts, base_dir)?
-            .evaluate_for_widget(widget_name, widget_provider)?;
+            .evaluate_for_widget(widget_name, widget_provider, widget_multi)?;
         recipe_location = recipe.location;
         specs.push(recipe.spec);
     }
-    let theme = theme_from_specs(specs)?;
+    let mut theme = theme_from_specs(specs)?;
+    if widget_name.is_some() {
+        theme.apply_multi_select(widget_multi);
+    }
     let location = widget_location
         .or(recipe_location)
         .or(theme.window().location)
@@ -507,6 +522,7 @@ fn parse_theme_from_spec(spec: ThemeSpec) -> Result<Theme, String> {
         element_hover: resolve(&spec, Widget::Element, State::Hover, Some(&element))?,
         element_index: resolve(&spec, Widget::ElementIndex, State::Normal, Some(&element))?,
         element_text: resolve(&spec, Widget::ElementText, State::Normal, Some(&element))?,
+        element_marker: resolve(&spec, Widget::ElementMarker, State::Normal, Some(&element))?,
         inputbar: inputbar.clone(),
         prompt: resolve(&spec, Widget::Prompt, State::Normal, Some(&inputbar))?,
         entry: resolve(&spec, Widget::Entry, State::Normal, Some(&inputbar))?,
@@ -624,6 +640,27 @@ fn resolve(
     })
 }
 
+impl Theme {
+    fn apply_multi_select(&mut self, multi: bool) {
+        if !multi {
+            self.element_marker.enabled = false;
+            return;
+        }
+        if !self.element_marker.enabled {
+            return;
+        }
+        for style in [
+            &mut self.element,
+            &mut self.element_selected,
+            &mut self.element_hover,
+        ] {
+            if !style.children.contains(&Widget::ElementMarker) {
+                style.children.insert(0, Widget::ElementMarker);
+            }
+        }
+    }
+}
+
 fn inherited<T: Copy>(
     props: &parse::Props,
     name: &str,
@@ -672,6 +709,16 @@ fn fallback(widget: Widget) -> parse::Props {
         Widget::ElementText => {
             props.background = Some(Rgba::TRANSPARENT);
         }
+        Widget::ElementMarker => {
+            props.text_color = Some(Rgba {
+                r: 0x88,
+                g: 0x88,
+                b: 0x88,
+                a: 255,
+            });
+            props.width = Some(16.0);
+            props.background = Some(Rgba::TRANSPARENT);
+        }
         Widget::InputBar => {
             props.padding = Some(Edges::all(8.0));
             props.spacing = Some(8.0);
@@ -700,7 +747,7 @@ fn validate_children(parent: Widget, children: &[Widget]) -> Result<(), String> 
     let allowed = match parent {
         Widget::Window => &[Widget::InputBar, Widget::ListView][..],
         Widget::InputBar => &[Widget::Prompt, Widget::Entry][..],
-        Widget::Element => &[Widget::ElementIndex, Widget::ElementText][..],
+        Widget::Element => &[Widget::ElementMarker, Widget::ElementIndex, Widget::ElementText][..],
         _ => &[][..],
     };
     for child in children {
@@ -822,6 +869,18 @@ mod tests {
     }
 
     #[test]
+    fn element_may_pack_a_marker() {
+        let theme = parse_theme(
+            r#"element { children = ["element-marker", "element-text"] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            theme.element().children,
+            vec![Widget::ElementMarker, Widget::ElementText]
+        );
+    }
+
+    #[test]
     fn window_may_pack_an_inputbar() {
         let theme = parse_theme(r#"window { children = ["inputbar", "listview"] }"#).unwrap();
         assert_eq!(
@@ -843,6 +902,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             Path::new("."),
         )
         .unwrap();
@@ -864,6 +924,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             Path::new("."),
         )
         .unwrap();
@@ -883,6 +944,48 @@ mod tests {
         assert_eq!(short, tall);
         assert!(short > 0.0);
         assert!(short < Theme::default().card_size(10, 16).1);
+    }
+
+    #[test]
+    fn multi_select_packs_the_marker() {
+        let with = presentation_for_widget(
+            &parse_document("").unwrap(),
+            None,
+            Some("filter"),
+            None,
+            None,
+            None,
+            true,
+            Path::new("."),
+        )
+        .unwrap();
+        let without = presentation_for_widget(
+            &parse_document("").unwrap(),
+            None,
+            Some("filter"),
+            None,
+            None,
+            None,
+            false,
+            Path::new("."),
+        )
+        .unwrap();
+        assert!(with.theme.element_marker().enabled);
+        assert!(with
+            .theme
+            .element()
+            .packed_children(&with.theme)
+            .contains(&Widget::ElementMarker));
+        assert!(!without.theme.element_marker().enabled);
+        assert!(!without
+            .theme
+            .element()
+            .packed_children(&without.theme)
+            .contains(&Widget::ElementMarker));
+        assert!(
+            with.theme.card_size(1, 16).0 > without.theme.card_size(1, 16).0,
+            "marker column should widen the card"
+        );
     }
 
     #[test]

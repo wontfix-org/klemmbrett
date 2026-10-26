@@ -187,6 +187,78 @@ pub enum Miss {
     Fail,
 }
 
+/// Optional multi-select on a widget. Tab toggles and moves down; Shift-Tab
+/// toggles and moves up, matching fzf `--multi`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiSelect {
+    pub select: KeySpec,
+    pub deselect: KeySpec,
+}
+
+impl MultiSelect {
+    pub fn fzf() -> Self {
+        Self {
+            select: KeySpec::parse("tab").expect("tab"),
+            deselect: KeySpec::parse("shift-tab").expect("shift-tab"),
+        }
+    }
+}
+
+/// A key plus optional modifiers (`tab`, `shift-tab`, `ctrl-space`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeySpec {
+    pub key: String,
+    pub shift: bool,
+    pub control: bool,
+    pub alt: bool,
+}
+
+impl KeySpec {
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut shift = false;
+        let mut control = false;
+        let mut alt = false;
+        let mut key = None;
+        for part in spec.split('-') {
+            match part.to_ascii_lowercase().as_str() {
+                "" => {
+                    return Err(format!("invalid key {spec:?}"));
+                }
+                "shift" => shift = true,
+                "ctrl" | "control" => control = true,
+                "alt" => alt = true,
+                "btab" => {
+                    if key.is_some() {
+                        return Err(format!("invalid key {spec:?}"));
+                    }
+                    shift = true;
+                    key = Some("tab".into());
+                }
+                part => {
+                    if key.is_some() {
+                        return Err(format!("invalid key {spec:?}"));
+                    }
+                    key = Some(part.to_owned());
+                }
+            }
+        }
+        let key = key.ok_or_else(|| format!("invalid key {spec:?}"))?;
+        Ok(Self {
+            key,
+            shift,
+            control,
+            alt,
+        })
+    }
+
+    pub fn matches(&self, key: &str, shift: bool, control: bool, alt: bool) -> bool {
+        self.shift == shift
+            && self.control == control
+            && self.alt == alt
+            && self.key.eq_ignore_ascii_case(key)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum WidgetConfig {
     ClipboardHistory {
@@ -198,6 +270,7 @@ pub enum WidgetConfig {
         presentation: Presentation,
         actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
+        multi: Option<MultiSelect>,
     },
     File {
         name: String,
@@ -206,18 +279,21 @@ pub enum WidgetConfig {
         presentation: Presentation,
         actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
+        multi: Option<MultiSelect>,
     },
     Executables {
         name: String,
         presentation: Presentation,
         actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
+        multi: Option<MultiSelect>,
     },
     WaylandWindows {
         name: String,
         presentation: Presentation,
         actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
+        multi: Option<MultiSelect>,
     },
 }
 
@@ -255,6 +331,15 @@ impl WidgetConfig {
             | Self::File { transforms, .. }
             | Self::Executables { transforms, .. }
             | Self::WaylandWindows { transforms, .. } => transforms,
+        }
+    }
+
+    pub fn multi(&self) -> Option<&MultiSelect> {
+        match self {
+            Self::ClipboardHistory { multi, .. }
+            | Self::File { multi, .. }
+            | Self::Executables { multi, .. }
+            | Self::WaylandWindows { multi, .. } => multi.as_ref(),
         }
     }
 }
@@ -389,7 +474,8 @@ fn widget_from_raw(
 ) -> Result<WidgetConfig, String> {
     let name = raw.name;
     let ty = raw.provider.as_str();
-    let presentation = widget_presentation(&name, ty, &raw.properties, doc, base_dir)?;
+    let multi = parse_multi(&name, &raw.properties)?;
+    let presentation = widget_presentation(&name, ty, &raw.properties, multi.is_some(), doc, base_dir)?;
     let actions = parse_select_actions(&name, &raw.properties, &raw.actions, actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
     let actions = if actions.is_empty() {
@@ -412,6 +498,9 @@ fn widget_from_raw(
                     "theme",
                     "location",
                     "action",
+                    "multi",
+                    "select",
+                    "deselect",
                 ],
             )?;
             let history_limit =
@@ -435,6 +524,7 @@ fn widget_from_raw(
                 presentation,
                 actions,
                 transforms,
+                multi,
             })
         }
         "file" => {
@@ -442,7 +532,17 @@ fn widget_from_raw(
                 "widget",
                 &name,
                 &raw.properties,
-                &["path", "format", "layout", "theme", "location", "action"],
+                &[
+                    "path",
+                    "format",
+                    "layout",
+                    "theme",
+                    "location",
+                    "action",
+                    "multi",
+                    "select",
+                    "deselect",
+                ],
             )?;
             let mut path = required_path(&name, &raw.properties, "path")?;
             resolve_relative(&mut path, base_dir);
@@ -468,6 +568,7 @@ fn widget_from_raw(
                 presentation,
                 actions,
                 transforms,
+                multi,
             })
         }
         "executables" => {
@@ -475,13 +576,22 @@ fn widget_from_raw(
                 "widget",
                 &name,
                 &raw.properties,
-                &["layout", "theme", "location", "action"],
+                &[
+                    "layout",
+                    "theme",
+                    "location",
+                    "action",
+                    "multi",
+                    "select",
+                    "deselect",
+                ],
             )?;
             Ok(WidgetConfig::Executables {
                 name,
                 presentation,
                 actions,
                 transforms,
+                multi,
             })
         }
         "wayland-windows" => {
@@ -489,13 +599,22 @@ fn widget_from_raw(
                 "widget",
                 &name,
                 &raw.properties,
-                &["layout", "theme", "location", "action"],
+                &[
+                    "layout",
+                    "theme",
+                    "location",
+                    "action",
+                    "multi",
+                    "select",
+                    "deselect",
+                ],
             )?;
             Ok(WidgetConfig::WaylandWindows {
                 name,
                 presentation,
                 actions,
                 transforms,
+                multi,
             })
         }
         other => Err(format!(
@@ -989,10 +1108,36 @@ fn interpolate_arg(
     out
 }
 
+fn parse_multi(
+    widget: &str,
+    properties: &BTreeMap<String, HclValue>,
+) -> Result<Option<MultiSelect>, String> {
+    let enabled = optional_bool(properties, "multi")?.unwrap_or(false);
+    let select = optional_name(properties, "select")?;
+    let deselect = optional_name(properties, "deselect")?;
+    if !enabled {
+        if select.is_some() || deselect.is_some() {
+            return Err(format!(
+                "widget {widget:?}: select and deselect require multi = true"
+            ));
+        }
+        return Ok(None);
+    }
+    Ok(Some(MultiSelect {
+        select: parse_widget_key(widget, "select", select.as_deref().unwrap_or("tab"))?,
+        deselect: parse_widget_key(widget, "deselect", deselect.as_deref().unwrap_or("shift-tab"))?,
+    }))
+}
+
+fn parse_widget_key(widget: &str, name: &str, spec: &str) -> Result<KeySpec, String> {
+    KeySpec::parse(spec).map_err(|err| format!("widget {widget:?}: {name} is {err}"))
+}
+
 fn widget_presentation(
     widget: &str,
     provider: &str,
     properties: &BTreeMap<String, HclValue>,
+    multi: bool,
     doc: &HclDocument,
     base_dir: &Path,
 ) -> Result<Presentation, String> {
@@ -1013,6 +1158,7 @@ fn widget_presentation(
         location,
         Some(widget),
         Some(provider),
+        multi,
         base_dir,
     )
     .map_err(|err| format!("widget {widget:?}: {err}"))
@@ -1128,6 +1274,21 @@ fn resolve_relative(path: &mut PathBuf, base_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_spec_parses_fzf_names_and_modifiers() {
+        let tab = KeySpec::parse("tab").unwrap();
+        assert!(tab.matches("tab", false, false, false));
+        assert!(tab.matches("Tab", false, false, false));
+        assert!(!tab.matches("tab", true, false, false));
+        let shift_tab = KeySpec::parse("shift-tab").unwrap();
+        assert_eq!(shift_tab, KeySpec::parse("btab").unwrap());
+        assert!(shift_tab.matches("tab", true, false, false));
+        let ctrl_space = KeySpec::parse("ctrl-space").unwrap();
+        assert!(ctrl_space.matches("space", false, true, false));
+        assert!(KeySpec::parse("shift-").is_err());
+        assert!(KeySpec::parse("shift").is_err());
+    }
 
     #[test]
     fn empty_config_is_sync_only_with_popup_defaults() {
@@ -2007,6 +2168,103 @@ mod tests {
             config.widgets[0].presentation().location,
             Location::SouthEast
         );
+    }
+
+    #[test]
+    fn multi_select_defaults_to_fzf_keys() {
+        let config = parse_config(
+            r#"
+                widget "pick" "clipboard-history" {
+                    multi = true
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.widgets[0].multi(), Some(&MultiSelect::fzf()));
+        assert!(config.widgets[0]
+            .presentation()
+            .theme
+            .element()
+            .packed_children(&config.widgets[0].presentation().theme)
+            .contains(&crate::Widget::ElementMarker));
+    }
+
+    #[test]
+    fn multi_select_keys_can_be_overridden() {
+        let config = parse_config(
+            r#"
+                widget "pick" "clipboard-history" {
+                    multi    = true
+                    select   = "space"
+                    deselect = "btab"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        let multi = config.widgets[0].multi().unwrap();
+        assert_eq!(
+            multi.select,
+            KeySpec {
+                key: "space".into(),
+                shift: false,
+                control: false,
+                alt: false,
+            }
+        );
+        assert_eq!(multi.deselect, KeySpec::parse("shift-tab").unwrap());
+    }
+
+    #[test]
+    fn select_keys_require_multi() {
+        let error = parse_config(
+            r#"
+                widget "pick" "clipboard-history" {
+                    select = "tab"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("require multi = true"), "{error}");
+    }
+
+    #[test]
+    fn invalid_select_key_is_rejected() {
+        let error = parse_config(
+            r#"
+                widget "pick" "clipboard-history" {
+                    multi  = true
+                    select = "shift-"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("select is invalid key"), "{error}");
+    }
+
+    #[test]
+    fn layout_can_read_widget_multi() {
+        let config = parse_config(
+            r#"
+                layout "smart" {
+                    location = widget.multi ? "center" : "pointer"
+                }
+                widget "pick" "clipboard-history" {
+                    layout = "smart"
+                    multi  = true
+                }
+                widget "one" "clipboard-history" {
+                    layout = "smart"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.widgets[0].presentation().location, Location::Center);
+        assert_eq!(config.widgets[1].presentation().location, Location::Pointer);
     }
 
     #[test]

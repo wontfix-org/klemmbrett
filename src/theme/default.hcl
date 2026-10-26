@@ -47,6 +47,12 @@ element-index {
   background_color = transparent()
 }
 
+element-marker {
+  text_color       = hex("888888")
+  width            = 16
+  background_color = transparent()
+}
+
 element-text {
   background_color = transparent()
 }
