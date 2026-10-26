@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::config::{Config, FileFormat, SelectAction, Transform, WidgetConfig};
+use crate::config::{Config, FileFormat, MultiSelect, SelectAction, Transform, WidgetConfig};
 use crate::executables::executables_on_path;
 use crate::theme::Presentation;
 use crate::windows::WindowList;
@@ -65,6 +65,7 @@ struct NamedWidget {
     presentation: Presentation,
     actions: Vec<SelectAction>,
     transforms: Vec<Transform>,
+    multi: Option<MultiSelect>,
 }
 
 enum Provider {
@@ -92,6 +93,7 @@ impl Widgets {
             let presentation = widget.presentation().clone();
             let actions = widget.actions().to_vec();
             let transforms = widget.transforms().to_vec();
+            let multi = widget.multi().cloned();
             let provider = match widget {
                 WidgetConfig::ClipboardHistory {
                     db,
@@ -125,6 +127,7 @@ impl Widgets {
                 presentation,
                 actions,
                 transforms,
+                multi,
             });
         }
 
@@ -165,6 +168,13 @@ impl Widgets {
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| entry.transforms.as_slice())
+    }
+
+    pub fn multi(&self, name: &str) -> Option<&MultiSelect> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .and_then(|entry| entry.multi.as_ref())
     }
 
     pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {

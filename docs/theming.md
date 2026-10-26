@@ -33,10 +33,11 @@ Location is chosen separately from colors:
 3. `window { location = … }`
 4. `pointer`
 
-Layouts used by a widget are evaluated with `widget.name` and
-`widget.provider` in scope, so packing can depend on the widget.
-`widget.provider` is `clipboard-history`, `file`, `executables`, or
-`wayland-windows`.
+Layouts used by a widget are evaluated with `widget.name`,
+`widget.provider`, and `widget.multi` in scope, so packing can depend on
+the widget. `widget.provider` is `clipboard-history`, `file`,
+`executables`, or `wayland-windows`. `widget.multi` is true when the
+widget sets `multi = true`.
 
 ## Layouts
 
@@ -92,6 +93,7 @@ overlay
     │   └── entry
     └── listview
         └── element       (one per row; states: selected, hover)
+            ├── element-marker   (optional; shown when multi-select is on)
             ├── element-index
             └── element-text
 ```
@@ -104,7 +106,7 @@ tree (and from card-size chrome).
 | --- | --- | --- |
 | `window` | `inputbar`, `listview` | `["listview"]` |
 | `inputbar` | `prompt`, `entry` | `["prompt", "entry"]` |
-| `element` | `element-index`, `element-text` | `["element-index", "element-text"]` |
+| `element` | `element-marker`, `element-index`, `element-text` | `["element-index", "element-text"]` |
 | any other | none | empty |
 
 `element "selected"` and `element "hover"` must pack the same allowed children.
@@ -141,6 +143,23 @@ overrides `background_color` while the pointer is over a row. Default
 Accelerator glyph (`1`–`9`, `a`–`z`). `width` is the column width (default
 16). Hidden from packing when `enabled = false`, or left empty in filter
 mode. Default `text_color` is `hex("888888")`.
+
+### element-marker
+
+Multi-select mark (`>` when the row is checked, empty otherwise). `width`
+is the column width (default 16). Packed automatically when the widget
+sets `multi = true`, unless `enabled = false`. Default `text_color` is
+`hex("888888")`. Style it from a layout:
+
+```hcl
+element {
+  children = ["element-marker", "element-index", "element-text"]
+}
+element-marker {
+  width      = 12
+  text_color = hex("a3be8c")
+}
+```
 
 ### element-text
 
@@ -198,8 +217,9 @@ Type: number. Default: `0`. Corner radius of the box.
 
 Type: color. Defaults from `defaults` in the embedded theme: background
 `hex("2b2b2b")`, text `hex("e8e8e8")`, border `hex("555555")`. `overlay`,
-`element`, `element-index`, `element-text`, `inputbar`, `prompt`, and `entry`
-default to a transparent background unless a theme sets one.
+`element`, `element-index`, `element-text`, `element-marker`, `inputbar`,
+`prompt`, and `entry` default to a transparent background unless a theme
+sets one.
 
 ### background_image
 
@@ -228,6 +248,7 @@ Type: number.
 
 - `window`: card width. If omitted, computed from `label_max` and chrome.
 - `element-index`: accelerator column (default 16).
+- `element-marker`: multi-select mark column (default 16).
 - other elements: parsed, not used for layout.
 
 ### height
@@ -262,8 +283,8 @@ as the recipe-level widget property.
 this tree:
 
 `overlay` → `window` → `listview` / `inputbar` → `element` → `element-index` /
-`element-text`; `inputbar` → `prompt` / `entry`; `element` →
-`element "selected"` / `element "hover"`.
+`element-text` / `element-marker`; `inputbar` → `prompt` / `entry`;
+`element` → `element "selected"` / `element "hover"`.
 
 If the parent has no value, the element’s own value (or default) is kept.
 

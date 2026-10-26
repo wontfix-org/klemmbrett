@@ -50,6 +50,26 @@ action arguments are expanded when the row is selected.
 `layout = "prompt"` is inputbar-only: Enter returns the typed text as
 `key`, `label`, and `value`. Provider records are unused.
 
+`multi = true` lets Tab toggle the current row and move down, and
+Shift-Tab toggle and move up (fzf `--multi`). Enter runs transforms and
+actions for each checked row, in the order they were marked. If nothing
+is checked, Enter runs the current row. Click and accelerator keys still
+pick one row. `select` and `deselect` override those keys (`"tab"` and
+`"shift-tab"` by default; `"btab"` is Shift-Tab). The `>` mark is
+`element-marker` in the layout.
+
+```hcl
+widget "links" "file" {
+  path     = "links.yaml"
+  format   = "yaml"
+  layout   = "filter"
+  multi    = true
+  select   = "tab"
+  deselect = "shift-tab"
+  action   = "xdg-open"
+}
+```
+
 ### clipboard-history
 
 ```hcl
