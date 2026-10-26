@@ -6,9 +6,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use wayland_client::protocol::{wl_registry, wl_seat};
-use wayland_client::{
-    event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle,
-};
+use wayland_client::{event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
 };

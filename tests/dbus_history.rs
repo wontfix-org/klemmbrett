@@ -6,18 +6,18 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[test]
-fn show_forwards_the_source_and_pointer_coordinates() {
+fn show_forwards_the_widget_and_pointer_coordinates() {
     let Ok(builder) = zbus::blocking::connection::Builder::session() else {
         eprintln!("skipping: no session bus");
         return;
     };
 
     let (tx, rx) = mpsc::channel();
-    let api = BusInterface::new(move |source, pointer| {
-        if source != "snippets" {
-            return Err(format!("unknown source {source:?}"));
+    let api = BusInterface::new(move |widget, pointer| {
+        if widget != "snippets" {
+            return Err(format!("unknown widget {widget:?}"));
         }
-        let _ = tx.send((source, pointer));
+        let _ = tx.send((widget, pointer));
         Ok(())
     });
 
@@ -43,18 +43,18 @@ fn show_forwards_the_source_and_pointer_coordinates() {
 
     request_show(&name, "snippets", Some((120, 80))).expect("Show should succeed");
 
-    let (source, pointer) = rx
+    let (widget, pointer) = rx
         .recv_timeout(Duration::from_secs(2))
-        .expect("Show should deliver the source and coordinates to the UI thread");
-    assert_eq!((source.as_str(), pointer), ("snippets", Some((120, 80))));
+        .expect("Show should deliver the widget and coordinates to the UI thread");
+    assert_eq!((widget.as_str(), pointer), ("snippets", Some((120, 80))));
 
     request_show(&name, "snippets", None).expect("Show with no pointer should succeed");
-    let (source, pointer) = rx
+    let (widget, pointer) = rx
         .recv_timeout(Duration::from_secs(2))
         .expect("Show should deliver an empty pointer array");
-    assert_eq!((source.as_str(), pointer), ("snippets", None));
+    assert_eq!((widget.as_str(), pointer), ("snippets", None));
 
     let error = request_show(&name, "missing", Some((120, 80)))
-        .expect_err("an unknown source should be rejected");
-    assert!(error.to_string().contains("unknown source"));
+        .expect_err("an unknown widget should be rejected");
+    assert!(error.to_string().contains("unknown widget"));
 }

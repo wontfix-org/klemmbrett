@@ -20,7 +20,7 @@ use gpui::{
 use klemmbrett::{
     filter_records, history_candidate, index_for_accelerator, menu_item_spec, place_at_location,
     spawn_detached, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location, Orientation,
-    OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Sources, Style, Theme, Widget,
+    OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget, Widgets,
     POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
@@ -36,29 +36,29 @@ enum ClipCmd {
 
 pub fn run(
     sync: ClipboardSync<ArboardBackend>,
-    sources: Sources,
+    widgets: Widgets,
     label_max: usize,
     theme: Theme,
     launch: Launch,
 ) {
     let (tx, rx) = async_channel::unbounded::<UiCmd>();
-    let source_names: HashSet<_> = sources.names().into_iter().collect();
-    dbus::spawn(source_names, tx.clone());
-    install_tray(sources.names(), tx.clone());
+    let widget_names: HashSet<_> = widgets.names().into_iter().collect();
+    dbus::spawn(widget_names, tx.clone());
+    install_tray(widgets.names(), tx.clone());
     let clip_tx = spawn_clipboard(sync, tx);
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(sources, label_max, theme, clip_tx, launch));
+            let app = cx.new(|_cx| Klemmbrett::new(widgets, label_max, theme, clip_tx, launch));
             app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
             cx.spawn(async move |cx| {
                 while let Ok(cmd) = rx.recv().await {
                     dispatcher.update(cx, |this, cx| match cmd {
-                        UiCmd::Show { source, pointer } => {
-                            this.show_source_menu(&source, pointer, cx)
+                        UiCmd::Show { widget, pointer } => {
+                            this.show_widget_menu(&widget, pointer, cx)
                         }
                         UiCmd::RecordHistory(text) => this.record_history(&text),
                         UiCmd::Quit => cx.quit(),
@@ -114,7 +114,7 @@ fn run_user_command(launch: &ResolvedLaunch, program_and_args: &[&str]) -> Resul
 }
 
 struct Klemmbrett {
-    sources: Sources,
+    widgets: Widgets,
     label_max: usize,
     theme: Theme,
     popup: Option<WindowHandle<PopupView>>,
@@ -124,14 +124,14 @@ struct Klemmbrett {
 
 impl Klemmbrett {
     fn new(
-        sources: Sources,
+        widgets: Widgets,
         label_max: usize,
         theme: Theme,
         clip_tx: mpsc::Sender<ClipCmd>,
         launch: Launch,
     ) -> Self {
         Self {
-            sources,
+            widgets,
             label_max: label_max.max(1),
             theme,
             popup: None,
@@ -141,7 +141,7 @@ impl Klemmbrett {
     }
 
     fn record_history(&mut self, text: &str) {
-        if let Err(err) = self.sources.record_history(text) {
+        if let Err(err) = self.widgets.record_history(text) {
             eprintln!("Failed to record clipboard history: {err}");
         }
     }
@@ -152,8 +152,8 @@ impl Klemmbrett {
         }
     }
 
-    fn select_record(&mut self, source: &str, key: &str, label: &str, value: &str) {
-        let action = self.sources.action(source).unwrap_or_default();
+    fn select_record(&mut self, widget: &str, key: &str, label: &str, value: &str) {
+        let action = self.widgets.action(widget).unwrap_or_default();
         match action {
             SelectAction::CopyToClipboard => self.restore(value),
             exec @ SelectAction::Exec { .. } => {
@@ -164,7 +164,7 @@ impl Klemmbrett {
                 }
             }
             SelectAction::ActivateWindow => {
-                if let Err(err) = self.sources.activate_window(value) {
+                if let Err(err) = self.widgets.activate_window(value) {
                     eprintln!("Failed to activate window {value:?}: {err}");
                 }
             }
@@ -184,22 +184,22 @@ impl Klemmbrett {
         self.open_popup(Vec::new(), placement, false, String::new(), cx);
     }
 
-    fn show_source_menu(
+    fn show_widget_menu(
         &mut self,
-        source: &str,
+        widget: &str,
         pointer: Option<(i32, i32)>,
         cx: &mut Context<Self>,
     ) {
-        let entries = match self.sources.records(source) {
+        let entries = match self.widgets.records(widget) {
             Ok(entries) => entries,
             Err(err) => {
-                eprintln!("Failed to read source {source:?}: {err}");
+                eprintln!("Failed to read widget {widget:?}: {err}");
                 return;
             }
         };
         let presentation = self
-            .sources
-            .presentation(source)
+            .widgets
+            .presentation(widget)
             .cloned()
             .unwrap_or_else(|| klemmbrett::Presentation {
                 theme: self.theme.clone(),
@@ -218,17 +218,17 @@ impl Klemmbrett {
             return;
         };
 
-        if self.reuse_popup(&entries, &placement, source, cx) {
+        if self.reuse_popup(&entries, &placement, widget, cx) {
             return;
         }
-        self.open_popup(entries, placement, true, source.to_owned(), cx);
+        self.open_popup(entries, placement, true, widget.to_owned(), cx);
     }
 
     fn reuse_popup(
         &mut self,
         entries: &[Record],
         placement: &PopupPlacement,
-        source: &str,
+        widget: &str,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(handle) = self.popup else {
@@ -239,7 +239,7 @@ impl Klemmbrett {
                 return false;
             }
             window.resize(placement.output_size);
-            view.reload(entries.to_vec(), placement, source, cx);
+            view.reload(entries.to_vec(), placement, widget, cx);
             view.reveal(window, cx);
             true
         }) {
@@ -261,16 +261,16 @@ impl Klemmbrett {
         entries: Vec<Record>,
         placement: PopupPlacement,
         visible: bool,
-        source: String,
+        widget: String,
         cx: &mut Context<Self>,
     ) {
         let app = cx.entity();
         let options = overlay_options(&placement, visible);
         match cx.open_window(options, move |window, cx| {
             let view = if visible {
-                cx.new(|cx| PopupView::shown(app, entries, placement, source, cx))
+                cx.new(|cx| PopupView::shown(app, entries, placement, widget, cx))
             } else {
-                cx.new(|cx| PopupView::new(app, entries, placement, source, cx))
+                cx.new(|cx| PopupView::new(app, entries, placement, widget, cx))
             };
             if visible {
                 let focus = view.read(cx).focus_handle.clone();
@@ -384,7 +384,7 @@ struct PopupView {
     selected: usize,
     label_max: usize,
     theme: Theme,
-    source_name: String,
+    widget_name: String,
     query: String,
     display_id: DisplayId,
     card: Bounds<Pixels>,
@@ -398,7 +398,7 @@ impl PopupView {
         app: Entity<Klemmbrett>,
         entries: Vec<Record>,
         placement: PopupPlacement,
-        source: String,
+        widget: String,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -408,7 +408,7 @@ impl PopupView {
             selected: 0,
             label_max: placement.label_max,
             theme: placement.theme,
-            source_name: source,
+            widget_name: widget,
             query: String::new(),
             display_id: placement.display_id,
             card: placement.card,
@@ -422,10 +422,10 @@ impl PopupView {
         app: Entity<Klemmbrett>,
         entries: Vec<Record>,
         placement: PopupPlacement,
-        source: String,
+        widget: String,
         cx: &mut Context<Self>,
     ) -> Self {
-        let mut view = Self::new(app, entries, placement, source, cx);
+        let mut view = Self::new(app, entries, placement, widget, cx);
         view.visible = true;
         view
     }
@@ -434,14 +434,14 @@ impl PopupView {
         &mut self,
         entries: Vec<Record>,
         placement: &PopupPlacement,
-        source: &str,
+        widget: &str,
         cx: &mut Context<Self>,
     ) {
         self.entries = entries;
         self.card = placement.card;
         self.theme = placement.theme.clone();
         self.label_max = placement.label_max;
-        self.source_name = source.to_owned();
+        self.widget_name = widget.to_owned();
         self.query.clear();
         self.selected = 0;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
@@ -582,9 +582,10 @@ impl PopupView {
         }) else {
             return;
         };
-        let source = self.source_name.clone();
-        self.app
-            .update(cx, |app, _cx| app.select_record(&source, &key, &label, &value));
+        let widget = self.widget_name.clone();
+        self.app.update(cx, |app, _cx| {
+            app.select_record(&widget, &key, &label, &value)
+        });
         self.hide(window, cx);
     }
 }
@@ -674,7 +675,7 @@ impl Render for PopupView {
         let mut rows = Some(rows);
         for child in window_style.packed_children(&theme) {
             card_el = match child {
-                Widget::InputBar => card_el.child(inputbar(&theme, &self.source_name, &self.query)),
+                Widget::InputBar => card_el.child(inputbar(&theme, &self.widget_name, &self.query)),
                 Widget::ListView => match rows.take() {
                     Some(rows) => card_el.child(rows),
                     None => card_el,
@@ -838,9 +839,9 @@ fn paint(color: klemmbrett::Rgba) -> gpui::Rgba {
     rgba(color.to_u32())
 }
 
-fn install_tray(sources: Vec<String>, tx: async_channel::Sender<UiCmd>) {
+fn install_tray(widgets: Vec<String>, tx: async_channel::Sender<UiCmd>) {
     let icons = tray_icon_pixmaps();
-    match (TrayIcon { sources, tx, icons }).spawn() {
+    match (TrayIcon { widgets, tx, icons }).spawn() {
         Ok(handle) => {
             // The tray lives for the whole session; dropping it would remove the icon.
             std::mem::forget(handle);
@@ -850,7 +851,7 @@ fn install_tray(sources: Vec<String>, tx: async_channel::Sender<UiCmd>) {
 }
 
 struct TrayIcon {
-    sources: Vec<String>,
+    widgets: Vec<String>,
     tx: async_channel::Sender<UiCmd>,
     icons: Vec<ksni::Icon>,
 }
@@ -890,12 +891,12 @@ impl ksni::Tray for TrayIcon {
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
         let mut items = Vec::new();
-        if !self.sources.is_empty() {
+        if !self.widgets.is_empty() {
             items.push(
                 SubMenu {
-                    label: "Sources".into(),
+                    label: "Widgets".into(),
                     submenu: self
-                        .sources
+                        .widgets
                         .iter()
                         .map(|name| {
                             let name = name.clone();
@@ -903,7 +904,7 @@ impl ksni::Tray for TrayIcon {
                                 label: name.clone(),
                                 activate: Box::new(move |this: &mut Self| {
                                     let _ = this.tx.send_blocking(UiCmd::Show {
-                                        source: name.clone(),
+                                        widget: name.clone(),
                                         pointer: None,
                                     });
                                 }),

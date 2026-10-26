@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::launch::Launch;
 use crate::theme::{
-    parse_document_at, presentation_for_source, theme_from_document, HclDocument, HclValue,
-    Location, Presentation, RawAction, RawSource,
+    parse_document_at, presentation_for_widget, theme_from_document, HclDocument, HclValue,
+    Location, Presentation, RawAction, RawWidget,
 };
 use crate::{
     default_db_path, Theme, DEFAULT_COALESCE_GROWING, DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
@@ -18,7 +18,7 @@ use crate::{
 pub struct Config {
     pub popup: PopupConfig,
     pub launch: Launch,
-    pub sources: Vec<SourceConfig>,
+    pub widgets: Vec<WidgetConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +36,7 @@ impl Default for PopupConfig {
     }
 }
 
-/// What happens when a popup row from this source is chosen.
+/// What happens when a popup row from this widget is chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SelectAction {
     #[default]
@@ -73,7 +73,7 @@ impl SelectAction {
         }
     }
 
-    fn default_for_type(ty: &str) -> Self {
+    fn default_for_provider(ty: &str) -> Self {
         match ty {
             "executables" => Self::default_exec(),
             "wayland-windows" => Self::ActivateWindow,
@@ -90,7 +90,7 @@ impl SelectAction {
 }
 
 #[derive(Debug, Clone)]
-pub enum SourceConfig {
+pub enum WidgetConfig {
     ClipboardHistory {
         name: String,
         db: Option<PathBuf>,
@@ -119,7 +119,7 @@ pub enum SourceConfig {
     },
 }
 
-impl SourceConfig {
+impl WidgetConfig {
     pub fn name(&self) -> &str {
         match self {
             Self::ClipboardHistory { name, .. }
@@ -191,20 +191,20 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
     let mut doc = parse_document_at(text, base_dir)?;
     let (label_max, launch) = parse_configuration(&doc.configuration)?;
     let actions = collect_actions(&doc)?;
-    let raw_sources = std::mem::take(&mut doc.sources);
-    let mut sources = Vec::new();
+    let raw_widgets = std::mem::take(&mut doc.widgets);
+    let mut widgets = Vec::new();
     let mut names = HashSet::new();
 
-    for raw in raw_sources {
-        let source = source_from_raw(raw, &doc, base_dir, &actions)?;
-        let name = source.name().to_owned();
+    for raw in raw_widgets {
+        let widget = widget_from_raw(raw, &doc, base_dir, &actions)?;
+        let name = widget.name().to_owned();
         if name.trim().is_empty() {
-            return Err("source name must not be empty".into());
+            return Err("widget name must not be empty".into());
         }
         if !names.insert(name.clone()) {
-            return Err(format!("source name {name:?} is configured more than once"));
+            return Err(format!("widget name {name:?} is configured more than once"));
         }
-        sources.push(source);
+        widgets.push(widget);
     }
 
     let theme = theme_from_document(&doc, base_dir)?;
@@ -215,7 +215,7 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
             theme,
         },
         launch,
-        sources,
+        widgets,
     })
 }
 
@@ -268,34 +268,34 @@ fn parse_launch(value: &HclValue) -> Result<Launch, String> {
     }
 }
 
-fn source_from_raw(
-    raw: RawSource,
+fn widget_from_raw(
+    raw: RawWidget,
     doc: &HclDocument,
     base_dir: &Path,
     actions: &BTreeMap<String, SelectAction>,
-) -> Result<SourceConfig, String> {
+) -> Result<WidgetConfig, String> {
     let name = raw.name;
-    let presentation = source_presentation(&name, &raw.properties, doc, base_dir)?;
+    let presentation = widget_presentation(&name, &raw.properties, doc, base_dir)?;
     let action = parse_select_action(&name, &raw.properties, actions)?;
     let ty = raw
         .properties
-        .get("type")
+        .get("provider")
         .and_then(HclValue::as_ident)
-        .ok_or_else(|| format!("source {name:?}: type is required"))?;
-    let action = action.unwrap_or_else(|| SelectAction::default_for_type(ty));
+        .ok_or_else(|| format!("widget {name:?}: provider is required"))?;
+    let action = action.unwrap_or_else(|| SelectAction::default_for_provider(ty));
     match ty {
         "clipboard-history" => {
             reject_unknown(
-                "source",
+                "widget",
                 &name,
                 &raw.properties,
                 &[
-                    "type",
+                    "provider",
                     "db",
                     "history_limit",
                     "coalesce_growing",
                     "skip_whitespace_only",
-                    "widget",
+                    "layout",
                     "theme",
                     "location",
                     "action",
@@ -305,13 +305,13 @@ fn source_from_raw(
                 optional_usize(&raw.properties, "history_limit")?.unwrap_or(DEFAULT_HISTORY_LIMIT);
             if history_limit == 0 {
                 return Err(format!(
-                    "source {name:?}: history_limit must be greater than zero"
+                    "widget {name:?}: history_limit must be greater than zero"
                 ));
             }
             let mut db = optional_path(&raw.properties, "db")?;
             let path = db.get_or_insert_with(default_db_path);
             resolve_relative(path, base_dir);
-            Ok(SourceConfig::ClipboardHistory {
+            Ok(WidgetConfig::ClipboardHistory {
                 name,
                 db,
                 history_limit,
@@ -325,11 +325,11 @@ fn source_from_raw(
         }
         "file" => {
             reject_unknown(
-                "source",
+                "widget",
                 &name,
                 &raw.properties,
                 &[
-                    "type", "path", "format", "widget", "theme", "location", "action",
+                    "provider", "path", "format", "layout", "theme", "location", "action",
                 ],
             )?;
             let mut path = required_path(&name, &raw.properties, "path")?;
@@ -338,18 +338,18 @@ fn source_from_raw(
                 .properties
                 .get("format")
                 .and_then(HclValue::as_ident)
-                .ok_or_else(|| format!("source {name:?}: format is required"))?
+                .ok_or_else(|| format!("widget {name:?}: format is required"))?
             {
                 "text" => FileFormat::Text,
                 "json" => FileFormat::Json,
                 "yaml" => FileFormat::Yaml,
                 other => {
                     return Err(format!(
-                        "source {name:?}: unknown format {other}; expected text, json, or yaml"
+                        "widget {name:?}: unknown format {other}; expected text, json, or yaml"
                     ));
                 }
             };
-            Ok(SourceConfig::File {
+            Ok(WidgetConfig::File {
                 name,
                 path,
                 format,
@@ -359,12 +359,12 @@ fn source_from_raw(
         }
         "executables" => {
             reject_unknown(
-                "source",
+                "widget",
                 &name,
                 &raw.properties,
-                &["type", "widget", "theme", "location", "action"],
+                &["provider", "layout", "theme", "location", "action"],
             )?;
-            Ok(SourceConfig::Executables {
+            Ok(WidgetConfig::Executables {
                 name,
                 presentation,
                 action,
@@ -372,25 +372,25 @@ fn source_from_raw(
         }
         "wayland-windows" => {
             reject_unknown(
-                "source",
+                "widget",
                 &name,
                 &raw.properties,
-                &["type", "widget", "theme", "location", "action"],
+                &["provider", "layout", "theme", "location", "action"],
             )?;
-            Ok(SourceConfig::WaylandWindows {
+            Ok(WidgetConfig::WaylandWindows {
                 name,
                 presentation,
                 action,
             })
         }
         other => Err(format!(
-            "source {name:?}: unknown type {other}; expected clipboard-history, file, executables, or wayland-windows"
+            "widget {name:?}: unknown provider {other}; expected clipboard-history, file, executables, or wayland-windows"
         )),
     }
 }
 
 fn parse_select_action(
-    source: &str,
+    widget: &str,
     properties: &BTreeMap<String, HclValue>,
     actions: &BTreeMap<String, SelectAction>,
 ) -> Result<Option<SelectAction>, String> {
@@ -398,7 +398,7 @@ fn parse_select_action(
         None => Ok(None),
         Some(name) => resolve_action_name(&name, actions)
             .map(Some)
-            .map_err(|err| format!("source {source:?}: {err}")),
+            .map_err(|err| format!("widget {widget:?}: {err}")),
     }
 }
 
@@ -544,32 +544,32 @@ fn interpolate_arg(input: &str, key: &str, label: &str, value: &str) -> String {
     out
 }
 
-fn source_presentation(
-    source: &str,
+fn widget_presentation(
+    widget: &str,
     properties: &BTreeMap<String, HclValue>,
     doc: &HclDocument,
     base_dir: &Path,
 ) -> Result<Presentation, String> {
     let theme = optional_name(properties, "theme")?;
-    let widget = optional_name(properties, "widget")?;
+    let layout = optional_name(properties, "layout")?;
     let location = match optional_name(properties, "location")? {
         None => None,
         Some(name) => Some(Location::parse(&name).ok_or_else(|| {
             format!(
-                "source {source:?}: unknown location {name}; expected pointer, center, or a 9-point name such as north east"
+                "widget {widget:?}: unknown location {name}; expected pointer, center, or a 9-point name such as north east"
             )
         })?),
     };
-    presentation_for_source(
+    presentation_for_widget(
         doc,
         theme.as_deref(),
-        widget.as_deref(),
+        layout.as_deref(),
         location,
-        Some(source),
-        properties.get("type").and_then(HclValue::as_ident),
+        Some(widget),
+        properties.get("provider").and_then(HclValue::as_ident),
         base_dir,
     )
-    .map_err(|err| format!("source {source:?}: {err}"))
+    .map_err(|err| format!("widget {widget:?}: {err}"))
 }
 
 fn optional_name(
@@ -647,20 +647,20 @@ fn optional_path(
 }
 
 fn required_path(
-    source: &str,
+    widget: &str,
     properties: &BTreeMap<String, HclValue>,
     key: &str,
 ) -> Result<PathBuf, String> {
     match optional_path(properties, key)? {
         Some(path) if !path.as_os_str().is_empty() => Ok(path),
-        _ => Err(format!("source {source:?}: {key} is required")),
+        _ => Err(format!("widget {widget:?}: {key} is required")),
     }
 }
 
 fn reject_legacy_config(hcl_path: &Path) -> Result<(), String> {
     for (name, hint) in [(
         "config.toml",
-        "move the settings into a .hcl file (configuration { } and source \"name\" { })",
+        "move the settings into a .hcl file (configuration { } and widget \"name\" { })",
     )] {
         let leftover = hcl_path.with_file_name(name);
         if leftover.exists() {
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn empty_config_is_sync_only_with_popup_defaults() {
         let config = parse_config("", Path::new("/config")).unwrap();
-        assert!(config.sources.is_empty());
+        assert!(config.widgets.is_empty());
         assert_eq!(config.popup.label_max, DEFAULT_LABEL_MAX);
         assert_eq!(config.popup.theme, Theme::default());
         assert_eq!(config.launch, crate::Launch::Auto);
@@ -759,15 +759,15 @@ mod tests {
     }
 
     #[test]
-    fn source_defaults_and_relative_paths_are_resolved() {
+    fn widget_defaults_and_relative_paths_are_resolved() {
         let config = parse_config(
             r#"
-                source "history" {
-                    type = "clipboard-history"
+                widget "history" {
+                    provider = "clipboard-history"
                     db   = "history.sqlite"
                 }
-                source "snippets" {
-                    type   = "file"
+                widget "snippets" {
+                    provider   = "file"
                     path   = "snippets.json"
                     format = "json"
                 }
@@ -776,8 +776,8 @@ mod tests {
         )
         .unwrap();
 
-        match &config.sources[0] {
-            SourceConfig::ClipboardHistory {
+        match &config.widgets[0] {
+            WidgetConfig::ClipboardHistory {
                 db,
                 history_limit,
                 coalesce_growing,
@@ -788,40 +788,40 @@ mod tests {
                 assert_eq!(*history_limit, DEFAULT_HISTORY_LIMIT);
                 assert!(*coalesce_growing);
                 assert!(*skip_whitespace_only);
-                assert_eq!(config.sources[0].action(), SelectAction::CopyToClipboard);
+                assert_eq!(config.widgets[0].action(), SelectAction::CopyToClipboard);
             }
-            _ => panic!("expected history source"),
+            _ => panic!("expected history widget"),
         }
-        match &config.sources[1] {
-            SourceConfig::File { path, .. } => {
+        match &config.widgets[1] {
+            WidgetConfig::File { path, .. } => {
                 assert_eq!(path, Path::new("/config/snippets.json"));
-                assert_eq!(config.sources[1].action(), SelectAction::CopyToClipboard);
+                assert_eq!(config.widgets[1].action(), SelectAction::CopyToClipboard);
             }
-            _ => panic!("expected file source"),
+            _ => panic!("expected file widget"),
         }
     }
 
     #[test]
-    fn source_action_can_be_copy_to_clipboard() {
+    fn widget_action_can_be_copy_to_clipboard() {
         let config = parse_config(
             r#"
-                source "history" {
-                    type   = "clipboard-history"
+                widget "history" {
+                    provider   = "clipboard-history"
                     action = "copy-to-clipboard"
                 }
             "#,
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.sources[0].action(), SelectAction::CopyToClipboard);
+        assert_eq!(config.widgets[0].action(), SelectAction::CopyToClipboard);
     }
 
     #[test]
-    fn source_action_can_be_xdg_open() {
+    fn widget_action_can_be_xdg_open() {
         let config = parse_config(
             r#"
-                source "links" {
-                    type   = "file"
+                widget "links" {
+                    provider   = "file"
                     path   = "links.yaml"
                     format = "yaml"
                     action = "xdg-open"
@@ -830,28 +830,28 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.sources[0].action(), SelectAction::shipped_xdg_open());
+        assert_eq!(config.widgets[0].action(), SelectAction::shipped_xdg_open());
     }
 
     #[test]
     fn executables_and_windows_default_to_their_actions() {
         let config = parse_config(
             r#"
-                source "run" { type = "executables" }
-                source "windows" { type = "wayland-windows" }
+                widget "run" { provider = "executables" }
+                widget "windows" { provider = "wayland-windows" }
             "#,
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.sources[0].action(), SelectAction::default_exec());
-        assert_eq!(config.sources[1].action(), SelectAction::ActivateWindow);
+        assert_eq!(config.widgets[0].action(), SelectAction::default_exec());
+        assert_eq!(config.widgets[1].action(), SelectAction::ActivateWindow);
         assert!(matches!(
-            config.sources[0],
-            SourceConfig::Executables { .. }
+            config.widgets[0],
+            WidgetConfig::Executables { .. }
         ));
         assert!(matches!(
-            config.sources[1],
-            SourceConfig::WaylandWindows { .. }
+            config.widgets[1],
+            WidgetConfig::WaylandWindows { .. }
         ));
     }
 
@@ -882,11 +882,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_source_action_is_rejected() {
+    fn unknown_widget_action_is_rejected() {
         let error = parse_config(
             r#"
-                source "history" {
-                    type   = "clipboard-history"
+                widget "history" {
+                    provider   = "clipboard-history"
                     action = "type-as-keys"
                 }
             "#,
@@ -906,8 +906,8 @@ mod tests {
                     type    = "exec"
                     command = ["firefox", "--private-window", "${value}"]
                 }
-                source "links" {
-                    type   = "file"
+                widget "links" {
+                    provider   = "file"
                     path   = "links.yaml"
                     format = "yaml"
                     action = "private-firefox"
@@ -917,7 +917,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.sources[0].action(),
+            config.widgets[0].action(),
             SelectAction::Exec {
                 command: vec![
                     "firefox".into(),
@@ -1007,8 +1007,8 @@ mod tests {
                     type    = "exec"
                     command = ["handlr", "open", "${value}"]
                 }
-                source "links" {
-                    type   = "file"
+                widget "links" {
+                    provider   = "file"
                     path   = "links.yaml"
                     format = "yaml"
                     action = "xdg-open"
@@ -1018,7 +1018,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.sources[0].action(),
+            config.widgets[0].action(),
             SelectAction::Exec {
                 command: vec!["handlr".into(), "open".into(), "${value}".into()]
             }
@@ -1026,16 +1026,16 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_source_names_are_rejected() {
+    fn duplicate_widget_names_are_rejected() {
         let error = parse_config(
             r#"
-                source "same" {
-                    type   = "file"
+                widget "same" {
+                    provider   = "file"
                     path   = "one"
                     format = "text"
                 }
-                source "same" {
-                    type   = "file"
+                widget "same" {
+                    provider   = "file"
                     path   = "two"
                     format = "text"
                 }
@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_configuration_and_source_properties_are_rejected() {
+    fn unknown_configuration_and_widget_properties_are_rejected() {
         let error =
             parse_config(r#"configuration { theme = "nord" }"#, Path::new(".")).unwrap_err();
         assert!(
@@ -1056,8 +1056,8 @@ mod tests {
         );
         let error = parse_config(
             r#"
-                source "history" {
-                    type  = "clipboard-history"
+                widget "history" {
+                    provider  = "clipboard-history"
                     extra = true
                 }
             "#,
@@ -1071,8 +1071,8 @@ mod tests {
     fn missing_required_file_field_names_the_field() {
         let error = parse_config(
             r#"
-                source "broken" {
-                    type   = "file"
+                widget "broken" {
+                    provider   = "file"
                     format = "json"
                 }
             "#,
@@ -1086,20 +1086,20 @@ mod tests {
     fn skip_whitespace_only_can_be_disabled() {
         let config = parse_config(
             r#"
-                source "history" {
-                    type = "clipboard-history"
+                widget "history" {
+                    provider = "clipboard-history"
                     skip_whitespace_only = false
                 }
             "#,
             Path::new("/config"),
         )
         .unwrap();
-        match &config.sources[0] {
-            SourceConfig::ClipboardHistory {
+        match &config.widgets[0] {
+            WidgetConfig::ClipboardHistory {
                 skip_whitespace_only,
                 ..
             } => assert!(!*skip_whitespace_only),
-            _ => panic!("expected history source"),
+            _ => panic!("expected history widget"),
         }
     }
 
@@ -1134,26 +1134,26 @@ mod tests {
     }
 
     #[test]
-    fn source_theme_and_widget_compose() {
+    fn widget_theme_and_layout_compose() {
         let config = parse_config(
             r#"
                 theme "nord" {}
-                source "history" {
-                    type   = "clipboard-history"
-                    widget = "filter"
+                widget "history" {
+                    provider   = "clipboard-history"
+                    layout = "filter"
                 }
-                source "snippets" {
-                    type   = "file"
+                widget "snippets" {
+                    provider   = "file"
                     path   = "snippets.yaml"
                     format = "yaml"
-                    widget = "menu"
+                    layout = "menu"
                     theme  = "dracula"
                 }
             "#,
             Path::new("/config"),
         )
         .unwrap();
-        let history = config.sources[0].presentation();
+        let history = config.widgets[0].presentation();
         assert_eq!(history.location, Location::Center);
         assert!(history.theme.has_inputbar());
         assert_eq!(
@@ -1165,7 +1165,7 @@ mod tests {
                 a: 255
             }
         );
-        let snippets = config.sources[1].presentation();
+        let snippets = config.widgets[1].presentation();
         assert_eq!(snippets.location, Location::Pointer);
         assert!(!snippets.theme.has_inputbar());
         assert_eq!(
@@ -1180,12 +1180,12 @@ mod tests {
     }
 
     #[test]
-    fn source_location_overrides_window_and_widget() {
+    fn widget_location_overrides_window_and_layout() {
         let config = parse_config(
             r#"
-                source "history" {
-                    type     = "clipboard-history"
-                    widget   = "filter"
+                widget "history" {
+                    provider     = "clipboard-history"
+                    layout   = "filter"
                     location = "south east"
                 }
             "#,
@@ -1193,49 +1193,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.sources[0].presentation().location,
+            config.widgets[0].presentation().location,
             Location::SouthEast
         );
     }
 
     #[test]
-    fn widget_location_can_depend_on_source_type() {
+    fn layout_location_can_depend_on_widget_provider() {
         let config = parse_config(
             r#"
-                widget "smart" {
-                    location = source.type == "clipboard-history" ? "center" : "pointer"
+                layout "smart" {
+                    location = widget.provider == "clipboard-history" ? "center" : "pointer"
                 }
-                source "history" {
-                    type   = "clipboard-history"
-                    widget = "smart"
+                widget "history" {
+                    provider   = "clipboard-history"
+                    layout = "smart"
                 }
-                source "snippets" {
-                    type   = "file"
+                widget "snippets" {
+                    provider   = "file"
                     path   = "snippets.yaml"
                     format = "yaml"
-                    widget = "smart"
+                    layout = "smart"
                 }
             "#,
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.sources[0].presentation().location, Location::Center);
-        assert_eq!(config.sources[1].presentation().location, Location::Pointer);
+        assert_eq!(config.widgets[0].presentation().location, Location::Center);
+        assert_eq!(config.widgets[1].presentation().location, Location::Pointer);
     }
 
     #[test]
-    fn unknown_widget_name_is_rejected() {
+    fn unknown_layout_name_is_rejected() {
         let error = parse_config(
             r#"
-                source "history" {
-                    type   = "clipboard-history"
-                    widget = "missing"
+                widget "history" {
+                    provider   = "clipboard-history"
+                    layout = "missing"
                 }
             "#,
             Path::new("/config"),
         )
         .unwrap_err();
-        assert!(error.contains("failed to read widget"), "{error}");
+        assert!(error.contains("failed to read layout"), "{error}");
     }
 
     #[test]

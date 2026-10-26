@@ -5,31 +5,31 @@ use std::collections::HashSet;
 #[derive(Debug)]
 pub enum UiCmd {
     Show {
-        source: String,
+        widget: String,
         pointer: Option<(i32, i32)>,
     },
     RecordHistory(String),
     Quit,
 }
 
-/// Serves `Show(source, pointer)` and forwards valid requests to GPUI.
-pub fn spawn(source_names: HashSet<String>, tx: async_channel::Sender<UiCmd>) {
+/// Serves `Show(widget, pointer)` and forwards valid requests to GPUI.
+pub fn spawn(widget_names: HashSet<String>, tx: async_channel::Sender<UiCmd>) {
     std::thread::Builder::new()
         .name("klemmbrett-dbus".into())
         .spawn(move || {
-            let api = BusInterface::new(move |source, pointer| {
-                if !source_names.contains(&source) {
-                    let err = if source_names.is_empty() {
-                        format!("unknown source {source:?}: no popup sources are configured")
+            let api = BusInterface::new(move |widget, pointer| {
+                if !widget_names.contains(&widget) {
+                    let err = if widget_names.is_empty() {
+                        format!("unknown widget {widget:?}: no popup widgets are configured")
                     } else {
-                        let mut names: Vec<_> = source_names.iter().cloned().collect();
+                        let mut names: Vec<_> = widget_names.iter().cloned().collect();
                         names.sort();
-                        format!("unknown source {source:?}; known: {}", names.join(", "))
+                        format!("unknown widget {widget:?}; known: {}", names.join(", "))
                     };
                     eprintln!("{err}");
                     return Err(err);
                 }
-                tx.send_blocking(UiCmd::Show { source, pointer })
+                tx.send_blocking(UiCmd::Show { widget, pointer })
                     .map_err(|err| format!("failed to request popup: {err}"))
             });
             match zbus::blocking::connection::Builder::session()

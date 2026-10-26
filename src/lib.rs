@@ -196,18 +196,18 @@ mod executables;
 mod history;
 mod launch;
 mod popup;
-mod source;
 mod theme;
+mod widget;
 mod windows;
 
 pub use activate_api::{
-    pointer_from_pairs, request_show, request_show_on, BusInterface, HISTORY_BUS_NAME,
-    INTERFACE, OBJECT_PATH,
+    pointer_from_pairs, request_show, request_show_on, BusInterface, HISTORY_BUS_NAME, INTERFACE,
+    OBJECT_PATH,
 };
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
     config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
-    PopupConfig, SelectAction, SourceConfig,
+    PopupConfig, SelectAction, WidgetConfig,
 };
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
@@ -218,11 +218,11 @@ pub use popup::{
     accelerator_for, filter_records, index_for_accelerator, menu_item_spec, place_at_location,
     place_on_outputs, position_on_outputs, MenuItemSpec, OutputGeom,
 };
-pub use source::{Record, Sources};
 pub use theme::{
     parse_document, parse_theme, Edges, HclDocument, HclValue, Location, Orientation, Presentation,
-    RawSource, Rgba, Style, Theme, Widget,
+    RawWidget, Rgba, Style, Theme, Widget,
 };
+pub use widget::{Record, Widgets};
 
 #[cfg(target_os = "linux")]
 pub use arboard_backend::ArboardBackend;
