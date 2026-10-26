@@ -1,16 +1,16 @@
 # klemmbrett
 
 Keeps the Wayland clipboard and primary selection holding the same text. Named
-popup sources can provide values to copy, open, or run, including optional
+popup widgets can provide values to copy, open, or run, including optional
 SQLite clipboard history, text/JSON/YAML files, executables on `PATH`, and
 Wayland windows to switch to.
 
-A GPUI popup lists a configured source. Entries longer than a configurable length are
-shown shortened. A source can pack either today's accelerator menu or a
-filter: `widget: filter` adds an input bar and types into a case-insensitive
+A GPUI popup lists a configured widget. Entries longer than a configurable length are
+shown shortened. A widget can pack either today's accelerator menu or a
+filter: `layout: filter` adds an input bar and types into a case-insensitive
 label filter; without that, the first 35 items can be chosen with accelerator keys
 (`1`–`9`, then `a`–`z`). `Up`/`Down` and `Enter` also work, and `Escape`
-closes the popup. A StatusNotifierItem tray icon has a Sources submenu.
+closes the popup. A StatusNotifierItem tray icon has a Widgets submenu.
 
 The popup takes keyboard focus as soon as it appears, without needing the
 pointer. It is a `wlr-layer-shell` surface that requests exclusive keyboard
@@ -66,7 +66,7 @@ unit if the bus name is missing. If this process can see
 `WAYLAND_DISPLAY`, that value is imported into the systemd user manager.
 Pass `--config` as well to pin that file in `ExecStart`.
 
-To open a configured source without spelling out `busctl`:
+To open a configured widget without spelling out `busctl`:
 
 ```sh
 klemmbrett show history
@@ -83,7 +83,7 @@ activation) still serves the request.
 The default configuration is
 `$XDG_CONFIG_HOME/klemmbrett/config.hcl` (normally
 `~/.config/klemmbrett/config.hcl`). If it does not exist, clipboard/primary
-selection syncing still runs, but no popup sources or history database are
+selection syncing still runs, but no popup widgets or history database are
 initialized. A leftover `config.toml` in that directory is
 rejected with a convert hint.
 
@@ -95,7 +95,7 @@ configuration {
 
 theme "nord" {}
 
-widget "filter" {
+layout "filter" {
   location = "center"
   window { children = ["inputbar", "listview"] }
   inputbar {
@@ -105,12 +105,12 @@ widget "filter" {
   }
 }
 
-source "history" {
-  type                   = "clipboard-history"
+widget "history" {
+  provider               = "clipboard-history"
   history_limit          = 50
   coalesce_growing       = true
   skip_whitespace_only   = true
-  widget                 = "filter"
+  layout                 = "filter"
   action                 = "copy-to-clipboard"
 }
 
@@ -124,27 +124,27 @@ action "private-firefox" {
   command = ["firefox", "--private-window", "${value}"]
 }
 
-source "snippets" {
-  type   = "file"
-  path   = "snippets.yaml"
-  format = "yaml"
-  widget = "menu"
-  theme  = "dracula"
-  action = "xdg-open"
+widget "snippets" {
+  provider = "file"
+  path     = "snippets.yaml"
+  format   = "yaml"
+  layout   = "menu"
+  theme    = "dracula"
+  action   = "xdg-open"
 }
 
-source "run" {
-  type   = "executables"
-  widget = "filter"
+widget "run" {
+  provider = "executables"
+  layout   = "filter"
 }
 
-source "windows" {
-  type   = "wayland-windows"
-  widget = "filter"
+widget "windows" {
+  provider = "wayland-windows"
+  layout   = "filter"
 }
 ```
 
-Source names must be unique. Relative `db` and `path` values are resolved
+Widget names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
 `coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
@@ -164,7 +164,7 @@ avoiding one row per character while a selection grows. Whitespace-only
 selections (spaces, tabs, newlines) are not stored unless
 `skip_whitespace_only` is set to false.
 
-File sources are read again whenever their popup opens. `text` format uses one
+File widgets are read again whenever their popup opens. `text` format uses one
 non-empty line per record. JSON and YAML files contain an array whose records
 may be strings:
 
@@ -182,23 +182,23 @@ or the equivalent YAML:
 ```
 
 Every record requires a value. Its key and label default to the value when
-omitted, and keys must be unique within a source. The popup displays the label.
-Selecting a row runs that source's `action` on the record. `copy-to-clipboard`
+omitted, and keys must be unique within a widget. The popup displays the label.
+Selecting a row runs that widget's `action` on the record. `copy-to-clipboard`
 copies the value to the clipboard. `exec` (including shipped `xdg-open`)
 goes through `launch`. `activate-window` focuses a
-toplevel from a `wayland-windows` source via `zwlr_foreign_toplevel_manager_v1`.
+toplevel from a `wayland-windows` widget via `zwlr_foreign_toplevel_manager_v1`.
 `executables` lists `PATH` (first basename wins). `wayland-windows` lists
-open windows; use `widget = "filter"` for both (the lists are long).
+open windows; use `layout = "filter"` for both (the lists are long).
 
 ## Popup theme and widgets
 
 A full catalog and property reference is in [`docs/theming.md`](docs/theming.md).
 
 The same `config.hcl` styles the popup. `theme "nord" {}` is a file-wide
-default palette; `theme = "dracula"` on a source replaces it for that source
-only. Named `widget` blocks pack the tree and set `location` (`pointer`,
-`center`, `north east`). `widget = "menu"` and `widget = "filter"` are
-shipped. A source with no `widget` keeps the list-only card at the pointer.
+default palette; `theme = "dracula"` on a widget replaces it for that widget
+only. Named `layout` blocks pack the tree and set `location` (`pointer`,
+`center`, `north east`). `layout = "menu"` and `layout = "filter"` are
+shipped. A widget with no `layout` keeps the list-only card at the pointer.
 
 If `window` packs an `inputbar`, typing filters labels and accelerators are
 off. Otherwise `1`–`9` / `a`–`z` still pick a row.
@@ -231,7 +231,7 @@ missing); `media { min_width = 120 … }` is evaluated against that same
 canvas.
 
 `window { location = "north east" }` uses the 9-point grid; `pointer` sits
-at the pointer. A source `location` still overrides.
+at the pointer. A widget `location` still overrides.
 
 `background_image` accepts a color and otherwise paints transparent. Extra
 widgets (preview) are not implemented.
@@ -261,7 +261,7 @@ The process owns `org.wontfix.klemmbrett` on the session bus:
 | Name | `org.wontfix.klemmbrett` |
 | Object | `/org/wontfix/klemmbrett` |
 | Interface | `org.wontfix.klemmbrett` |
-| Method | `Show(sa(ii))` — source name, then zero or one `(x, y)` pair |
+| Method | `Show(sa(ii))` — widget name, then zero or one `(x, y)` pair |
 
 `x` and `y` are the pointer location in the compositor's global layout (the
 same space qtile's `get_mouse_position()` and Sway output `rect` values use).
@@ -373,7 +373,7 @@ async def _session_bus():
         _bus = await MessageBus().connect()
     return _bus
 
-async def _show_source(source, x, y):
+async def _show_widget(widget, x, y):
     global _bus
     message = Message(
         destination="org.wontfix.klemmbrett",
@@ -381,7 +381,7 @@ async def _show_source(source, x, y):
         interface="org.wontfix.klemmbrett",
         member="Show",
         signature="sa(ii)",
-        body=[source, [(int(x), int(y))]],
+        body=[widget, [(int(x), int(y))]],
     )
     try:
         reply = await (await _session_bus()).call(message)
@@ -398,7 +398,7 @@ async def _show_source(source, x, y):
 
 def show_clip_history(qtile):
     x, y = qtile.core.get_mouse_position()
-    create_task(_show_source("history", x, y))
+    create_task(_show_widget("history", x, y))
 
 keys = [
     Key(["mod4"], "v", lazy.function(show_clip_history)),

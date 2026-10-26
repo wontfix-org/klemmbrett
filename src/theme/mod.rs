@@ -1,4 +1,4 @@
-//! HCL themes and widget recipes for the popup.
+//! HCL themes and layout recipes for the popup.
 //!
 //! A user theme is merged over the embedded default so omitted keys keep
 //! today's look.
@@ -11,8 +11,8 @@ use parse::{parse_spec, State, ThemeSpec};
 use std::path::{Path, PathBuf};
 
 pub use parse::{
-    parse_document, parse_document_at, parse_widget_recipe, HclDocument, HclValue, RawAction,
-    RawSource,
+    parse_document, parse_document_at, parse_layout_recipe, HclDocument, HclValue, RawAction,
+    RawWidget,
 };
 
 const DEFAULT_HCL: &str = include_str!("default.hcl");
@@ -380,21 +380,21 @@ fn theme_from_specs(specs: impl IntoIterator<Item = ThemeSpec>) -> Result<Theme,
 }
 
 pub fn theme_from_document(doc: &HclDocument, base_dir: &Path) -> Result<Theme, String> {
-    presentation_for_source(doc, None, None, None, None, None, base_dir)
+    presentation_for_widget(doc, None, None, None, None, None, base_dir)
         .map(|presentation| presentation.theme)
 }
 
-pub fn presentation_for_source(
+pub fn presentation_for_widget(
     doc: &HclDocument,
-    source_theme: Option<&str>,
-    source_widget: Option<&str>,
-    source_location: Option<Location>,
-    source_name: Option<&str>,
-    source_kind: Option<&str>,
+    widget_theme: Option<&str>,
+    widget_layout: Option<&str>,
+    widget_location: Option<Location>,
+    widget_name: Option<&str>,
+    widget_provider: Option<&str>,
     base_dir: &Path,
 ) -> Result<Presentation, String> {
     let mut specs = Vec::new();
-    if let Some(name) = source_theme {
+    if let Some(name) = widget_theme {
         specs.push(load_theme_spec(name, base_dir)?);
     } else {
         for name in &doc.theme_refs {
@@ -403,48 +403,48 @@ pub fn presentation_for_source(
     }
     specs.push(doc.theme.clone());
     let mut recipe_location = None;
-    if let Some(name) = source_widget {
-        let recipe = resolve_widget_recipe(name, &doc.named_widgets, base_dir)?
-            .evaluate_for_source(source_name, source_kind)?;
+    if let Some(name) = widget_layout {
+        let recipe = resolve_layout_recipe(name, &doc.named_layouts, base_dir)?
+            .evaluate_for_widget(widget_name, widget_provider)?;
         recipe_location = recipe.location;
         specs.push(recipe.spec);
     }
     let theme = theme_from_specs(specs)?;
-    let location = source_location
+    let location = widget_location
         .or(recipe_location)
         .or(theme.window().location)
         .unwrap_or(Location::Pointer);
     Ok(Presentation { theme, location })
 }
 
-fn resolve_widget_recipe(
+fn resolve_layout_recipe(
     name: &str,
-    named: &std::collections::BTreeMap<String, parse::WidgetRecipe>,
+    named: &std::collections::BTreeMap<String, parse::LayoutRecipe>,
     base_dir: &Path,
-) -> Result<parse::WidgetRecipe, String> {
+) -> Result<parse::LayoutRecipe, String> {
     if let Some(recipe) = named.get(name) {
         return Ok(recipe.clone());
     }
-    load_widget_recipe(name, base_dir)
+    load_layout_recipe(name, base_dir)
 }
 
-fn load_widget_recipe(name: &str, base_dir: &Path) -> Result<parse::WidgetRecipe, String> {
-    if let Some(text) = shipped_widget(name) {
-        return parse_widget_recipe(text);
+fn load_layout_recipe(name: &str, base_dir: &Path) -> Result<parse::LayoutRecipe, String> {
+    if let Some(text) = shipped_layout(name) {
+        return parse_layout_recipe(text);
     }
     let mut path = PathBuf::from(name);
     if path.is_relative() {
         path = base_dir.join(&path);
     }
     let text = std::fs::read_to_string(&path)
-        .map_err(|err| format!("failed to read widget {}: {err}", path.display()))?;
-    parse_widget_recipe(&text).map_err(|err| format!("invalid widget {}: {err}", path.display()))
+        .map_err(|err| format!("failed to read layout {}: {err}", path.display()))?;
+    parse_layout_recipe(&text).map_err(|err| format!("invalid layout {}: {err}", path.display()))
 }
 
-fn shipped_widget(name: &str) -> Option<&'static str> {
+fn shipped_layout(name: &str) -> Option<&'static str> {
     match name.trim_end_matches(".hcl") {
-        "menu" => Some(include_str!("../../widgets/menu.hcl")),
-        "filter" => Some(include_str!("../../widgets/filter.hcl")),
+        "menu" => Some(include_str!("../../layouts/menu.hcl")),
+        "filter" => Some(include_str!("../../layouts/filter.hcl")),
         _ => None,
     }
 }
@@ -823,8 +823,8 @@ mod tests {
     }
 
     #[test]
-    fn shipped_filter_widget_centers_and_adds_inputbar() {
-        let presentation = presentation_for_source(
+    fn shipped_filter_layout_centers_and_adds_inputbar() {
+        let presentation = presentation_for_widget(
             &parse_document("").unwrap(),
             None,
             Some("filter"),

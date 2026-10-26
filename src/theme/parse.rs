@@ -1,4 +1,4 @@
-//! HCL documents for the popup catalog, sources, and widget recipes.
+//! HCL documents for the popup catalog, widgets, and layout recipes.
 
 use super::{color, units, Edges, Location, Orientation, Rgba, Widget};
 use hcl::eval::{Context, Evaluate, FuncArgs, FuncDef, ParamType};
@@ -140,14 +140,14 @@ impl HclValue {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WidgetRecipe {
+pub struct LayoutRecipe {
     pub location: Option<Location>,
     pub(super) spec: ThemeSpec,
     raw: Option<Body>,
     locals: Value,
 }
 
-impl Default for WidgetRecipe {
+impl Default for LayoutRecipe {
     fn default() -> Self {
         Self {
             location: None,
@@ -158,17 +158,17 @@ impl Default for WidgetRecipe {
     }
 }
 
-impl WidgetRecipe {
-    pub(super) fn evaluate_for_source(
+impl LayoutRecipe {
+    pub(super) fn evaluate_for_widget(
         &self,
-        source_name: Option<&str>,
-        source_kind: Option<&str>,
+        widget_name: Option<&str>,
+        widget_provider: Option<&str>,
     ) -> Result<Self, String> {
         let Some(raw) = &self.raw else {
             return Ok(self.clone());
         };
-        let evaluated = evaluate_body(raw, &self.locals, source_name, source_kind)?;
-        let mut recipe = widget_from_body(&evaluated)?;
+        let evaluated = evaluate_body(raw, &self.locals, widget_name, widget_provider)?;
+        let mut recipe = layout_from_body(&evaluated)?;
         recipe.raw = self.raw.clone();
         recipe.locals = self.locals.clone();
         Ok(recipe)
@@ -178,16 +178,16 @@ impl WidgetRecipe {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HclDocument {
     pub configuration: BTreeMap<String, HclValue>,
-    pub sources: Vec<RawSource>,
+    pub widgets: Vec<RawWidget>,
     pub actions: BTreeMap<String, RawAction>,
     pub theme_refs: Vec<String>,
-    pub named_widgets: BTreeMap<String, WidgetRecipe>,
+    pub named_layouts: BTreeMap<String, LayoutRecipe>,
     pub(super) theme: ThemeSpec,
     locals: Value,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RawSource {
+pub struct RawWidget {
     pub name: String,
     pub properties: BTreeMap<String, HclValue>,
 }
@@ -228,24 +228,24 @@ pub(super) fn parse_spec(text: &str) -> Result<ThemeSpec, String> {
 pub(super) fn parse_spec_at(text: &str, base_dir: &Path) -> Result<ThemeSpec, String> {
     let doc = parse_document_at(text, base_dir)?;
     if !doc.configuration.is_empty()
-        || !doc.sources.is_empty()
+        || !doc.widgets.is_empty()
         || !doc.theme_refs.is_empty()
-        || !doc.named_widgets.is_empty()
+        || !doc.named_layouts.is_empty()
         || !doc.actions.is_empty()
     {
         return Err(
-            "configuration, source, action, widget, and theme belong in the config file, not a theme"
+            "configuration, widget, action, layout, and theme belong in the config file, not a theme"
                 .into(),
         );
     }
     Ok(doc.theme)
 }
 
-pub fn parse_widget_recipe(text: &str) -> Result<WidgetRecipe, String> {
+pub fn parse_layout_recipe(text: &str) -> Result<LayoutRecipe, String> {
     let raw = parse_hcl(text)?;
     let locals = locals_from_body(&raw)?;
     let evaluated = evaluate_body(&raw, &locals, None, None)?;
-    let mut recipe = widget_from_body(&evaluated)?;
+    let mut recipe = layout_from_body(&evaluated)?;
     recipe.raw = Some(raw);
     recipe.locals = locals;
     Ok(recipe)
@@ -275,10 +275,10 @@ fn locals_from_body(body: &Body) -> Result<Value, String> {
 fn evaluate_body(
     body: &Body,
     locals: &Value,
-    source_name: Option<&str>,
-    source_kind: Option<&str>,
+    widget_name: Option<&str>,
+    widget_provider: Option<&str>,
 ) -> Result<Body, String> {
-    let ctx = eval_context(locals, source_name, source_kind);
+    let ctx = eval_context(locals, widget_name, widget_provider);
     body.evaluate(&ctx).map_err(eval_err)
 }
 
@@ -288,8 +288,8 @@ fn eval_err(err: impl std::fmt::Display) -> String {
 
 fn eval_context<'a>(
     locals: &'a Value,
-    source_name: Option<&'a str>,
-    source_kind: Option<&'a str>,
+    widget_name: Option<&'a str>,
+    widget_provider: Option<&'a str>,
 ) -> Context<'a> {
     let mut ctx = Context::new();
     ctx.declare_var("local", locals.clone());
@@ -300,10 +300,13 @@ fn eval_context<'a>(
             ("height", Value::from(f64::from(units::MONITOR_HEIGHT))),
         ]),
     );
-    let mut source = hcl::Map::new();
-    source.insert("name".into(), Value::from(source_name.unwrap_or_default()));
-    source.insert("type".into(), Value::from(source_kind.unwrap_or_default()));
-    ctx.declare_var("source", Value::Object(source));
+    let mut widget = hcl::Map::new();
+    widget.insert("name".into(), Value::from(widget_name.unwrap_or_default()));
+    widget.insert(
+        "provider".into(),
+        Value::from(widget_provider.unwrap_or_default()),
+    );
+    ctx.declare_var("widget", Value::Object(widget));
     ctx.declare_var("value", Value::from("${value}"));
     ctx.declare_var("key", Value::from("${key}"));
     ctx.declare_var("label", Value::from("${label}"));
@@ -537,18 +540,18 @@ fn ingest_raw(
     for block in body.blocks() {
         match block.identifier() {
             "import" => import_block(block, doc, base_dir, stack)?,
-            "widget" if allow_config => {
-                let name = one_label(block, "widget")?;
-                let mut recipe = WidgetRecipe {
+            "layout" if allow_config => {
+                let name = one_label(block, "layout")?;
+                let mut recipe = LayoutRecipe {
                     raw: Some(block.body().clone()),
                     locals: doc.locals.clone(),
-                    ..WidgetRecipe::default()
+                    ..LayoutRecipe::default()
                 };
                 let evaluated = evaluate_body(block.body(), &doc.locals, None, None)?;
-                let parsed = widget_from_body(&evaluated)?;
+                let parsed = layout_from_body(&evaluated)?;
                 recipe.location = parsed.location;
                 recipe.spec = parsed.spec;
-                doc.named_widgets.insert(name, recipe);
+                doc.named_layouts.insert(name, recipe);
             }
             _ => {}
         }
@@ -597,7 +600,7 @@ fn ingest_evaluated(body: &Body, doc: &mut HclDocument, allow_config: bool) -> R
     let mut seen_actions = HashSet::new();
     for block in body.blocks() {
         match block.identifier() {
-            "import" | "locals" | "widget" => {}
+            "import" | "locals" | "layout" => {}
             "theme" if allow_config => {
                 doc.theme_refs.push(one_label(block, "theme")?);
             }
@@ -607,9 +610,9 @@ fn ingest_evaluated(body: &Body, doc: &mut HclDocument, allow_config: bool) -> R
                     doc.configuration.insert(key, value);
                 }
             }
-            "source" if allow_config => {
-                let name = one_label(block, "source")?;
-                doc.sources.push(RawSource {
+            "widget" if allow_config => {
+                let name = one_label(block, "widget")?;
+                doc.widgets.push(RawWidget {
                     name,
                     properties: attributes_as_values(block.body())?,
                 });
@@ -700,12 +703,12 @@ fn media_matches(body: &Body) -> Result<bool, String> {
     Ok(true)
 }
 
-fn widget_from_body(body: &Body) -> Result<WidgetRecipe, String> {
-    let mut recipe = WidgetRecipe::default();
+fn layout_from_body(body: &Body) -> Result<LayoutRecipe, String> {
+    let mut recipe = LayoutRecipe::default();
     for attr in body.attributes() {
         if attr.key() != "location" {
             return Err(format!(
-                "unknown widget property {}; supported: location",
+                "unknown layout property {}; supported: location",
                 attr.key()
             ));
         }
@@ -728,7 +731,7 @@ fn widget_from_body(body: &Body) -> Result<WidgetRecipe, String> {
 fn apply_catalog(spec: &mut ThemeSpec, name: &str, block: &Block) -> Result<(), String> {
     let widget = parse_widget(name).ok_or_else(|| {
         format!(
-            "unknown block {name}; supported: configuration, source, action, widget, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
+            "unknown block {name}; supported: configuration, widget, action, layout, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
         )
     })?;
     let state = match block.labels().first().map(|label| label.as_str()) {
@@ -990,10 +993,10 @@ fn reject_labels(block: &Block, kind: &str) -> Result<(), String> {
 
 fn merge_document(into: &mut HclDocument, from: HclDocument) {
     into.configuration.extend(from.configuration);
-    into.sources.extend(from.sources);
+    into.widgets.extend(from.widgets);
     into.actions.extend(from.actions);
     into.theme_refs.extend(from.theme_refs);
-    into.named_widgets.extend(from.named_widgets);
+    into.named_layouts.extend(from.named_layouts);
     into.theme.merge(from.theme);
 }
 
@@ -1370,8 +1373,8 @@ window { padding = 3 }
     }
 
     #[test]
-    fn parse_spec_rejects_named_widget_blocks() {
-        let error = parse_spec(r#"widget "filter" { location = "center" }"#).unwrap_err();
+    fn parse_spec_rejects_named_layout_blocks() {
+        let error = parse_spec(r#"layout "filter" { location = "center" }"#).unwrap_err();
         assert!(error.contains("belong in the config file"), "{error}");
     }
 
@@ -1429,10 +1432,10 @@ window { padding = 3 }
     }
 
     #[test]
-    fn named_widget_parses_location_and_packing() {
+    fn named_layout_parses_location_and_packing() {
         let doc = parse_document(
             r#"
-                widget "filter" {
+                layout "filter" {
                     location = "center"
                     window { children = ["inputbar", "listview"] }
                     inputbar { children = ["prompt", "entry"] }
@@ -1440,7 +1443,7 @@ window { padding = 3 }
             "#,
         )
         .unwrap();
-        let recipe = &doc.named_widgets["filter"];
+        let recipe = &doc.named_layouts["filter"];
         assert_eq!(recipe.location, Some(Location::Center));
         assert_eq!(
             recipe
@@ -1453,16 +1456,16 @@ window { padding = 3 }
     }
 
     #[test]
-    fn document_parses_config_sources_theme_and_strings() {
+    fn document_parses_config_widgets_theme_and_strings() {
         let doc = parse_document(
             r#"
                 configuration { label_max = 32 }
-                source "history" {
-                    type = "clipboard-history"
+                widget "history" {
+                    provider = "clipboard-history"
                     skip_whitespace_only = false
                 }
-                source "snippets" {
-                    type = "file"
+                widget "snippets" {
+                    provider = "file"
                     path = "snippets.yaml"
                     format = "yaml"
                 }
@@ -1477,10 +1480,10 @@ window { padding = 3 }
                 .and_then(HclValue::as_number),
             Some(32.0)
         );
-        assert_eq!(doc.sources.len(), 2);
-        assert_eq!(doc.sources[0].name, "history");
+        assert_eq!(doc.widgets.len(), 2);
+        assert_eq!(doc.widgets[0].name, "history");
         assert_eq!(
-            doc.sources[1]
+            doc.widgets[1]
                 .properties
                 .get("path")
                 .and_then(HclValue::as_text),

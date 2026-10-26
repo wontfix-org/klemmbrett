@@ -163,7 +163,7 @@ impl Session {
         fs::write(
             &config,
             format!(
-                "source \"history\" {{\n    type = \"clipboard-history\"\n    db   = {:?}\n}}\n",
+                "widget \"history\" {{\n    provider = \"clipboard-history\"\n    db   = {:?}\n}}\n",
                 db
             ),
         )
@@ -211,15 +211,13 @@ impl Drop for Session {
 }
 
 /// Waits for the daemon to claim the bus name, then asks for the popup.
-fn show_popup(session: &Session, source: &str, x: i32, y: i32) {
+fn show_popup(session: &Session, widget: &str, x: i32, y: i32) {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut last_error = None;
     while Instant::now() < deadline {
         let attempt = zbus::blocking::connection::Builder::address(session.bus_address.as_str())
             .and_then(|builder| builder.build())
-            .and_then(|conn| {
-                request_show_on(&conn, HISTORY_BUS_NAME, source, Some((x, y)))
-            });
+            .and_then(|conn| request_show_on(&conn, HISTORY_BUS_NAME, widget, Some((x, y))));
         match attempt {
             Ok(_) => return,
             Err(err) => last_error = Some(err),

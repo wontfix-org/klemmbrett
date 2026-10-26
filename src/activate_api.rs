@@ -1,4 +1,4 @@
-//! Session-bus object that asks the UI thread to show a popup source.
+//! Session-bus object that asks the UI thread to show a popup widget.
 
 use zbus::interface;
 
@@ -10,7 +10,7 @@ pub const INTERFACE: &str = HISTORY_BUS_NAME;
 pub fn request_show_on(
     conn: &zbus::blocking::Connection,
     destination: &str,
-    source: &str,
+    widget: &str,
     pointer: Option<(i32, i32)>,
 ) -> zbus::Result<()> {
     let pointer: Vec<(i32, i32)> = pointer.into_iter().collect();
@@ -19,7 +19,7 @@ pub fn request_show_on(
         OBJECT_PATH,
         Some(INTERFACE),
         "Show",
-        &(source, pointer),
+        &(widget, pointer),
     )
     .map(|_| ())
 }
@@ -27,11 +27,11 @@ pub fn request_show_on(
 /// Calls `Show` on `destination` over the session bus.
 pub fn request_show(
     destination: &str,
-    source: &str,
+    widget: &str,
     pointer: Option<(i32, i32)>,
 ) -> zbus::Result<()> {
     let conn = zbus::blocking::Connection::session()?;
-    request_show_on(&conn, destination, source, pointer)
+    request_show_on(&conn, destination, widget, pointer)
 }
 
 /// `[]` is no pointer. One pair is a global coordinate. More than one is an error.
@@ -60,9 +60,9 @@ impl BusInterface {
 
 #[interface(name = "org.wontfix.klemmbrett")]
 impl BusInterface {
-    fn show(&self, source: &str, pointer: Vec<(i32, i32)>) -> zbus::fdo::Result<()> {
+    fn show(&self, widget: &str, pointer: Vec<(i32, i32)>) -> zbus::fdo::Result<()> {
         let pointer = pointer_from_pairs(&pointer).map_err(zbus::fdo::Error::InvalidArgs)?;
-        (self.send)(source.to_owned(), pointer).map_err(zbus::fdo::Error::InvalidArgs)
+        (self.send)(widget.to_owned(), pointer).map_err(zbus::fdo::Error::InvalidArgs)
     }
 }
 

@@ -5,55 +5,55 @@ here (`message`, `textbox`, `mode-switcher`, `sidebar`, `scrollbar`,
 `preview`, …) are rejected.
 
 A **theme** sets colors, sizes, and other properties on catalog elements. A
-**widget** is a named packing recipe: which of those elements appear, in what
+**layout** is a named packing recipe: which of those elements appear, in what
 order, and where the card sits. Both are written in HCL.
 
 ## Composition
 
-Each source gets a `Presentation` (`theme` + `location`) built in this order:
+Each widget gets a `Presentation` (`theme` + `location`) built in this order:
 
 1. The embedded default (`src/theme/default.hcl`).
-2. A palette: the source’s `theme` if set, otherwise every `theme "name" {}`
+2. A palette: the widget’s `theme` if set, otherwise every `theme "name" {}`
    in `config.hcl`.
 3. In-file catalog blocks in `config.hcl` (`window { … }`, `element "selected" { … }`, …).
-4. The named widget recipe (`widget = "filter"`, a `widget "filter" { }` block,
+4. The named layout (`layout = "filter"`, a `layout "filter" { }` block,
    or a `.hcl` path).
 
 Later layers overwrite earlier ones for the same property. Omitted keys keep
 the default look.
 
 `theme "nord" {}` is the file-wide default palette. `theme = "dracula"` on a
-source replaces that list for that source only; it does not stack on top of
+widget replaces that list for that widget only; it does not stack on top of
 file-wide `theme` blocks.
 
 Location is chosen separately from colors:
 
-1. `location` on the source
-2. `location` on the named widget recipe
+1. `location` on the widget
+2. `location` on the named layout
 3. `window { location = … }`
 4. `pointer`
 
-Widget recipes used by a source are evaluated with `source.name` and
-`source.type` in scope, so packing can depend on the source.
-`source.type` is `clipboard-history`, `file`, `executables`, or
+Layouts used by a widget are evaluated with `widget.name` and
+`widget.provider` in scope, so packing can depend on the widget.
+`widget.provider` is `clipboard-history`, `file`, `executables`, or
 `wayland-windows`.
 
-## Widget recipes
+## Layouts
 
-A widget recipe may be:
+A layout may be:
 
-- a `widget "name" { … }` block in `config.hcl`
+- a `layout "name" { … }` block in `config.hcl`
 - a shipped name: `menu` or `filter` (also `menu.hcl` / `filter.hcl`)
 - a `.hcl` path relative to the config file, or absolute
 
-`source { widget = "filter" }` looks up an in-file block named `filter` first,
-then a shipped recipe, then a file.
+`widget { layout = "filter" }` looks up an in-file block named `filter` first,
+then a shipped layout, then a file.
 
 The only property allowed at recipe level (outside a catalog block) is
 `location`. Everything else is a catalog block:
 
 ```hcl
-widget "filter" {
+layout "filter" {
   location = "center"
   window { children = ["inputbar", "listview"] }
   inputbar {
@@ -64,9 +64,9 @@ widget "filter" {
 }
 ```
 
-A standalone widget file is the same body without the `widget "name" { }`
-wrapper (`widgets/filter.hcl`). Theme files must not contain `configuration`,
-`source`, `widget`, or `theme`.
+A standalone layout file is the same body without the `layout "name" { }`
+wrapper (`layouts/filter.hcl`). Theme files must not contain `configuration`,
+`widget`, `layout`, or `theme`.
 
 Shipped recipes:
 
@@ -75,7 +75,7 @@ Shipped recipes:
 | `menu` | `pointer` | `["listview"]` |
 | `filter` | `center` | `["inputbar", "listview"]` |
 
-A source with no `widget` keeps the default: list-only card at the pointer,
+A widget with no `layout` keeps the default: list-only card at the pointer,
 accelerators `1`–`9` then `a`–`z`. If `window` packs an enabled `inputbar`,
 typing filters labels (case-insensitive) and accelerators are off.
 
@@ -153,8 +153,8 @@ Default `orientation` is `"horizontal"`.
 
 ### prompt
 
-Fixed text: the source name. Not a configurable string. In a widget recipe
-the HCL variable `source.name` is available for expressions.
+Fixed text: the widget name. Not a configurable string. In a layout
+the HCL variable `widget.name` is available for expressions.
 
 ### entry
 
@@ -311,8 +311,8 @@ window {
 `env("NAME")` reads the process environment. `env("NAME", default)` uses the
 default when unset. A default that is a color or number keeps that type.
 
-`source.name` and `source.type` are set when a widget recipe is applied to a
-source. `monitor.width` and `monitor.height` are the 1920×1080 canvas.
+`widget.name` and `widget.provider` are set when a layout is applied to a
+widget. `monitor.width` and `monitor.height` are the 1920×1080 canvas.
 
 ## Files and media
 

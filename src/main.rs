@@ -4,14 +4,14 @@ mod ui;
 
 use clap::{Parser, Subcommand};
 use klemmbrett::{
-    load_config, request_show, ArboardBackend, ClipboardSync, Sources, HISTORY_BUS_NAME,
+    load_config, request_show, ArboardBackend, ClipboardSync, Widgets, HISTORY_BUS_NAME,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
 #[command(
-    about = "Keep Wayland selections in sync and copy values from configurable popup sources."
+    about = "Keep Wayland selections in sync and copy values from configurable popup widgets."
 )]
 struct Args {
     /// HCL configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.hcl)
@@ -28,10 +28,10 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Ask the running daemon to show a popup source
+    /// Ask the running daemon to show a popup widget
     Show {
-        /// Configured source name
-        source: String,
+        /// Configured widget name
+        widget: String,
         /// Pointer X in compositor global coordinates. Requires y.
         #[arg(allow_hyphen_values = true)]
         x: Option<i32>,
@@ -44,7 +44,7 @@ enum Command {
 fn main() -> ExitCode {
     let args = Args::parse();
     match args.command {
-        Some(Command::Show { source, x, y }) => {
+        Some(Command::Show { widget, x, y }) => {
             let pointer = match (x, y) {
                 (None, None) => None,
                 (Some(x), Some(y)) => Some((x, y)),
@@ -53,8 +53,8 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            if let Err(err) = request_show(HISTORY_BUS_NAME, &source, pointer) {
-                eprintln!("failed to show {source:?}: {err}");
+            if let Err(err) = request_show(HISTORY_BUS_NAME, &widget, pointer) {
+                eprintln!("failed to show {widget:?}: {err}");
                 return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS
@@ -69,8 +69,8 @@ fn main() -> ExitCode {
             let config = load_config(args.config.as_deref()).unwrap_or_else(|err| {
                 panic!("{err}");
             });
-            let sources = Sources::from_config(&config).unwrap_or_else(|err| {
-                panic!("Invalid source configuration: {err}");
+            let widgets = Widgets::from_config(&config).unwrap_or_else(|err| {
+                panic!("Invalid widget configuration: {err}");
             });
 
             let backend =
@@ -79,7 +79,7 @@ fn main() -> ExitCode {
 
             ui::run(
                 sync,
-                sources,
+                widgets,
                 config.popup.label_max,
                 config.popup.theme,
                 config.launch,
@@ -106,8 +106,8 @@ mod tests {
     fn show_omits_pointer_coordinates() {
         let args = Args::try_parse_from(["klemmbrett", "show", "history"]).unwrap();
         match args.command {
-            Some(Command::Show { source, x, y }) => {
-                assert_eq!((source.as_str(), x, y), ("history", None, None));
+            Some(Command::Show { widget, x, y }) => {
+                assert_eq!((widget.as_str(), x, y), ("history", None, None));
             }
             other => panic!("expected show, got {other:?}"),
         }
@@ -117,8 +117,8 @@ mod tests {
     fn show_accepts_pointer_coordinates() {
         let args = Args::try_parse_from(["klemmbrett", "show", "run", "120", "-40"]).unwrap();
         match args.command {
-            Some(Command::Show { source, x, y }) => {
-                assert_eq!((source.as_str(), x, y), ("run", Some(120), Some(-40)));
+            Some(Command::Show { widget, x, y }) => {
+                assert_eq!((widget.as_str(), x, y), ("run", Some(120), Some(-40)));
             }
             other => panic!("expected show, got {other:?}"),
         }
