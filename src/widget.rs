@@ -269,8 +269,7 @@ mod tests {
         let config = parse_config(
             &format!(
                 r#"
-                    widget "items" {{
-                        provider   = "file"
+                    widget "items" "file" {{
                         path   = "records"
                         format = "{format}"
                     }}
@@ -330,8 +329,7 @@ mod tests {
         .unwrap();
         let config = parse_config(
             r#"
-                widget "items" {
-                    provider   = "file"
+                widget "items" "file" {
                     path   = "records"
                     format = "json"
                 }
@@ -356,8 +354,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = parse_config(
             r#"
-                widget "history" {
-                    provider                 = "clipboard-history"
+                widget "history" "clipboard-history" {
                     db                   = "history.sqlite"
                     skip_whitespace_only = false
                 }
@@ -380,8 +377,7 @@ mod tests {
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let config =
-            parse_config(r#"widget "run" { provider = "executables" }"#, dir.path()).unwrap();
+        let config = parse_config(r#"widget "run" "executables" {}"#, dir.path()).unwrap();
         let previous = std::env::var_os("PATH");
         std::env::set_var("PATH", dir.path());
         let widgets = Widgets::from_config(&config).unwrap();
@@ -410,15 +406,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = parse_config(
             r#"
-                transform "jq" {
-                    type = "exec"
+                transform "jq" "exec" {
                     args {
                         expr = ".title"
                     }
                     command = ["jq", "-r", "${expr}"]
                 }
-                widget "items" {
-                    provider = "clipboard-history"
+                widget "items" "clipboard-history" {
                     db       = "history.sqlite"
                     transform "jq" {
                         expr = ".data"
@@ -448,15 +442,13 @@ mod tests {
         std::fs::write(dir.path().join("records"), "one\n").unwrap();
         let config = parse_config(
             r#"
-                action "notify" {
-                    type = "exec"
+                action "notify" "exec" {
                     args {
                         title = "klemmbrett"
                     }
                     command = ["notify-send", "${title}", "${value}"]
                 }
-                widget "items" {
-                    provider = "file"
+                widget "items" "file" {
                     path     = "records"
                     format   = "text"
                     action "notify" {
@@ -486,8 +478,7 @@ mod tests {
         std::fs::write(dir.path().join("records"), "one\n").unwrap();
         let config = parse_config(
             r#"
-                widget "items" {
-                    provider   = "file"
+                widget "items" "file" {
                     path   = "records"
                     format = "text"
                     action = "copy-to-clipboard"
@@ -506,8 +497,7 @@ mod tests {
         std::fs::write(dir.path().join("records"), "https://example.com\n").unwrap();
         let config = parse_config(
             r#"
-                widget "links" {
-                    provider   = "file"
+                widget "links" "file" {
                     path   = "records"
                     format = "text"
                     action = "xdg-open"
@@ -532,8 +522,7 @@ mod tests {
         std::fs::write(dir.path().join("records"), "one\n").unwrap();
         let config = parse_config(
             r#"
-                widget "items" {
-                    provider   = "file"
+                widget "items" "file" {
                     path   = "records"
                     format = "text"
                 }

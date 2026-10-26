@@ -190,6 +190,7 @@ pub struct HclDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawWidget {
     pub name: String,
+    pub provider: String,
     pub properties: BTreeMap<String, HclValue>,
     pub action: Option<RawActionInvocation>,
     pub transforms: Vec<RawTransformInvocation>,
@@ -197,6 +198,7 @@ pub struct RawWidget {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawAction {
+    pub ty: String,
     pub properties: BTreeMap<String, HclValue>,
     pub args: BTreeMap<String, HclValue>,
 }
@@ -209,6 +211,7 @@ pub struct RawActionInvocation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawTransform {
+    pub ty: String,
     pub properties: BTreeMap<String, HclValue>,
     pub args: BTreeMap<String, HclValue>,
 }
@@ -1020,10 +1023,7 @@ fn value_widgets(value: &Value) -> Result<Vec<Widget>, String> {
 }
 
 fn raw_action_from_block(block: &Block) -> Result<(String, RawAction), String> {
-    let name = one_label(block, "action")?;
-    if name.trim().is_empty() {
-        return Err("action name must not be empty".into());
-    }
+    let (name, ty) = two_labels(block, "action", "type")?;
     let mut properties = BTreeMap::new();
     for attr in block.body().attributes() {
         properties.insert(
@@ -1049,14 +1049,18 @@ fn raw_action_from_block(block: &Block) -> Result<(String, RawAction), String> {
         seen_args = true;
         args = attributes_as_values(nested.body())?;
     }
-    Ok((name, RawAction { properties, args }))
+    Ok((
+        name,
+        RawAction {
+            ty,
+            properties,
+            args,
+        },
+    ))
 }
 
 fn raw_transform_from_block(block: &Block) -> Result<(String, RawTransform), String> {
-    let name = one_label(block, "transform")?;
-    if name.trim().is_empty() {
-        return Err("transform name must not be empty".into());
-    }
+    let (name, ty) = two_labels(block, "transform", "type")?;
     let mut properties = BTreeMap::new();
     for attr in block.body().attributes() {
         properties.insert(
@@ -1082,11 +1086,18 @@ fn raw_transform_from_block(block: &Block) -> Result<(String, RawTransform), Str
         seen_args = true;
         args = attributes_as_values(nested.body())?;
     }
-    Ok((name, RawTransform { properties, args }))
+    Ok((
+        name,
+        RawTransform {
+            ty,
+            properties,
+            args,
+        },
+    ))
 }
 
 fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
-    let name = one_label(block, "widget")?;
+    let (name, provider) = two_labels(block, "widget", "provider")?;
     let mut properties = BTreeMap::new();
     for attr in block.body().attributes() {
         properties.insert(
@@ -1132,6 +1143,7 @@ fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
     }
     Ok(RawWidget {
         name,
+        provider,
         properties,
         action,
         transforms,
@@ -1181,6 +1193,28 @@ fn one_label(block: &Block, kind: &str) -> Result<String, String> {
     match block.labels() {
         [label] => Ok(label.as_str().to_owned()),
         _ => Err(format!("{kind} requires exactly one label")),
+    }
+}
+
+fn two_labels(block: &Block, kind: &str, second: &str) -> Result<(String, String), String> {
+    match block.labels() {
+        [name, value] => {
+            let name = name.as_str();
+            let value = value.as_str();
+            if name.trim().is_empty() {
+                return Err(format!("{kind} name must not be empty"));
+            }
+            if value.trim().is_empty() {
+                return Err(format!("{kind} {name:?}: {second} must not be empty"));
+            }
+            Ok((name.to_owned(), value.to_owned()))
+        }
+        [name] => Err(format!(
+            "{kind} {:?}: {second} is required as a second label",
+            name.as_str()
+        )),
+        [] => Err(format!("{kind} name must not be empty")),
+        _ => Err(format!("{kind} takes two labels: name and {second}")),
     }
 }
 
@@ -1584,8 +1618,7 @@ window { padding = 3 }
     fn parse_spec_rejects_named_action_blocks() {
         let error = parse_spec(
             r#"
-                action "xdg-open" {
-                    type    = "exec"
+                action "xdg-open" "exec" {
                     command = ["xdg-open", "${value}"]
                 }
             "#,
@@ -1598,7 +1631,7 @@ window { padding = 3 }
     fn parse_spec_rejects_named_transform_blocks() {
         let error = parse_spec(
             r#"
-                transform "jq" {
+                transform "jq" "exec" {
                     command = ["jq"]
                 }
             "#,
@@ -1611,14 +1644,13 @@ window { padding = 3 }
     fn document_parses_named_transforms_and_widget_invocations() {
         let doc = parse_document(
             r#"
-                transform "jq" {
+                transform "jq" "exec" {
                     args {
                         expr = ".data"
                     }
                     command = ["jq", "-r", "${expr}"]
                 }
-                widget "payloads" {
-                    provider = "file"
+                widget "payloads" "file" {
                     path     = "payloads.yaml"
                     format   = "yaml"
                     transform "jq" {
@@ -1631,6 +1663,7 @@ window { padding = 3 }
             "#,
         )
         .unwrap();
+        assert_eq!(doc.transforms["jq"].ty, "exec");
         assert_eq!(
             doc.transforms["jq"]
                 .args
@@ -1660,8 +1693,8 @@ window { padding = 3 }
     fn duplicate_transform_names_in_one_file_are_rejected() {
         let error = parse_document(
             r#"
-                transform "jq" { command = ["jq"] }
-                transform "jq" { command = ["cat"] }
+                transform "jq" "exec" { command = ["jq"] }
+                transform "jq" "exec" { command = ["cat"] }
             "#,
         )
         .unwrap_err();
@@ -1672,20 +1705,13 @@ window { padding = 3 }
     fn document_parses_named_actions() {
         let doc = parse_document(
             r#"
-                action "xdg-open" {
-                    type    = "exec"
+                action "xdg-open" "exec" {
                     command = ["xdg-open", "${value}"]
                 }
             "#,
         )
         .unwrap();
-        assert_eq!(
-            doc.actions["xdg-open"]
-                .properties
-                .get("type")
-                .and_then(HclValue::as_ident),
-            Some("exec")
-        );
+        assert_eq!(doc.actions["xdg-open"].ty, "exec");
         assert_eq!(
             doc.actions["xdg-open"]
                 .properties
@@ -1700,16 +1726,14 @@ window { padding = 3 }
     fn document_parses_named_action_args_and_widget_invocations() {
         let doc = parse_document(
             r#"
-                action "notify" {
-                    type = "exec"
+                action "notify" "exec" {
                     args {
                         title = "klemmbrett"
                         body  = "${value}"
                     }
                     command = ["notify-send", "${title}", "${body}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action "notify" {
@@ -1745,8 +1769,8 @@ window { padding = 3 }
     fn duplicate_action_names_in_one_file_are_rejected() {
         let error = parse_document(
             r#"
-                action "open" { type = "exec" }
-                action "open" { type = "copy-to-clipboard" }
+                action "open" "exec" {}
+                action "open" "copy-to-clipboard" {}
             "#,
         )
         .unwrap_err();
@@ -1782,12 +1806,10 @@ window { padding = 3 }
         let doc = parse_document(
             r#"
                 configuration { label_max = 32 }
-                widget "history" {
-                    provider = "clipboard-history"
+                widget "history" "clipboard-history" {
                     skip_whitespace_only = false
                 }
-                widget "snippets" {
-                    provider = "file"
+                widget "snippets" "file" {
                     path = "snippets.yaml"
                     format = "yaml"
                 }
@@ -1804,6 +1826,8 @@ window { padding = 3 }
         );
         assert_eq!(doc.widgets.len(), 2);
         assert_eq!(doc.widgets[0].name, "history");
+        assert_eq!(doc.widgets[0].provider, "clipboard-history");
+        assert_eq!(doc.widgets[1].provider, "file");
         assert_eq!(
             doc.widgets[1]
                 .properties

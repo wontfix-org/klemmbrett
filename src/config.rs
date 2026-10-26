@@ -377,14 +377,10 @@ fn widget_from_raw(
     named_transforms: &BTreeMap<String, Transform>,
 ) -> Result<WidgetConfig, String> {
     let name = raw.name;
-    let presentation = widget_presentation(&name, &raw.properties, doc, base_dir)?;
+    let ty = raw.provider.as_str();
+    let presentation = widget_presentation(&name, ty, &raw.properties, doc, base_dir)?;
     let action = parse_select_action(&name, &raw.properties, raw.action.as_ref(), actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
-    let ty = raw
-        .properties
-        .get("provider")
-        .and_then(HclValue::as_ident)
-        .ok_or_else(|| format!("widget {name:?}: provider is required"))?;
     let action = action.unwrap_or_else(|| SelectAction::default_for_provider(ty));
     match ty {
         "clipboard-history" => {
@@ -393,7 +389,6 @@ fn widget_from_raw(
                 &name,
                 &raw.properties,
                 &[
-                    "provider",
                     "db",
                     "history_limit",
                     "coalesce_growing",
@@ -432,9 +427,7 @@ fn widget_from_raw(
                 "widget",
                 &name,
                 &raw.properties,
-                &[
-                    "provider", "path", "format", "layout", "theme", "location", "action",
-                ],
+                &["path", "format", "layout", "theme", "location", "action"],
             )?;
             let mut path = required_path(&name, &raw.properties, "path")?;
             resolve_relative(&mut path, base_dir);
@@ -467,7 +460,7 @@ fn widget_from_raw(
                 "widget",
                 &name,
                 &raw.properties,
-                &["provider", "layout", "theme", "location", "action"],
+                &["layout", "theme", "location", "action"],
             )?;
             Ok(WidgetConfig::Executables {
                 name,
@@ -481,7 +474,7 @@ fn widget_from_raw(
                 "widget",
                 &name,
                 &raw.properties,
-                &["provider", "layout", "theme", "location", "action"],
+                &["layout", "theme", "location", "action"],
             )?;
             Ok(WidgetConfig::WaylandWindows {
                 name,
@@ -533,24 +526,19 @@ fn collect_actions(doc: &HclDocument) -> Result<BTreeMap<String, SelectAction>, 
 }
 
 fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> {
-    let ty = raw
-        .properties
-        .get("type")
-        .and_then(HclValue::as_ident)
-        .ok_or_else(|| format!("action {name:?}: type is required"))?;
-    match ty {
+    match raw.ty.as_str() {
         "copy-to-clipboard" => {
-            reject_unknown("action", name, &raw.properties, &["type"])?;
+            reject_unknown("action", name, &raw.properties, &[])?;
             reject_action_args(name, raw)?;
             Ok(SelectAction::CopyToClipboard)
         }
         "activate-window" => {
-            reject_unknown("action", name, &raw.properties, &["type"])?;
+            reject_unknown("action", name, &raw.properties, &[])?;
             reject_action_args(name, raw)?;
             Ok(SelectAction::ActivateWindow)
         }
         "launch" => {
-            reject_unknown("action", name, &raw.properties, &["type", "command"])?;
+            reject_unknown("action", name, &raw.properties, &["command"])?;
             let args = declared_arg_defaults("action", name, &raw.args)?;
             for default in args.values() {
                 validate_placeholders("action", name, default, &[])?;
@@ -566,7 +554,7 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
                 "action",
                 name,
                 &raw.properties,
-                &["type", "command", "stdin"],
+                &["command", "stdin"],
             )?;
             let args = declared_arg_defaults("action", name, &raw.args)?;
             for default in args.values() {
@@ -614,21 +602,11 @@ fn collect_transforms(doc: &HclDocument) -> Result<BTreeMap<String, Transform>, 
 }
 
 fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<Transform, String> {
-    let ty = raw
-        .properties
-        .get("type")
-        .and_then(HclValue::as_ident)
-        .ok_or_else(|| format!("transform {name:?}: type is required"))?;
     let args = declared_arg_defaults("transform", name, &raw.args)?;
     let extra: Vec<&str> = args.keys().map(String::as_str).collect();
-    match ty {
+    match raw.ty.as_str() {
         "exec" => {
-            reject_unknown(
-                "transform",
-                name,
-                &raw.properties,
-                &["type", "command", "stdin"],
-            )?;
+            reject_unknown("transform", name, &raw.properties, &["command", "stdin"])?;
             let command = raw
                 .properties
                 .get("command")
@@ -654,7 +632,7 @@ fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<Transform,
                 "transform",
                 name,
                 &raw.properties,
-                &["type", "pattern", "replace", "on_miss"],
+                &["pattern", "replace", "on_miss"],
             )?;
             let pattern = raw
                 .properties
@@ -994,6 +972,7 @@ fn interpolate_arg(
 
 fn widget_presentation(
     widget: &str,
+    provider: &str,
     properties: &BTreeMap<String, HclValue>,
     doc: &HclDocument,
     base_dir: &Path,
@@ -1014,7 +993,7 @@ fn widget_presentation(
         layout.as_deref(),
         location,
         Some(widget),
-        properties.get("provider").and_then(HclValue::as_ident),
+        Some(provider),
         base_dir,
     )
     .map_err(|err| format!("widget {widget:?}: {err}"))
@@ -1210,12 +1189,10 @@ mod tests {
     fn widget_defaults_and_relative_paths_are_resolved() {
         let config = parse_config(
             r#"
-                widget "history" {
-                    provider = "clipboard-history"
+                widget "history" "clipboard-history" {
                     db   = "history.sqlite"
                 }
-                widget "snippets" {
-                    provider   = "file"
+                widget "snippets" "file" {
                     path   = "snippets.json"
                     format = "json"
                 }
@@ -1253,8 +1230,7 @@ mod tests {
     fn widget_action_can_be_copy_to_clipboard() {
         let config = parse_config(
             r#"
-                widget "history" {
-                    provider   = "clipboard-history"
+                widget "history" "clipboard-history" {
                     action = "copy-to-clipboard"
                 }
             "#,
@@ -1268,8 +1244,7 @@ mod tests {
     fn widget_action_can_be_xdg_open() {
         let config = parse_config(
             r#"
-                widget "links" {
-                    provider   = "file"
+                widget "links" "file" {
                     path   = "links.yaml"
                     format = "yaml"
                     action = "xdg-open"
@@ -1285,8 +1260,8 @@ mod tests {
     fn executables_and_windows_default_to_their_actions() {
         let config = parse_config(
             r#"
-                widget "run" { provider = "executables" }
-                widget "windows" { provider = "wayland-windows" }
+                widget "run" "executables" {}
+                widget "windows" "wayland-windows" {}
             "#,
             Path::new("/config"),
         )
@@ -1333,8 +1308,7 @@ mod tests {
     fn unknown_widget_action_is_rejected() {
         let error = parse_config(
             r#"
-                widget "history" {
-                    provider   = "clipboard-history"
+                widget "history" "clipboard-history" {
                     action = "type-as-keys"
                 }
             "#,
@@ -1350,12 +1324,10 @@ mod tests {
     fn custom_action_is_selectable_by_name() {
         let config = parse_config(
             r#"
-                action "private-firefox" {
-                    type    = "exec"
+                action "private-firefox" "exec" {
                     command = ["firefox", "--private-window", "${value}"]
                 }
-                widget "links" {
-                    provider   = "file"
+                widget "links" "file" {
                     path   = "links.yaml"
                     format = "yaml"
                     action = "private-firefox"
@@ -1400,8 +1372,7 @@ mod tests {
     fn unknown_command_placeholder_is_rejected() {
         let error = parse_config(
             r#"
-                action "bad" {
-                    type    = "exec"
+                action "bad" "exec" {
                     command = ["echo", "$${title}"]
                 }
             "#,
@@ -1414,7 +1385,7 @@ mod tests {
     #[test]
     fn reserved_launch_name_cannot_be_redefined() {
         let error = parse_config(
-            r#"action "launch" { type = "copy-to-clipboard" }"#,
+            r#"action "launch" "copy-to-clipboard" {}"#,
             Path::new("/config"),
         )
         .unwrap_err();
@@ -1424,7 +1395,7 @@ mod tests {
     #[test]
     fn reserved_action_name_cannot_be_redefined() {
         let error = parse_config(
-            r#"action "exec" { type = "copy-to-clipboard" }"#,
+            r#"action "exec" "copy-to-clipboard" {}"#,
             Path::new("/config"),
         )
         .unwrap_err();
@@ -1435,8 +1406,7 @@ mod tests {
     fn empty_exec_command_is_rejected() {
         let error = parse_config(
             r#"
-                action "open" {
-                    type    = "exec"
+                action "open" "exec" {
                     command = []
                 }
             "#,
@@ -1450,8 +1420,8 @@ mod tests {
     fn action_type_must_be_a_built_in() {
         let error = parse_config(
             r#"
-                action "open" { type = "exec" }
-                action "also" { type = "open" }
+                action "open" "exec" {}
+                action "also" "open" {}
             "#,
             Path::new("/config"),
         )
@@ -1464,12 +1434,10 @@ mod tests {
     fn launch_action_is_selectable_by_name() {
         let config = parse_config(
             r#"
-                action "open" {
-                    type    = "launch"
+                action "open" "launch" {
                     command = ["xdg-open", "${value}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action   = "open"
@@ -1491,12 +1459,10 @@ mod tests {
     fn exec_action_stdin_defaults_to_empty() {
         let config = parse_config(
             r#"
-                action "notify" {
-                    type    = "exec"
+                action "notify" "exec" {
                     command = ["true"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action   = "notify"
@@ -1515,13 +1481,11 @@ mod tests {
     fn exec_action_can_set_stdin() {
         let config = parse_config(
             r#"
-                action "write" {
-                    type    = "exec"
+                action "write" "exec" {
                     command = ["cat"]
                     stdin   = "${key}: ${value}"
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action   = "write"
@@ -1542,16 +1506,14 @@ mod tests {
     fn widget_action_can_override_declared_args() {
         let config = parse_config(
             r#"
-                action "notify" {
-                    type = "exec"
+                action "notify" "exec" {
                     args {
                         title = "klemmbrett"
                         body  = "${value}"
                     }
                     command = ["notify-send", "${title}", "${body}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action "notify" {
@@ -1588,16 +1550,14 @@ mod tests {
     fn omitted_action_argument_uses_the_default() {
         let config = parse_config(
             r#"
-                action "notify" {
-                    type = "exec"
+                action "notify" "exec" {
                     args {
                         title = "klemmbrett"
                         body  = "${value}"
                     }
                     command = ["notify-send", "${title}", "${body}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action   = "notify"
@@ -1620,15 +1580,13 @@ mod tests {
     fn empty_action_block_keeps_defaults() {
         let config = parse_config(
             r#"
-                action "notify" {
-                    type = "exec"
+                action "notify" "exec" {
                     args {
                         title = "klemmbrett"
                     }
                     command = ["notify-send", "${title}", "${value}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action "notify" {}
@@ -1652,12 +1610,10 @@ mod tests {
     fn extra_action_argument_is_rejected() {
         let error = parse_config(
             r#"
-                action "open" {
-                    type    = "exec"
+                action "open" "exec" {
                     command = ["xdg-open", "${value}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action "open" {
@@ -1675,8 +1631,7 @@ mod tests {
     fn reserved_action_argument_name_is_rejected() {
         let error = parse_config(
             r#"
-                action "echo" {
-                    type = "exec"
+                action "echo" "exec" {
                     args {
                         value = "ignored"
                     }
@@ -1693,15 +1648,13 @@ mod tests {
     fn widget_action_argument_unknown_placeholder_is_rejected() {
         let error = parse_config(
             r#"
-                action "notify" {
-                    type = "exec"
+                action "notify" "exec" {
                     args {
                         title = "klemmbrett"
                     }
                     command = ["notify-send", "${title}"]
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action "notify" {
@@ -1719,8 +1672,7 @@ mod tests {
     fn action_name_and_block_together_are_rejected() {
         let error = parse_config(
             r#"
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     action   = "xdg-open"
@@ -1737,8 +1689,7 @@ mod tests {
     fn copy_to_clipboard_cannot_declare_args() {
         let error = parse_config(
             r#"
-                action "copy" {
-                    type = "copy-to-clipboard"
+                action "copy" "copy-to-clipboard" {
                     args {
                         title = "nope"
                     }
@@ -1757,12 +1708,10 @@ mod tests {
     fn shipped_xdg_open_can_be_overridden() {
         let config = parse_config(
             r#"
-                action "xdg-open" {
-                    type    = "launch"
+                action "xdg-open" "launch" {
                     command = ["handlr", "open", "${value}"]
                 }
-                widget "links" {
-                    provider   = "file"
+                widget "links" "file" {
                     path   = "links.yaml"
                     format = "yaml"
                     action = "xdg-open"
@@ -1784,13 +1733,11 @@ mod tests {
     fn duplicate_widget_names_are_rejected() {
         let error = parse_config(
             r#"
-                widget "same" {
-                    provider   = "file"
+                widget "same" "file" {
                     path   = "one"
                     format = "text"
                 }
-                widget "same" {
-                    provider   = "file"
+                widget "same" "file" {
                     path   = "two"
                     format = "text"
                 }
@@ -1811,8 +1758,7 @@ mod tests {
         );
         let error = parse_config(
             r#"
-                widget "history" {
-                    provider  = "clipboard-history"
+                widget "history" "clipboard-history" {
                     extra = true
                 }
             "#,
@@ -1826,8 +1772,7 @@ mod tests {
     fn missing_required_file_field_names_the_field() {
         let error = parse_config(
             r#"
-                widget "broken" {
-                    provider   = "file"
+                widget "broken" "file" {
                     format = "json"
                 }
             "#,
@@ -1841,8 +1786,7 @@ mod tests {
     fn skip_whitespace_only_can_be_disabled() {
         let config = parse_config(
             r#"
-                widget "history" {
-                    provider = "clipboard-history"
+                widget "history" "clipboard-history" {
                     skip_whitespace_only = false
                 }
             "#,
@@ -1893,12 +1837,10 @@ mod tests {
         let config = parse_config(
             r#"
                 theme "nord" {}
-                widget "history" {
-                    provider   = "clipboard-history"
+                widget "history" "clipboard-history" {
                     layout = "filter"
                 }
-                widget "snippets" {
-                    provider   = "file"
+                widget "snippets" "file" {
                     path   = "snippets.yaml"
                     format = "yaml"
                     layout = "menu"
@@ -1938,8 +1880,7 @@ mod tests {
     fn widget_location_overrides_window_and_layout() {
         let config = parse_config(
             r#"
-                widget "history" {
-                    provider     = "clipboard-history"
+                widget "history" "clipboard-history" {
                     layout   = "filter"
                     location = "south east"
                 }
@@ -1960,12 +1901,10 @@ mod tests {
                 layout "smart" {
                     location = widget.provider == "clipboard-history" ? "center" : "pointer"
                 }
-                widget "history" {
-                    provider   = "clipboard-history"
+                widget "history" "clipboard-history" {
                     layout = "smart"
                 }
-                widget "snippets" {
-                    provider   = "file"
+                widget "snippets" "file" {
                     path   = "snippets.yaml"
                     format = "yaml"
                     layout = "smart"
@@ -1982,8 +1921,7 @@ mod tests {
     fn unknown_layout_name_is_rejected() {
         let error = parse_config(
             r#"
-                widget "history" {
-                    provider   = "clipboard-history"
+                widget "history" "clipboard-history" {
                     layout = "missing"
                 }
             "#,
@@ -1997,19 +1935,16 @@ mod tests {
     fn widget_transforms_bind_declared_args() {
         let config = parse_config(
             r#"
-                transform "jq" {
-                    type = "exec"
+                transform "jq" "exec" {
                     args {
                         expr = ".title"
                     }
                     command = ["jq", "-r", "${expr}"]
                 }
-                transform "decode" {
-                    type    = "exec"
+                transform "decode" "exec" {
                     command = ["base64", "-d"]
                 }
-                widget "payloads" {
-                    provider = "file"
+                widget "payloads" "file" {
                     path     = "payloads.yaml"
                     format   = "yaml"
                     transform "jq" {
@@ -2042,15 +1977,13 @@ mod tests {
     fn omitted_transform_argument_uses_the_default() {
         let config = parse_config(
             r#"
-                transform "jq" {
-                    type = "exec"
+                transform "jq" "exec" {
                     args {
                         expr = ".data"
                     }
                     command = ["jq", "-r", "${expr}"]
                 }
-                widget "payloads" {
-                    provider = "file"
+                widget "payloads" "file" {
                     path     = "payloads.yaml"
                     format   = "yaml"
                     transform "jq" {}
@@ -2072,12 +2005,10 @@ mod tests {
     fn extra_transform_argument_is_rejected() {
         let error = parse_config(
             r#"
-                transform "decode" {
-                    type    = "exec"
+                transform "decode" "exec" {
                     command = ["base64", "-d"]
                 }
-                widget "payloads" {
-                    provider = "file"
+                widget "payloads" "file" {
                     path     = "payloads.yaml"
                     format   = "yaml"
                     transform "decode" {
@@ -2095,8 +2026,7 @@ mod tests {
     fn unknown_transform_name_is_rejected() {
         let error = parse_config(
             r#"
-                widget "payloads" {
-                    provider = "file"
+                widget "payloads" "file" {
                     path     = "payloads.yaml"
                     format   = "yaml"
                     transform "missing" {}
@@ -2112,8 +2042,7 @@ mod tests {
     fn undeclared_transform_placeholder_is_rejected() {
         let error = parse_config(
             r#"
-                transform "jq" {
-                    type    = "exec"
+                transform "jq" "exec" {
                     command = ["jq", "-r", "$${expr}"]
                 }
             "#,
@@ -2141,8 +2070,7 @@ mod tests {
     fn unknown_transform_type_is_rejected() {
         let error = parse_config(
             r#"
-                transform "jq" {
-                    type    = "jq"
+                transform "jq" "jq" {
                     command = ["jq"]
                 }
             "#,
@@ -2157,14 +2085,12 @@ mod tests {
     fn widget_regex_transform_binds_pattern_and_on_miss() {
         let config = parse_config(
             r#"
-                transform "ticket" {
-                    type    = "regex"
+                transform "ticket" "regex" {
                     pattern = "https://[^/]+/browse/(?P<ticket>[A-Z]+-\\d+)"
                     replace = "${ticket}"
                     on_miss = "fail"
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     transform "ticket" {}
@@ -2188,13 +2114,11 @@ mod tests {
     fn omitted_regex_on_miss_keeps_the_value() {
         let config = parse_config(
             r#"
-                transform "id" {
-                    type    = "regex"
+                transform "id" "regex" {
                     pattern = "\\d+"
                     replace = "N"
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     transform "id" {}
@@ -2213,8 +2137,7 @@ mod tests {
     fn unknown_regex_on_miss_is_rejected() {
         let error = parse_config(
             r#"
-                transform "id" {
-                    type    = "regex"
+                transform "id" "regex" {
                     pattern = "\\d+"
                     replace = "N"
                     on_miss = "skip"
@@ -2230,16 +2153,14 @@ mod tests {
     fn regex_transform_can_take_pattern_args() {
         let config = parse_config(
             r#"
-                transform "id" {
-                    type = "regex"
+                transform "id" "regex" {
                     args {
                         prefix = "id-"
                     }
                     pattern = "${prefix}\\d+"
                     replace = "N"
                 }
-                widget "links" {
-                    provider = "file"
+                widget "links" "file" {
                     path     = "links.yaml"
                     format   = "yaml"
                     transform "id" {
@@ -2265,12 +2186,10 @@ mod tests {
     fn exec_transform_stdin_defaults_to_the_value() {
         let config = parse_config(
             r#"
-                transform "cat" {
-                    type    = "exec"
+                transform "cat" "exec" {
                     command = ["cat"]
                 }
-                widget "items" {
-                    provider = "clipboard-history"
+                widget "items" "clipboard-history" {
                     transform "cat" {}
                 }
             "#,
@@ -2287,13 +2206,11 @@ mod tests {
     fn exec_transform_can_set_stdin() {
         let config = parse_config(
             r#"
-                transform "wrap" {
-                    type    = "exec"
+                transform "wrap" "exec" {
                     command = ["cat"]
                     stdin   = "${key}: ${value}"
                 }
-                widget "items" {
-                    provider = "clipboard-history"
+                widget "items" "clipboard-history" {
                     transform "wrap" {}
                 }
             "#,
@@ -2310,8 +2227,7 @@ mod tests {
     fn reserved_transform_argument_name_is_rejected() {
         let error = parse_config(
             r#"
-                transform "echo" {
-                    type = "exec"
+                transform "echo" "exec" {
                     args {
                         value = "ignored"
                     }
