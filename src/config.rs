@@ -185,7 +185,7 @@ pub enum WidgetConfig {
         coalesce_growing: bool,
         skip_whitespace_only: bool,
         presentation: Presentation,
-        action: SelectAction,
+        actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
     },
     File {
@@ -193,19 +193,19 @@ pub enum WidgetConfig {
         path: PathBuf,
         format: FileFormat,
         presentation: Presentation,
-        action: SelectAction,
+        actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
     },
     Executables {
         name: String,
         presentation: Presentation,
-        action: SelectAction,
+        actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
     },
     WaylandWindows {
         name: String,
         presentation: Presentation,
-        action: SelectAction,
+        actions: Vec<SelectAction>,
         transforms: Vec<Transform>,
     },
 }
@@ -229,12 +229,12 @@ impl WidgetConfig {
         }
     }
 
-    pub fn action(&self) -> SelectAction {
+    pub fn actions(&self) -> &[SelectAction] {
         match self {
-            Self::ClipboardHistory { action, .. }
-            | Self::File { action, .. }
-            | Self::Executables { action, .. }
-            | Self::WaylandWindows { action, .. } => action.clone(),
+            Self::ClipboardHistory { actions, .. }
+            | Self::File { actions, .. }
+            | Self::Executables { actions, .. }
+            | Self::WaylandWindows { actions, .. } => actions,
         }
     }
 
@@ -379,9 +379,13 @@ fn widget_from_raw(
     let name = raw.name;
     let ty = raw.provider.as_str();
     let presentation = widget_presentation(&name, ty, &raw.properties, doc, base_dir)?;
-    let action = parse_select_action(&name, &raw.properties, raw.action.as_ref(), actions)?;
+    let actions = parse_select_actions(&name, &raw.properties, &raw.actions, actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
-    let action = action.unwrap_or_else(|| SelectAction::default_for_provider(ty));
+    let actions = if actions.is_empty() {
+        vec![SelectAction::default_for_provider(ty)]
+    } else {
+        actions
+    };
     match ty {
         "clipboard-history" => {
             reject_unknown(
@@ -418,7 +422,7 @@ fn widget_from_raw(
                 skip_whitespace_only: optional_bool(&raw.properties, "skip_whitespace_only")?
                     .unwrap_or(DEFAULT_SKIP_WHITESPACE_ONLY),
                 presentation,
-                action,
+                actions,
                 transforms,
             })
         }
@@ -451,7 +455,7 @@ fn widget_from_raw(
                 path,
                 format,
                 presentation,
-                action,
+                actions,
                 transforms,
             })
         }
@@ -465,7 +469,7 @@ fn widget_from_raw(
             Ok(WidgetConfig::Executables {
                 name,
                 presentation,
-                action,
+                actions,
                 transforms,
             })
         }
@@ -479,7 +483,7 @@ fn widget_from_raw(
             Ok(WidgetConfig::WaylandWindows {
                 name,
                 presentation,
-                action,
+                actions,
                 transforms,
             })
         }
@@ -489,23 +493,24 @@ fn widget_from_raw(
     }
 }
 
-fn parse_select_action(
+fn parse_select_actions(
     widget: &str,
     properties: &BTreeMap<String, HclValue>,
-    invocation: Option<&RawActionInvocation>,
+    invocations: &[RawActionInvocation],
     actions: &BTreeMap<String, SelectAction>,
-) -> Result<Option<SelectAction>, String> {
-    match (optional_name(properties, "action")?, invocation) {
-        (Some(_), Some(_)) => Err(format!(
+) -> Result<Vec<SelectAction>, String> {
+    match (optional_name(properties, "action")?, invocations) {
+        (Some(_), [_, ..]) => Err(format!(
             "widget {widget:?}: action cannot be set as both a name and a block"
         )),
-        (None, None) => Ok(None),
-        (Some(name), None) => resolve_action_name(&name, actions)
-            .map(Some)
+        (None, []) => Ok(Vec::new()),
+        (Some(name), []) => resolve_action_name(&name, actions)
+            .map(|action| vec![action])
             .map_err(|err| format!("widget {widget:?}: {err}")),
-        (None, Some(invocation)) => {
-            resolve_action_invocation(widget, invocation, actions).map(Some)
-        }
+        (None, invocations) => invocations
+            .iter()
+            .map(|invocation| resolve_action_invocation(widget, invocation, actions))
+            .collect(),
     }
 }
 
@@ -1213,14 +1218,20 @@ mod tests {
                 assert_eq!(*history_limit, DEFAULT_HISTORY_LIMIT);
                 assert!(*coalesce_growing);
                 assert!(*skip_whitespace_only);
-                assert_eq!(config.widgets[0].action(), SelectAction::CopyToClipboard);
+                assert_eq!(
+                    config.widgets[0].actions()[0],
+                    SelectAction::CopyToClipboard
+                );
             }
             _ => panic!("expected history widget"),
         }
         match &config.widgets[1] {
             WidgetConfig::File { path, .. } => {
                 assert_eq!(path, Path::new("/config/snippets.json"));
-                assert_eq!(config.widgets[1].action(), SelectAction::CopyToClipboard);
+                assert_eq!(
+                    config.widgets[1].actions()[0],
+                    SelectAction::CopyToClipboard
+                );
             }
             _ => panic!("expected file widget"),
         }
@@ -1237,7 +1248,10 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.widgets[0].action(), SelectAction::CopyToClipboard);
+        assert_eq!(
+            config.widgets[0].actions()[0],
+            SelectAction::CopyToClipboard
+        );
     }
 
     #[test]
@@ -1253,7 +1267,10 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.widgets[0].action(), SelectAction::shipped_xdg_open());
+        assert_eq!(
+            config.widgets[0].actions()[0],
+            SelectAction::shipped_xdg_open()
+        );
     }
 
     #[test]
@@ -1266,8 +1283,11 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.widgets[0].action(), SelectAction::default_launch());
-        assert_eq!(config.widgets[1].action(), SelectAction::ActivateWindow);
+        assert_eq!(
+            config.widgets[0].actions()[0],
+            SelectAction::default_launch()
+        );
+        assert_eq!(config.widgets[1].actions()[0], SelectAction::ActivateWindow);
         assert!(matches!(
             config.widgets[0],
             WidgetConfig::Executables { .. }
@@ -1337,7 +1357,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0].action(),
+            config.widgets[0].actions()[0],
             SelectAction::Exec {
                 command: vec![
                     "firefox".into(),
@@ -1447,7 +1467,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0].action(),
+            config.widgets[0].actions()[0],
             SelectAction::Launch {
                 command: vec!["xdg-open".into(), "${value}".into()],
                 args: BTreeMap::new(),
@@ -1472,7 +1492,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0].action().stdin("k", "Readable", "payload"),
+            config.widgets[0].actions()[0].stdin("k", "Readable", "payload"),
             Some(String::new())
         );
     }
@@ -1495,9 +1515,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0]
-                .action()
-                .stdin("url", "Site", "https://ex"),
+            config.widgets[0].actions()[0].stdin("url", "Site", "https://ex"),
             Some("url: https://ex".into())
         );
     }
@@ -1526,7 +1544,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0].action(),
+            config.widgets[0].actions()[0],
             SelectAction::Exec {
                 command: vec!["notify-send".into(), "${title}".into(), "${body}".into()],
                 stdin: String::new(),
@@ -1537,7 +1555,7 @@ mod tests {
             }
         );
         assert_eq!(
-            config.widgets[0].action().argv("url", "Site", "https://ex"),
+            config.widgets[0].actions()[0].argv("url", "Site", "https://ex"),
             Some(vec![
                 "notify-send".into(),
                 "Site".into(),
@@ -1567,7 +1585,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0].action().argv("url", "Site", "https://ex"),
+            config.widgets[0].actions()[0].argv("url", "Site", "https://ex"),
             Some(vec![
                 "notify-send".into(),
                 "klemmbrett".into(),
@@ -1595,11 +1613,11 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        match config.widgets[0].action() {
+        match &config.widgets[0].actions()[0] {
             SelectAction::Exec { args, .. } => {
                 assert_eq!(
                     args,
-                    BTreeMap::from([("title".into(), "klemmbrett".into())])
+                    &BTreeMap::from([("title".into(), "klemmbrett".into())])
                 );
             }
             other => panic!("expected exec action, got {other:?}"),
@@ -1686,6 +1704,36 @@ mod tests {
     }
 
     #[test]
+    fn widget_can_run_multiple_actions() {
+        let config = parse_config(
+            r#"
+                action "notify" "exec" {
+                    command = ["notify-send", "${value}"]
+                }
+                widget "links" "file" {
+                    path   = "links.yaml"
+                    format = "yaml"
+                    action "copy-to-clipboard" {}
+                    action "notify" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].actions(),
+            [
+                SelectAction::CopyToClipboard,
+                SelectAction::Exec {
+                    command: vec!["notify-send".into(), "${value}".into()],
+                    stdin: String::new(),
+                    args: BTreeMap::new(),
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn copy_to_clipboard_cannot_declare_args() {
         let error = parse_config(
             r#"
@@ -1721,7 +1769,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            config.widgets[0].action(),
+            config.widgets[0].actions()[0],
             SelectAction::Launch {
                 command: vec!["handlr".into(), "open".into(), "${value}".into()],
                 args: BTreeMap::new(),

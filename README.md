@@ -112,7 +112,7 @@ widget "windows" "wayland-windows" {
 }
 ```
 
-Selecting a row runs that widget's transforms, then its action. `launch`
+Selecting a row runs that widget's transforms, then its actions. `launch`
 defaults to `auto` (`systemd-run --user --scope` when klemmbrett is a
 systemd unit, otherwise a POSIX double-fork). Override with
 `launch = "posix"`, `launch = "systemd-run"`, or a wrapper list.

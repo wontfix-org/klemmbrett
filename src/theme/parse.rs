@@ -192,7 +192,7 @@ pub struct RawWidget {
     pub name: String,
     pub provider: String,
     pub properties: BTreeMap<String, HclValue>,
-    pub action: Option<RawActionInvocation>,
+    pub actions: Vec<RawActionInvocation>,
     pub transforms: Vec<RawTransformInvocation>,
 }
 
@@ -1105,7 +1105,7 @@ fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
             value_to_hcl(&to_value(attr.expr())?)?,
         );
     }
-    let mut action = None;
+    let mut actions = Vec::new();
     let mut transforms = Vec::new();
     for nested in block.body().blocks() {
         match nested.identifier() {
@@ -1120,16 +1120,11 @@ fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
                 });
             }
             "action" => {
-                if action.is_some() {
-                    return Err(format!(
-                        "widget {name:?}: action is configured more than once"
-                    ));
-                }
                 let action_name = one_label(nested, "action")?;
                 if action_name.trim().is_empty() {
                     return Err(format!("widget {name:?}: action name must not be empty"));
                 }
-                action = Some(RawActionInvocation {
+                actions.push(RawActionInvocation {
                     name: action_name,
                     properties: attributes_as_values(nested.body())?,
                 });
@@ -1145,7 +1140,7 @@ fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
         name,
         provider,
         properties,
-        action,
+        actions,
         transforms,
     })
 }
@@ -1757,7 +1752,8 @@ window { padding = 3 }
                 .and_then(HclValue::as_text),
             Some("${value}")
         );
-        let action = doc.widgets[0].action.as_ref().expect("widget action");
+        assert_eq!(doc.widgets[0].actions.len(), 1);
+        let action = &doc.widgets[0].actions[0];
         assert_eq!(action.name, "notify");
         assert_eq!(
             action.properties.get("title").and_then(HclValue::as_text),
