@@ -190,6 +190,7 @@ pub struct Style {
     pub max_height: Option<f32>,
     pub font_size: Option<f32>,
     pub location: Option<Location>,
+    pub text: Option<String>,
 }
 
 impl Style {
@@ -637,6 +638,13 @@ fn resolve(
             props.font_size,
         ),
         location: inherited(&props, "location", parent, |p| p.location, props.location),
+        text: inherited_owned(
+            &props,
+            "text",
+            parent,
+            |p| p.text.clone(),
+            props.text.clone(),
+        ),
     })
 }
 
@@ -662,6 +670,16 @@ impl Theme {
 }
 
 fn inherited<T: Copy>(
+    props: &parse::Props,
+    name: &str,
+    parent: Option<&Style>,
+    from_parent: impl Fn(&Style) -> Option<T>,
+    value: Option<T>,
+) -> Option<T> {
+    inherited_owned(props, name, parent, from_parent, value)
+}
+
+fn inherited_owned<T>(
     props: &parse::Props,
     name: &str,
     parent: Option<&Style>,
@@ -866,6 +884,35 @@ mod tests {
         .unwrap();
         assert_eq!(theme.window().location, Some(Location::NorthEast));
         assert_eq!(theme.listview().background, theme.window().background);
+    }
+
+    #[test]
+    fn element_marker_text_defaults_to_none() {
+        assert_eq!(Theme::default().element_marker().text, None);
+    }
+
+    #[test]
+    fn element_marker_can_set_text() {
+        let theme = parse_theme(r#"element-marker { text = "✓" }"#).unwrap();
+        assert_eq!(theme.element_marker().text.as_deref(), Some("✓"));
+    }
+
+    #[test]
+    fn element_marker_text_can_be_empty() {
+        let theme = parse_theme(r#"element-marker { text = "" }"#).unwrap();
+        assert_eq!(theme.element_marker().text.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn element_marker_text_can_inherit() {
+        let theme = parse_theme(
+            r#"
+                element { text = "*" }
+                element-marker { text = inherit() }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(theme.element_marker().text.as_deref(), Some("*"));
     }
 
     #[test]

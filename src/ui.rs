@@ -894,7 +894,11 @@ fn element_marker(marked: bool, style: &Style) -> gpui::Div {
             .w(px(style.width.unwrap_or(16.0)))
             .flex_none()
             .whitespace_nowrap()
-            .child(if marked { ">" } else { "" }),
+            .child(if marked {
+                style.text.as_deref().unwrap_or(">").to_owned()
+            } else {
+                String::new()
+            }),
         style,
     )
 }
