@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::launch::Launch;
 use crate::theme::{
     parse_document_at, presentation_for_widget, theme_from_document, HclDocument, HclValue,
-    Location, Presentation, RawAction, RawWidget,
+    Location, Presentation, RawAction, RawTransform, RawTransformInvocation, RawWidget,
 };
 use crate::{
     default_db_path, Theme, DEFAULT_COALESCE_GROWING, DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX,
@@ -89,6 +89,19 @@ impl SelectAction {
     }
 }
 
+/// A named command that rewrites the selected value before the widget action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transform {
+    pub command: Vec<String>,
+    pub args: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct NamedTransform {
+    command: Vec<String>,
+    args: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum WidgetConfig {
     ClipboardHistory {
@@ -99,6 +112,7 @@ pub enum WidgetConfig {
         skip_whitespace_only: bool,
         presentation: Presentation,
         action: SelectAction,
+        transforms: Vec<Transform>,
     },
     File {
         name: String,
@@ -106,16 +120,19 @@ pub enum WidgetConfig {
         format: FileFormat,
         presentation: Presentation,
         action: SelectAction,
+        transforms: Vec<Transform>,
     },
     Executables {
         name: String,
         presentation: Presentation,
         action: SelectAction,
+        transforms: Vec<Transform>,
     },
     WaylandWindows {
         name: String,
         presentation: Presentation,
         action: SelectAction,
+        transforms: Vec<Transform>,
     },
 }
 
@@ -144,6 +161,15 @@ impl WidgetConfig {
             | Self::File { action, .. }
             | Self::Executables { action, .. }
             | Self::WaylandWindows { action, .. } => action.clone(),
+        }
+    }
+
+    pub fn transforms(&self) -> &[Transform] {
+        match self {
+            Self::ClipboardHistory { transforms, .. }
+            | Self::File { transforms, .. }
+            | Self::Executables { transforms, .. }
+            | Self::WaylandWindows { transforms, .. } => transforms,
         }
     }
 }
@@ -191,12 +217,13 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
     let mut doc = parse_document_at(text, base_dir)?;
     let (label_max, launch) = parse_configuration(&doc.configuration)?;
     let actions = collect_actions(&doc)?;
+    let named_transforms = collect_transforms(&doc)?;
     let raw_widgets = std::mem::take(&mut doc.widgets);
     let mut widgets = Vec::new();
     let mut names = HashSet::new();
 
     for raw in raw_widgets {
-        let widget = widget_from_raw(raw, &doc, base_dir, &actions)?;
+        let widget = widget_from_raw(raw, &doc, base_dir, &actions, &named_transforms)?;
         let name = widget.name().to_owned();
         if name.trim().is_empty() {
             return Err("widget name must not be empty".into());
@@ -273,10 +300,12 @@ fn widget_from_raw(
     doc: &HclDocument,
     base_dir: &Path,
     actions: &BTreeMap<String, SelectAction>,
+    named_transforms: &BTreeMap<String, NamedTransform>,
 ) -> Result<WidgetConfig, String> {
     let name = raw.name;
     let presentation = widget_presentation(&name, &raw.properties, doc, base_dir)?;
     let action = parse_select_action(&name, &raw.properties, actions)?;
+    let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
     let ty = raw
         .properties
         .get("provider")
@@ -321,6 +350,7 @@ fn widget_from_raw(
                     .unwrap_or(DEFAULT_SKIP_WHITESPACE_ONLY),
                 presentation,
                 action,
+                transforms,
             })
         }
         "file" => {
@@ -355,6 +385,7 @@ fn widget_from_raw(
                 format,
                 presentation,
                 action,
+                transforms,
             })
         }
         "executables" => {
@@ -368,6 +399,7 @@ fn widget_from_raw(
                 name,
                 presentation,
                 action,
+                transforms,
             })
         }
         "wayland-windows" => {
@@ -381,6 +413,7 @@ fn widget_from_raw(
                 name,
                 presentation,
                 action,
+                transforms,
             })
         }
         other => Err(format!(
@@ -447,7 +480,7 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
                         ));
                     }
                     for item in items {
-                        validate_placeholders(name, item)?;
+                        validate_placeholders("action", name, item, &[])?;
                     }
                     items.to_vec()
                 }
@@ -457,6 +490,101 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
         other => Err(format!(
             "action {name:?}: unknown type {other}; expected copy-to-clipboard, exec, or activate-window"
         )),
+    }
+}
+
+fn collect_transforms(doc: &HclDocument) -> Result<BTreeMap<String, NamedTransform>, String> {
+    let mut transforms = BTreeMap::new();
+    for (name, raw) in &doc.transforms {
+        transforms.insert(name.clone(), named_transform_from_raw(name, raw)?);
+    }
+    Ok(transforms)
+}
+
+fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<NamedTransform, String> {
+    reject_unknown("transform", name, &raw.properties, &["command"])?;
+    let command = raw
+        .properties
+        .get("command")
+        .and_then(HclValue::as_list)
+        .ok_or_else(|| format!("transform {name:?}: command is required"))?;
+    if command.is_empty() || command.iter().any(|item| item.trim().is_empty()) {
+        return Err(format!(
+            "transform {name:?}: command must be a non-empty list of strings"
+        ));
+    }
+    let mut args = BTreeMap::new();
+    for (arg, value) in &raw.args {
+        if arg.trim().is_empty() {
+            return Err(format!(
+                "transform {name:?}: argument name must not be empty"
+            ));
+        }
+        if matches!(arg.as_str(), "value" | "key" | "label") {
+            return Err(format!(
+                "transform {name:?}: argument {arg} is reserved; use a different name"
+            ));
+        }
+        let default = value.as_text().ok_or_else(|| {
+            format!("transform {name:?}: argument {arg} default must be a string")
+        })?;
+        args.insert(arg.clone(), default.to_owned());
+    }
+    let extra: Vec<&str> = args.keys().map(String::as_str).collect();
+    for item in command {
+        validate_placeholders("transform", name, item, &extra)?;
+    }
+    Ok(NamedTransform {
+        command: command.to_vec(),
+        args,
+    })
+}
+
+fn resolve_transforms(
+    widget: &str,
+    invocations: &[RawTransformInvocation],
+    named: &BTreeMap<String, NamedTransform>,
+) -> Result<Vec<Transform>, String> {
+    let mut transforms = Vec::with_capacity(invocations.len());
+    for invocation in invocations {
+        let spec = named.get(&invocation.name).ok_or_else(|| {
+            format!(
+                "widget {widget:?}: unknown transform {}; expected {}",
+                invocation.name,
+                supported_transforms(named)
+            )
+        })?;
+        let mut args = spec.args.clone();
+        for (key, value) in &invocation.properties {
+            if !spec.args.contains_key(key) {
+                return Err(format!(
+                    "widget {widget:?}: transform {:?}: unknown argument {key}",
+                    invocation.name
+                ));
+            }
+            let text = value.as_text().ok_or_else(|| {
+                format!(
+                    "widget {widget:?}: transform {:?}: {key} must be a string",
+                    invocation.name
+                )
+            })?;
+            args.insert(key.clone(), text.to_owned());
+        }
+        transforms.push(Transform {
+            command: spec.command.clone(),
+            args,
+        });
+    }
+    Ok(transforms)
+}
+
+fn supported_transforms(transforms: &BTreeMap<String, NamedTransform>) -> String {
+    let names: Vec<&str> = transforms.keys().map(String::as_str).collect();
+    match names.as_slice() {
+        [] => "no transforms are configured".into(),
+        [only] => (*only).to_owned(),
+        [left, right] => format!("{left} or {right}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
     }
 }
 
@@ -490,19 +618,32 @@ fn supported_actions(actions: &BTreeMap<String, SelectAction>) -> String {
     }
 }
 
-fn validate_placeholders(action: &str, input: &str) -> Result<(), String> {
+fn validate_placeholders(
+    kind: &str,
+    name: &str,
+    input: &str,
+    extra: &[&str],
+) -> Result<(), String> {
     let mut rest = input;
     while let Some(start) = rest.find("${") {
         let after = &rest[start + 2..];
         let Some(end) = after.find('}') else {
             return Err(format!(
-                "action {action:?}: unclosed placeholder in {input:?}"
+                "{kind} {name:?}: unclosed placeholder in {input:?}"
             ));
         };
         let token = &after[..end];
-        if !matches!(token, "value" | "key" | "label") {
+        if !matches!(token, "value" | "key" | "label") && !extra.contains(&token) {
+            let mut expected = vec!["${value}".into(), "${key}".into(), "${label}".into()];
+            expected.extend(extra.iter().map(|arg| format!("${{{arg}}}")));
             return Err(format!(
-                "action {action:?}: unknown placeholder ${{{token}}}; expected ${{value}}, ${{key}}, or ${{label}}"
+                "{kind} {name:?}: unknown placeholder ${{{token}}}; expected {}",
+                match expected.as_slice() {
+                    [only] => only.clone(),
+                    [left, right] => format!("{left} or {right}"),
+                    [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+                    [] => String::new(),
+                }
             ));
         }
         rest = &after[end + 1..];
@@ -511,13 +652,29 @@ fn validate_placeholders(action: &str, input: &str) -> Result<(), String> {
 }
 
 pub fn interpolate_command(command: &[String], key: &str, label: &str, value: &str) -> Vec<String> {
+    interpolate_command_with(command, key, label, value, &BTreeMap::new())
+}
+
+pub fn interpolate_command_with(
+    command: &[String],
+    key: &str,
+    label: &str,
+    value: &str,
+    extras: &BTreeMap<String, String>,
+) -> Vec<String> {
     command
         .iter()
-        .map(|part| interpolate_arg(part, key, label, value))
+        .map(|part| interpolate_arg(part, key, label, value, extras))
         .collect()
 }
 
-fn interpolate_arg(input: &str, key: &str, label: &str, value: &str) -> String {
+fn interpolate_arg(
+    input: &str,
+    key: &str,
+    label: &str,
+    value: &str,
+    extras: &BTreeMap<String, String>,
+) -> String {
     let mut out = String::new();
     let mut rest = input;
     while let Some(start) = rest.find("${") {
@@ -527,15 +684,19 @@ fn interpolate_arg(input: &str, key: &str, label: &str, value: &str) -> String {
             out.push_str(&rest[start..]);
             return out;
         };
-        let replacement = match &after[..end] {
+        let token = &after[..end];
+        let replacement = match token {
             "value" => value,
             "key" => key,
             "label" => label,
-            _ => {
-                out.push_str(&rest[start..start + 2 + end + 1]);
-                rest = &after[end + 1..];
-                continue;
-            }
+            other => match extras.get(other) {
+                Some(text) => text.as_str(),
+                None => {
+                    out.push_str(&rest[start..start + 2 + end + 1]);
+                    rest = &after[end + 1..];
+                    continue;
+                }
+            },
         };
         out.push_str(replacement);
         rest = &after[end + 1..];
@@ -1236,6 +1397,146 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("failed to read layout"), "{error}");
+    }
+
+    #[test]
+    fn widget_transforms_bind_declared_args() {
+        let config = parse_config(
+            r#"
+                transform "jq" {
+                    args {
+                        expr = ".title"
+                    }
+                    command = ["jq", "-r", "${expr}"]
+                }
+                transform "decode" {
+                    command = ["base64", "-d"]
+                }
+                widget "payloads" {
+                    provider = "file"
+                    path     = "payloads.yaml"
+                    format   = "yaml"
+                    transform "jq" {
+                        expr = ".data"
+                    }
+                    transform "decode" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].transforms(),
+            [
+                Transform {
+                    command: vec!["jq".into(), "-r".into(), "${expr}".into()],
+                    args: BTreeMap::from([("expr".into(), ".data".into())]),
+                },
+                Transform {
+                    command: vec!["base64".into(), "-d".into()],
+                    args: BTreeMap::new(),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn omitted_transform_argument_uses_the_default() {
+        let config = parse_config(
+            r#"
+                transform "jq" {
+                    args {
+                        expr = ".data"
+                    }
+                    command = ["jq", "-r", "${expr}"]
+                }
+                widget "payloads" {
+                    provider = "file"
+                    path     = "payloads.yaml"
+                    format   = "yaml"
+                    transform "jq" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].transforms()[0]
+                .args
+                .get("expr")
+                .map(String::as_str),
+            Some(".data")
+        );
+    }
+
+    #[test]
+    fn extra_transform_argument_is_rejected() {
+        let error = parse_config(
+            r#"
+                transform "decode" {
+                    command = ["base64", "-d"]
+                }
+                widget "payloads" {
+                    provider = "file"
+                    path     = "payloads.yaml"
+                    format   = "yaml"
+                    transform "decode" {
+                        expr = ".data"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown argument expr"), "{error}");
+    }
+
+    #[test]
+    fn unknown_transform_name_is_rejected() {
+        let error = parse_config(
+            r#"
+                widget "payloads" {
+                    provider = "file"
+                    path     = "payloads.yaml"
+                    format   = "yaml"
+                    transform "missing" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown transform missing"), "{error}");
+    }
+
+    #[test]
+    fn undeclared_transform_placeholder_is_rejected() {
+        let error = parse_config(
+            r#"
+                transform "jq" {
+                    command = ["jq", "-r", "$${expr}"]
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown placeholder ${expr}"), "{error}");
+    }
+
+    #[test]
+    fn reserved_transform_argument_name_is_rejected() {
+        let error = parse_config(
+            r#"
+                transform "echo" {
+                    args {
+                        value = "ignored"
+                    }
+                    command = ["echo", "${value}"]
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("reserved"), "{error}");
     }
 
     #[test]

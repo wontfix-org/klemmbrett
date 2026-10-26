@@ -19,9 +19,9 @@ use gpui::{
 };
 use klemmbrett::{
     filter_records, history_candidate, index_for_accelerator, menu_item_spec, place_at_location,
-    spawn_detached, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location, Orientation,
-    OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget, Widgets,
-    POLL_INTERVAL,
+    run_transform, spawn_detached, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location,
+    Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget,
+    Widgets, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -153,18 +153,30 @@ impl Klemmbrett {
     }
 
     fn select_record(&mut self, widget: &str, key: &str, label: &str, value: &str) {
+        let mut value = value.to_owned();
+        if let Some(transforms) = self.widgets.transforms(widget) {
+            for transform in transforms {
+                match run_transform(&transform.command, &transform.args, key, label, &value) {
+                    Ok(next) => value = next,
+                    Err(err) => {
+                        eprintln!("Failed to transform {widget:?}: {err}");
+                        return;
+                    }
+                }
+            }
+        }
         let action = self.widgets.action(widget).unwrap_or_default();
         match action {
-            SelectAction::CopyToClipboard => self.restore(value),
+            SelectAction::CopyToClipboard => self.restore(&value),
             exec @ SelectAction::Exec { .. } => {
-                let argv = exec.argv(key, label, value).expect("exec action has argv");
+                let argv = exec.argv(key, label, &value).expect("exec action has argv");
                 let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
                 if let Err(err) = run_user_command(&self.launch, &argv) {
                     eprintln!("Failed to exec {argv:?}: {err}");
                 }
             }
             SelectAction::ActivateWindow => {
-                if let Err(err) = self.widgets.activate_window(value) {
+                if let Err(err) = self.widgets.activate_window(&value) {
                     eprintln!("Failed to activate window {value:?}: {err}");
                 }
             }

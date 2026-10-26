@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::config::{Config, FileFormat, SelectAction, WidgetConfig};
+use crate::config::{Config, FileFormat, SelectAction, Transform, WidgetConfig};
 use crate::executables::executables_on_path;
 use crate::theme::Presentation;
 use crate::windows::WindowList;
@@ -64,6 +64,7 @@ struct NamedWidget {
     provider: Provider,
     presentation: Presentation,
     action: SelectAction,
+    transforms: Vec<Transform>,
 }
 
 enum Provider {
@@ -90,6 +91,7 @@ impl Widgets {
             let name = widget.name().to_owned();
             let presentation = widget.presentation().clone();
             let action = widget.action();
+            let transforms = widget.transforms().to_vec();
             let provider = match widget {
                 WidgetConfig::ClipboardHistory {
                     db,
@@ -122,6 +124,7 @@ impl Widgets {
                 provider,
                 presentation,
                 action,
+                transforms,
             });
         }
 
@@ -155,6 +158,13 @@ impl Widgets {
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| entry.action.clone())
+    }
+
+    pub fn transforms(&self, name: &str) -> Option<&[Transform]> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.transforms.as_slice())
     }
 
     pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {
@@ -391,6 +401,41 @@ mod tests {
                 .iter()
                 .any(|record| record.key == "kb-path-test-bin"),
             "{records:?}"
+        );
+    }
+
+    #[test]
+    fn configured_transforms_are_available_by_widget_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = parse_config(
+            r#"
+                transform "jq" {
+                    args {
+                        expr = ".title"
+                    }
+                    command = ["jq", "-r", "${expr}"]
+                }
+                widget "items" {
+                    provider = "clipboard-history"
+                    db       = "history.sqlite"
+                    transform "jq" {
+                        expr = ".data"
+                    }
+                }
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        let widgets = Widgets::from_config(&config).unwrap();
+        assert_eq!(
+            widgets.transforms("items"),
+            Some(
+                [Transform {
+                    command: vec!["jq".into(), "-r".into(), "${expr}".into()],
+                    args: std::collections::BTreeMap::from([("expr".into(), ".data".into())]),
+                }]
+                .as_slice()
+            )
         );
     }
 

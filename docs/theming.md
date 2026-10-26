@@ -66,7 +66,7 @@ layout "filter" {
 
 A standalone layout file is the same body without the `layout "name" { }`
 wrapper (`layouts/filter.hcl`). Theme files must not contain `configuration`,
-`widget`, `layout`, or `theme`.
+`widget`, `action`, `transform`, `layout`, or `theme`.
 
 Shipped recipes:
 

@@ -167,7 +167,7 @@ impl LayoutRecipe {
         let Some(raw) = &self.raw else {
             return Ok(self.clone());
         };
-        let evaluated = evaluate_body(raw, &self.locals, widget_name, widget_provider)?;
+        let evaluated = evaluate_body(raw, &self.locals, widget_name, widget_provider, &[])?;
         let mut recipe = layout_from_body(&evaluated)?;
         recipe.raw = self.raw.clone();
         recipe.locals = self.locals.clone();
@@ -180,6 +180,7 @@ pub struct HclDocument {
     pub configuration: BTreeMap<String, HclValue>,
     pub widgets: Vec<RawWidget>,
     pub actions: BTreeMap<String, RawAction>,
+    pub transforms: BTreeMap<String, RawTransform>,
     pub theme_refs: Vec<String>,
     pub named_layouts: BTreeMap<String, LayoutRecipe>,
     pub(super) theme: ThemeSpec,
@@ -190,10 +191,23 @@ pub struct HclDocument {
 pub struct RawWidget {
     pub name: String,
     pub properties: BTreeMap<String, HclValue>,
+    pub transforms: Vec<RawTransformInvocation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawAction {
+    pub properties: BTreeMap<String, HclValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawTransform {
+    pub properties: BTreeMap<String, HclValue>,
+    pub args: BTreeMap<String, HclValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawTransformInvocation {
+    pub name: String,
     pub properties: BTreeMap<String, HclValue>,
 }
 
@@ -216,7 +230,8 @@ fn parse_document_stack(
         ..HclDocument::default()
     };
     ingest_raw(&raw, &mut doc, base_dir, stack, true)?;
-    let evaluated = evaluate_body(&raw, &doc.locals, None, None)?;
+    let placeholders = transform_placeholders(&raw);
+    let evaluated = evaluate_body(&raw, &doc.locals, None, None, &placeholders)?;
     ingest_evaluated(&evaluated, &mut doc, true)?;
     Ok(doc)
 }
@@ -232,9 +247,10 @@ pub(super) fn parse_spec_at(text: &str, base_dir: &Path) -> Result<ThemeSpec, St
         || !doc.theme_refs.is_empty()
         || !doc.named_layouts.is_empty()
         || !doc.actions.is_empty()
+        || !doc.transforms.is_empty()
     {
         return Err(
-            "configuration, widget, action, layout, and theme belong in the config file, not a theme"
+            "configuration, widget, action, transform, layout, and theme belong in the config file, not a theme"
                 .into(),
         );
     }
@@ -244,7 +260,7 @@ pub(super) fn parse_spec_at(text: &str, base_dir: &Path) -> Result<ThemeSpec, St
 pub fn parse_layout_recipe(text: &str) -> Result<LayoutRecipe, String> {
     let raw = parse_hcl(text)?;
     let locals = locals_from_body(&raw)?;
-    let evaluated = evaluate_body(&raw, &locals, None, None)?;
+    let evaluated = evaluate_body(&raw, &locals, None, None, &[])?;
     let mut recipe = layout_from_body(&evaluated)?;
     recipe.raw = Some(raw);
     recipe.locals = locals;
@@ -258,7 +274,7 @@ fn parse_hcl(text: &str) -> Result<Body, String> {
 fn locals_from_body(body: &Body) -> Result<Value, String> {
     let mut locals = hcl::Map::new();
     let empty = Value::Object(hcl::Map::new());
-    let ctx = eval_context(&empty, None, None);
+    let ctx = eval_context(&empty, None, None, &[]);
     for block in body.blocks() {
         if block.identifier() != "locals" {
             continue;
@@ -277,9 +293,31 @@ fn evaluate_body(
     locals: &Value,
     widget_name: Option<&str>,
     widget_provider: Option<&str>,
+    placeholders: &[String],
 ) -> Result<Body, String> {
-    let ctx = eval_context(locals, widget_name, widget_provider);
+    let ctx = eval_context(locals, widget_name, widget_provider, placeholders);
     body.evaluate(&ctx).map_err(eval_err)
+}
+
+fn transform_placeholders(body: &Body) -> Vec<String> {
+    let mut names = Vec::new();
+    for block in body.blocks() {
+        if block.identifier() != "transform" {
+            continue;
+        }
+        for nested in block.body().blocks() {
+            if nested.identifier() != "args" {
+                continue;
+            }
+            for attr in nested.body().attributes() {
+                let name = attr.key();
+                if !name.is_empty() && !names.iter().any(|seen| seen == name) {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+    }
+    names
 }
 
 fn eval_err(err: impl std::fmt::Display) -> String {
@@ -290,6 +328,7 @@ fn eval_context<'a>(
     locals: &'a Value,
     widget_name: Option<&'a str>,
     widget_provider: Option<&'a str>,
+    placeholders: &'a [String],
 ) -> Context<'a> {
     let mut ctx = Context::new();
     ctx.declare_var("local", locals.clone());
@@ -310,6 +349,9 @@ fn eval_context<'a>(
     ctx.declare_var("value", Value::from("${value}"));
     ctx.declare_var("key", Value::from("${key}"));
     ctx.declare_var("label", Value::from("${label}"));
+    for name in placeholders {
+        ctx.declare_var(name.as_str(), Value::from(format!("${{{name}}}")));
+    }
     declare_funcs(&mut ctx);
     ctx
 }
@@ -547,7 +589,7 @@ fn ingest_raw(
                     locals: doc.locals.clone(),
                     ..LayoutRecipe::default()
                 };
-                let evaluated = evaluate_body(block.body(), &doc.locals, None, None)?;
+                let evaluated = evaluate_body(block.body(), &doc.locals, None, None, &[])?;
                 let parsed = layout_from_body(&evaluated)?;
                 recipe.location = parsed.location;
                 recipe.spec = parsed.spec;
@@ -611,11 +653,16 @@ fn ingest_evaluated(body: &Body, doc: &mut HclDocument, allow_config: bool) -> R
                 }
             }
             "widget" if allow_config => {
-                let name = one_label(block, "widget")?;
-                doc.widgets.push(RawWidget {
-                    name,
-                    properties: attributes_as_values(block.body())?,
-                });
+                doc.widgets.push(raw_widget_from_block(block)?);
+            }
+            "transform" if allow_config => {
+                let (name, transform) = raw_transform_from_block(block)?;
+                if doc.transforms.contains_key(&name) {
+                    return Err(format!(
+                        "transform name {name:?} is configured more than once"
+                    ));
+                }
+                doc.transforms.insert(name, transform);
             }
             "action" if allow_config => {
                 let name = one_label(block, "action")?;
@@ -731,7 +778,7 @@ fn layout_from_body(body: &Body) -> Result<LayoutRecipe, String> {
 fn apply_catalog(spec: &mut ThemeSpec, name: &str, block: &Block) -> Result<(), String> {
     let widget = parse_widget(name).ok_or_else(|| {
         format!(
-            "unknown block {name}; supported: configuration, widget, action, layout, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
+            "unknown block {name}; supported: configuration, widget, action, transform, layout, theme, import, locals, defaults, media, overlay, window, listview, element, element-index, element-text, inputbar, prompt, entry"
         )
     })?;
     let state = match block.labels().first().map(|label| label.as_str()) {
@@ -758,7 +805,7 @@ fn apply_catalog(spec: &mut ThemeSpec, name: &str, block: &Block) -> Result<(), 
 
 fn to_value(expr: &hcl::Expression) -> Result<Value, String> {
     let empty = Value::Object(hcl::Map::new());
-    let ctx = eval_context(&empty, None, None);
+    let ctx = eval_context(&empty, None, None, &[]);
     expr.evaluate(&ctx).map_err(eval_err)
 }
 
@@ -937,6 +984,72 @@ fn value_widgets(value: &Value) -> Result<Vec<Widget>, String> {
         .collect()
 }
 
+fn raw_transform_from_block(block: &Block) -> Result<(String, RawTransform), String> {
+    let name = one_label(block, "transform")?;
+    if name.trim().is_empty() {
+        return Err("transform name must not be empty".into());
+    }
+    let mut properties = BTreeMap::new();
+    for attr in block.body().attributes() {
+        properties.insert(
+            attr.key().to_owned(),
+            value_to_hcl(&to_value(attr.expr())?)?,
+        );
+    }
+    let mut args = BTreeMap::new();
+    let mut seen_args = false;
+    for nested in block.body().blocks() {
+        if nested.identifier() != "args" {
+            return Err(format!(
+                "transform {name:?}: unknown block {}; expected args",
+                nested.identifier()
+            ));
+        }
+        reject_labels(nested, "args")?;
+        if seen_args {
+            return Err(format!(
+                "transform {name:?}: args is configured more than once"
+            ));
+        }
+        seen_args = true;
+        args = attributes_as_values(nested.body())?;
+    }
+    Ok((name, RawTransform { properties, args }))
+}
+
+fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
+    let name = one_label(block, "widget")?;
+    let mut properties = BTreeMap::new();
+    for attr in block.body().attributes() {
+        properties.insert(
+            attr.key().to_owned(),
+            value_to_hcl(&to_value(attr.expr())?)?,
+        );
+    }
+    let mut transforms = Vec::new();
+    for nested in block.body().blocks() {
+        if nested.identifier() != "transform" {
+            return Err(format!(
+                "widget {name:?}: unknown block {}; expected transform",
+                nested.identifier()
+            ));
+        }
+        let transform = one_label(nested, "transform")?;
+        if transform.trim().is_empty() {
+            return Err(format!("widget {name:?}: transform name must not be empty"));
+        }
+        transforms.push(RawTransformInvocation {
+            name: transform,
+            properties: attributes_as_values(nested.body())?,
+        });
+    }
+    Ok(RawWidget {
+        name,
+        properties,
+        transforms,
+    })
+}
+
 fn attributes_as_values(body: &Body) -> Result<BTreeMap<String, HclValue>, String> {
     if body.blocks().next().is_some() {
         return Err("this block cannot contain nested blocks".into());
@@ -995,6 +1108,7 @@ fn merge_document(into: &mut HclDocument, from: HclDocument) {
     into.configuration.extend(from.configuration);
     into.widgets.extend(from.widgets);
     into.actions.extend(from.actions);
+    into.transforms.extend(from.transforms);
     into.theme_refs.extend(from.theme_refs);
     into.named_layouts.extend(from.named_layouts);
     into.theme.merge(from.theme);
@@ -1390,6 +1504,80 @@ window { padding = 3 }
         )
         .unwrap_err();
         assert!(error.contains("belong in the config file"), "{error}");
+    }
+
+    #[test]
+    fn parse_spec_rejects_named_transform_blocks() {
+        let error = parse_spec(
+            r#"
+                transform "jq" {
+                    command = ["jq"]
+                }
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.contains("belong in the config file"), "{error}");
+    }
+
+    #[test]
+    fn document_parses_named_transforms_and_widget_invocations() {
+        let doc = parse_document(
+            r#"
+                transform "jq" {
+                    args {
+                        expr = ".data"
+                    }
+                    command = ["jq", "-r", "${expr}"]
+                }
+                widget "payloads" {
+                    provider = "file"
+                    path     = "payloads.yaml"
+                    format   = "yaml"
+                    transform "jq" {
+                        expr = ".data"
+                    }
+                    transform "jq" {
+                        expr = ".title"
+                    }
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.transforms["jq"]
+                .args
+                .get("expr")
+                .and_then(HclValue::as_text),
+            Some(".data")
+        );
+        assert_eq!(doc.widgets[0].transforms.len(), 2);
+        assert_eq!(doc.widgets[0].transforms[0].name, "jq");
+        assert_eq!(
+            doc.widgets[0].transforms[0]
+                .properties
+                .get("expr")
+                .and_then(HclValue::as_text),
+            Some(".data")
+        );
+        assert_eq!(
+            doc.widgets[0].transforms[1]
+                .properties
+                .get("expr")
+                .and_then(HclValue::as_text),
+            Some(".title")
+        );
+    }
+
+    #[test]
+    fn duplicate_transform_names_in_one_file_are_rejected() {
+        let error = parse_document(
+            r#"
+                transform "jq" { command = ["jq"] }
+                transform "jq" { command = ["cat"] }
+            "#,
+        )
+        .unwrap_err();
+        assert!(error.contains("configured more than once"), "{error}");
     }
 
     #[test]

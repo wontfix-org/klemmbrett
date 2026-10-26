@@ -197,6 +197,7 @@ mod history;
 mod launch;
 mod popup;
 mod theme;
+mod transform;
 mod widget;
 mod windows;
 
@@ -207,7 +208,7 @@ pub use activate_api::{
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
     config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
-    PopupConfig, SelectAction, WidgetConfig,
+    PopupConfig, SelectAction, Transform, WidgetConfig,
 };
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
@@ -222,6 +223,7 @@ pub use theme::{
     parse_document, parse_theme, Edges, HclDocument, HclValue, Location, Orientation, Presentation,
     RawWidget, Rgba, Style, Theme, Widget,
 };
+pub use transform::run_transform;
 pub use widget::{Record, Widgets};
 
 #[cfg(target_os = "linux")]
