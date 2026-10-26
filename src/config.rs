@@ -98,17 +98,55 @@ impl SelectAction {
     }
 }
 
-/// A named command that rewrites the selected value before the widget action.
+/// A named rewrite applied to the selected value before the widget action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Transform {
-    pub command: Vec<String>,
-    pub args: BTreeMap<String, String>,
+pub enum Transform {
+    Exec {
+        command: Vec<String>,
+        stdin: String,
+        args: BTreeMap<String, String>,
+    },
+    Regex {
+        pattern: String,
+        replace: String,
+        on_miss: Miss,
+        args: BTreeMap<String, String>,
+    },
 }
 
-#[derive(Debug, Clone)]
-struct NamedTransform {
-    command: Vec<String>,
-    args: BTreeMap<String, String>,
+impl Transform {
+    pub fn args(&self) -> &BTreeMap<String, String> {
+        match self {
+            Self::Exec { args, .. } | Self::Regex { args, .. } => args,
+        }
+    }
+
+    fn with_args(&self, args: BTreeMap<String, String>) -> Self {
+        match self {
+            Self::Exec { command, stdin, .. } => Self::Exec {
+                command: command.clone(),
+                stdin: stdin.clone(),
+                args,
+            },
+            Self::Regex {
+                pattern,
+                replace,
+                on_miss,
+                ..
+            } => Self::Regex {
+                pattern: pattern.clone(),
+                replace: replace.clone(),
+                on_miss: *on_miss,
+                args,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Miss {
+    Keep,
+    Fail,
 }
 
 #[derive(Debug, Clone)]
@@ -309,7 +347,7 @@ fn widget_from_raw(
     doc: &HclDocument,
     base_dir: &Path,
     actions: &BTreeMap<String, SelectAction>,
-    named_transforms: &BTreeMap<String, NamedTransform>,
+    named_transforms: &BTreeMap<String, Transform>,
 ) -> Result<WidgetConfig, String> {
     let name = raw.name;
     let presentation = widget_presentation(&name, &raw.properties, doc, base_dir)?;
@@ -516,7 +554,7 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
     }
 }
 
-fn collect_transforms(doc: &HclDocument) -> Result<BTreeMap<String, NamedTransform>, String> {
+fn collect_transforms(doc: &HclDocument) -> Result<BTreeMap<String, Transform>, String> {
     let mut transforms = BTreeMap::new();
     for (name, raw) in &doc.transforms {
         transforms.insert(name.clone(), named_transform_from_raw(name, raw)?);
@@ -524,27 +562,85 @@ fn collect_transforms(doc: &HclDocument) -> Result<BTreeMap<String, NamedTransfo
     Ok(transforms)
 }
 
-fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<NamedTransform, String> {
-    reject_unknown("transform", name, &raw.properties, &["command"])?;
-    let command = raw
+fn named_transform_from_raw(name: &str, raw: &RawTransform) -> Result<Transform, String> {
+    let ty = raw
         .properties
-        .get("command")
-        .and_then(HclValue::as_list)
-        .ok_or_else(|| format!("transform {name:?}: command is required"))?;
-    if command.is_empty() || command.iter().any(|item| item.trim().is_empty()) {
-        return Err(format!(
-            "transform {name:?}: command must be a non-empty list of strings"
-        ));
-    }
+        .get("type")
+        .and_then(HclValue::as_ident)
+        .ok_or_else(|| format!("transform {name:?}: type is required"))?;
     let args = declared_arg_defaults("transform", name, &raw.args)?;
     let extra: Vec<&str> = args.keys().map(String::as_str).collect();
-    for item in command {
-        validate_placeholders("transform", name, item, &extra)?;
+    match ty {
+        "exec" => {
+            reject_unknown(
+                "transform",
+                name,
+                &raw.properties,
+                &["type", "command", "stdin"],
+            )?;
+            let command = raw
+                .properties
+                .get("command")
+                .and_then(HclValue::as_list)
+                .ok_or_else(|| format!("transform {name:?}: command is required"))?;
+            if command.is_empty() || command.iter().any(|item| item.trim().is_empty()) {
+                return Err(format!(
+                    "transform {name:?}: command must be a non-empty list of strings"
+                ));
+            }
+            for item in command {
+                validate_placeholders("transform", name, item, &extra)?;
+            }
+            let stdin = optional_stdin("transform", name, &raw.properties, &extra, "${value}")?;
+            Ok(Transform::Exec {
+                command: command.to_vec(),
+                stdin,
+                args,
+            })
+        }
+        "regex" => {
+            reject_unknown(
+                "transform",
+                name,
+                &raw.properties,
+                &["type", "pattern", "replace", "on_miss"],
+            )?;
+            let pattern = raw
+                .properties
+                .get("pattern")
+                .and_then(HclValue::as_text)
+                .ok_or_else(|| format!("transform {name:?}: pattern is required"))?;
+            let replace = raw
+                .properties
+                .get("replace")
+                .and_then(HclValue::as_text)
+                .ok_or_else(|| format!("transform {name:?}: replace is required"))?;
+            if pattern.is_empty() {
+                return Err(format!("transform {name:?}: pattern must not be empty"));
+            }
+            validate_unclosed_placeholders("transform", name, pattern)?;
+            validate_unclosed_placeholders("transform", name, replace)?;
+            let on_miss = match raw.properties.get("on_miss").and_then(HclValue::as_ident) {
+                None => Miss::Keep,
+                Some("keep") => Miss::Keep,
+                Some("fail") => Miss::Fail,
+                Some(other) => {
+                    return Err(format!(
+                        "transform {name:?}: unknown on_miss {other}; expected keep or fail"
+                    ));
+                }
+            };
+            Ok(Transform::Regex {
+                pattern: pattern.to_owned(),
+                replace: replace.to_owned(),
+                on_miss,
+                args,
+            })
+        }
+        other => Err(format!(
+            "transform {name:?}: unknown type {other}; expected exec or regex"
+        )),
     }
-    Ok(NamedTransform {
-        command: command.to_vec(),
-        args,
-    })
 }
 
 fn reject_action_args(name: &str, raw: &RawAction) -> Result<(), String> {
@@ -552,6 +648,25 @@ fn reject_action_args(name: &str, raw: &RawAction) -> Result<(), String> {
         return Ok(());
     }
     Err(format!("action {name:?}: args are only supported for exec"))
+}
+
+fn optional_stdin(
+    kind: &str,
+    name: &str,
+    properties: &BTreeMap<String, HclValue>,
+    extra: &[&str],
+    default: &str,
+) -> Result<String, String> {
+    match properties.get("stdin") {
+        None => Ok(default.to_owned()),
+        Some(value) => {
+            let text = value
+                .as_text()
+                .ok_or_else(|| format!("{kind} {name:?}: stdin must be a string"))?;
+            validate_placeholders(kind, name, text, extra)?;
+            Ok(text.to_owned())
+        }
+    }
 }
 
 fn declared_arg_defaults(
@@ -629,7 +744,7 @@ fn overlay_action_args(
 fn resolve_transforms(
     widget: &str,
     invocations: &[RawTransformInvocation],
-    named: &BTreeMap<String, NamedTransform>,
+    named: &BTreeMap<String, Transform>,
 ) -> Result<Vec<Transform>, String> {
     let mut transforms = Vec::with_capacity(invocations.len());
     for invocation in invocations {
@@ -640,9 +755,9 @@ fn resolve_transforms(
                 supported_transforms(named)
             )
         })?;
-        let mut args = spec.args.clone();
+        let mut args = spec.args().clone();
         for (key, value) in &invocation.properties {
-            if !spec.args.contains_key(key) {
+            if !spec.args().contains_key(key) {
                 return Err(format!(
                     "widget {widget:?}: transform {:?}: unknown argument {key}",
                     invocation.name
@@ -656,15 +771,12 @@ fn resolve_transforms(
             })?;
             args.insert(key.clone(), text.to_owned());
         }
-        transforms.push(Transform {
-            command: spec.command.clone(),
-            args,
-        });
+        transforms.push(spec.with_args(args));
     }
     Ok(transforms)
 }
 
-fn supported_transforms(transforms: &BTreeMap<String, NamedTransform>) -> String {
+fn supported_transforms(transforms: &BTreeMap<String, Transform>) -> String {
     let names: Vec<&str> = transforms.keys().map(String::as_str).collect();
     match names.as_slice() {
         [] => "no transforms are configured".into(),
@@ -702,6 +814,20 @@ fn supported_actions(actions: &BTreeMap<String, SelectAction>) -> String {
         [left, right] => format!("{left} or {right}"),
         [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
     }
+}
+
+fn validate_unclosed_placeholders(kind: &str, name: &str, input: &str) -> Result<(), String> {
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            return Err(format!(
+                "{kind} {name:?}: unclosed placeholder in {input:?}"
+            ));
+        };
+        rest = &after[end + 1..];
+    }
+    Ok(())
 }
 
 fn validate_placeholders(
@@ -751,6 +877,16 @@ fn interpolate_arg_map(
             )
         })
         .collect()
+}
+
+pub fn interpolate_text(
+    input: &str,
+    key: &str,
+    label: &str,
+    value: &str,
+    extras: &BTreeMap<String, String>,
+) -> String {
+    interpolate_arg(input, key, label, value, extras)
 }
 
 pub fn interpolate_command_with(
@@ -1716,12 +1852,14 @@ mod tests {
         let config = parse_config(
             r#"
                 transform "jq" {
+                    type = "exec"
                     args {
                         expr = ".title"
                     }
                     command = ["jq", "-r", "${expr}"]
                 }
                 transform "decode" {
+                    type    = "exec"
                     command = ["base64", "-d"]
                 }
                 widget "payloads" {
@@ -1740,12 +1878,14 @@ mod tests {
         assert_eq!(
             config.widgets[0].transforms(),
             [
-                Transform {
+                Transform::Exec {
                     command: vec!["jq".into(), "-r".into(), "${expr}".into()],
+                    stdin: "${value}".into(),
                     args: BTreeMap::from([("expr".into(), ".data".into())]),
                 },
-                Transform {
+                Transform::Exec {
                     command: vec!["base64".into(), "-d".into()],
+                    stdin: "${value}".into(),
                     args: BTreeMap::new(),
                 }
             ]
@@ -1757,6 +1897,7 @@ mod tests {
         let config = parse_config(
             r#"
                 transform "jq" {
+                    type = "exec"
                     args {
                         expr = ".data"
                     }
@@ -1774,7 +1915,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             config.widgets[0].transforms()[0]
-                .args
+                .args()
                 .get("expr")
                 .map(String::as_str),
             Some(".data")
@@ -1786,6 +1927,7 @@ mod tests {
         let error = parse_config(
             r#"
                 transform "decode" {
+                    type    = "exec"
                     command = ["base64", "-d"]
                 }
                 widget "payloads" {
@@ -1825,6 +1967,7 @@ mod tests {
         let error = parse_config(
             r#"
                 transform "jq" {
+                    type    = "exec"
                     command = ["jq", "-r", "$${expr}"]
                 }
             "#,
@@ -1835,10 +1978,194 @@ mod tests {
     }
 
     #[test]
+    fn transform_type_is_required() {
+        let error = parse_config(
+            r#"
+                transform "jq" {
+                    command = ["jq"]
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("type is required"), "{error}");
+    }
+
+    #[test]
+    fn unknown_transform_type_is_rejected() {
+        let error = parse_config(
+            r#"
+                transform "jq" {
+                    type    = "jq"
+                    command = ["jq"]
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown type jq"), "{error}");
+        assert!(error.contains("regex"), "{error}");
+    }
+
+    #[test]
+    fn widget_regex_transform_binds_pattern_and_on_miss() {
+        let config = parse_config(
+            r#"
+                transform "ticket" {
+                    type    = "regex"
+                    pattern = "https://[^/]+/browse/(?P<ticket>[A-Z]+-\\d+)"
+                    replace = "${ticket}"
+                    on_miss = "fail"
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    transform "ticket" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].transforms(),
+            [Transform::Regex {
+                pattern: "https://[^/]+/browse/(?P<ticket>[A-Z]+-\\d+)".into(),
+                replace: "${ticket}".into(),
+                on_miss: Miss::Fail,
+                args: BTreeMap::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn omitted_regex_on_miss_keeps_the_value() {
+        let config = parse_config(
+            r#"
+                transform "id" {
+                    type    = "regex"
+                    pattern = "\\d+"
+                    replace = "N"
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    transform "id" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        match &config.widgets[0].transforms()[0] {
+            Transform::Regex { on_miss, .. } => assert_eq!(*on_miss, Miss::Keep),
+            other => panic!("expected regex transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_regex_on_miss_is_rejected() {
+        let error = parse_config(
+            r#"
+                transform "id" {
+                    type    = "regex"
+                    pattern = "\\d+"
+                    replace = "N"
+                    on_miss = "skip"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown on_miss skip"), "{error}");
+    }
+
+    #[test]
+    fn regex_transform_can_take_pattern_args() {
+        let config = parse_config(
+            r#"
+                transform "id" {
+                    type = "regex"
+                    args {
+                        prefix = "id-"
+                    }
+                    pattern = "${prefix}\\d+"
+                    replace = "N"
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    transform "id" {
+                        prefix = "ticket-"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].transforms(),
+            [Transform::Regex {
+                pattern: "${prefix}\\d+".into(),
+                replace: "N".into(),
+                on_miss: Miss::Keep,
+                args: BTreeMap::from([("prefix".into(), "ticket-".into())]),
+            }]
+        );
+    }
+
+    #[test]
+    fn exec_transform_stdin_defaults_to_the_value() {
+        let config = parse_config(
+            r#"
+                transform "cat" {
+                    type    = "exec"
+                    command = ["cat"]
+                }
+                widget "items" {
+                    provider = "clipboard-history"
+                    transform "cat" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        match &config.widgets[0].transforms()[0] {
+            Transform::Exec { stdin, .. } => assert_eq!(stdin, "${value}"),
+            other => panic!("expected exec transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exec_transform_can_set_stdin() {
+        let config = parse_config(
+            r#"
+                transform "wrap" {
+                    type    = "exec"
+                    command = ["cat"]
+                    stdin   = "${key}: ${value}"
+                }
+                widget "items" {
+                    provider = "clipboard-history"
+                    transform "wrap" {}
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        match &config.widgets[0].transforms()[0] {
+            Transform::Exec { stdin, .. } => assert_eq!(stdin, "${key}: ${value}"),
+            other => panic!("expected exec transform, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn reserved_transform_argument_name_is_rejected() {
         let error = parse_config(
             r#"
                 transform "echo" {
+                    type = "exec"
                     args {
                         value = "ignored"
                     }

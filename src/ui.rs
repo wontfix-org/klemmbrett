@@ -156,7 +156,7 @@ impl Klemmbrett {
         let mut value = value.to_owned();
         if let Some(transforms) = self.widgets.transforms(widget) {
             for transform in transforms {
-                match run_transform(&transform.command, &transform.args, key, label, &value) {
+                match run_transform(transform, key, label, &value) {
                     Ok(next) => value = next,
                     Err(err) => {
                         eprintln!("Failed to transform {widget:?}: {err}");

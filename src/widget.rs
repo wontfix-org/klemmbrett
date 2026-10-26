@@ -411,6 +411,7 @@ mod tests {
         let config = parse_config(
             r#"
                 transform "jq" {
+                    type = "exec"
                     args {
                         expr = ".title"
                     }
@@ -431,8 +432,9 @@ mod tests {
         assert_eq!(
             widgets.transforms("items"),
             Some(
-                [Transform {
+                [Transform::Exec {
                     command: vec!["jq".into(), "-r".into(), "${expr}".into()],
+                    stdin: "${value}".into(),
                     args: std::collections::BTreeMap::from([("expr".into(), ".data".into())]),
                 }]
                 .as_slice()

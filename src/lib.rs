@@ -207,7 +207,7 @@ pub use activate_api::{
 };
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
-    config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
+    config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat, Miss,
     PopupConfig, SelectAction, Transform, WidgetConfig,
 };
 pub use history::{

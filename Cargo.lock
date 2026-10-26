@@ -3269,6 +3269,7 @@ dependencies = [
  "hcl-rs",
  "ksni",
  "libc",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",
