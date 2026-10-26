@@ -101,44 +101,66 @@ pub fn position_on_outputs(
 /// output is pinned to the origin.
 const NORTH_INSET: i32 = 8;
 
-/// Places the card on the output that contains `(x, y)` according to `location`.
+/// Places the card according to `location`.
+///
+/// `None` is no pointer: the card goes on `primary` (or the first output), and
+/// `pointer` falls back to `center`. `Some((x, y))` is a real global point,
+/// including `(0, 0)`.
 pub fn place_at_location(
     location: Location,
-    x: i32,
-    y: i32,
+    pointer: Option<(i32, i32)>,
     width: i32,
     height: i32,
     outputs: &[OutputGeom],
     primary: usize,
 ) -> Option<(usize, i32, i32)> {
+    if outputs.is_empty() {
+        return None;
+    }
+    let Some((x, y)) = pointer else {
+        let index = primary.min(outputs.len() - 1);
+        let location = match location {
+            Location::Pointer => Location::Center,
+            other => other,
+        };
+        return place_on_output(location, width, height, outputs[index])
+            .map(|pos| (index, pos.0, pos.1));
+    };
     match location {
         Location::Pointer => place_on_outputs(x, y, width, height, outputs, primary),
         _ => {
             let (index, _, _) = position_on_outputs(x, y, outputs, primary)?;
-            let output = outputs[index];
-            let width = width.min(output.width).max(0);
-            let height = height.min(output.height).max(0);
-            let max_x = (output.width - width).max(0);
-            let max_y = (output.height - height).max(0);
-            let inset_x = NORTH_INSET.min(max_x);
-            let inset_y = NORTH_INSET.min(max_y);
-            let margin_x = match location {
-                Location::West | Location::NorthWest | Location::SouthWest => inset_x,
-                Location::East | Location::NorthEast | Location::SouthEast => {
-                    max_x.saturating_sub(inset_x)
-                }
-                _ => max_x / 2,
-            };
-            let margin_y = match location {
-                Location::North | Location::NorthEast | Location::NorthWest => inset_y,
-                Location::South | Location::SouthEast | Location::SouthWest => {
-                    max_y.saturating_sub(inset_y)
-                }
-                _ => max_y / 2,
-            };
-            Some((index, margin_x, margin_y))
+            place_on_output(location, width, height, outputs[index])
+                .map(|pos| (index, pos.0, pos.1))
         }
     }
+}
+
+fn place_on_output(
+    location: Location,
+    width: i32,
+    height: i32,
+    output: OutputGeom,
+) -> Option<(i32, i32)> {
+    let width = width.min(output.width).max(0);
+    let height = height.min(output.height).max(0);
+    let max_x = (output.width - width).max(0);
+    let max_y = (output.height - height).max(0);
+    let inset_x = NORTH_INSET.min(max_x);
+    let inset_y = NORTH_INSET.min(max_y);
+    let margin_x = match location {
+        Location::West | Location::NorthWest | Location::SouthWest => inset_x,
+        Location::East | Location::NorthEast | Location::SouthEast => max_x.saturating_sub(inset_x),
+        _ => max_x / 2,
+    };
+    let margin_y = match location {
+        Location::North | Location::NorthEast | Location::NorthWest => inset_y,
+        Location::South | Location::SouthEast | Location::SouthWest => {
+            max_y.saturating_sub(inset_y)
+        }
+        _ => max_y / 2,
+    };
+    Some((margin_x, margin_y))
 }
 
 /// Rows whose label contains `query` (case-insensitive). An empty query keeps all rows.
@@ -348,15 +370,47 @@ mod tests {
     #[test]
     fn center_places_the_card_in_the_middle_of_the_output() {
         assert_eq!(
-            place_at_location(Location::Center, 100, 80, 200, 100, &output(), 0),
+            place_at_location(Location::Center, Some((100, 80)), 200, 100, &output(), 0),
             Some((0, 860, 490))
+        );
+    }
+
+    #[test]
+    fn omitted_pointer_centers_on_the_primary_output() {
+        let outputs = [
+            OutputGeom::new(0, 0, 1920, 1080),
+            OutputGeom::new(1920, 0, 800, 600),
+        ];
+        assert_eq!(
+            place_at_location(Location::Pointer, None, 200, 100, &outputs, 1),
+            Some((1, 300, 250))
+        );
+    }
+
+    #[test]
+    fn a_pointer_at_the_layout_origin_is_kept() {
+        assert_eq!(
+            place_at_location(Location::Pointer, Some((0, 0)), 200, 100, &output(), 0),
+            Some((0, 0, 0))
+        );
+    }
+
+    #[test]
+    fn omitted_pointer_keeps_an_explicit_grid_location() {
+        let outputs = [
+            OutputGeom::new(0, 0, 1920, 1080),
+            OutputGeom::new(1920, 0, 800, 600),
+        ];
+        assert_eq!(
+            place_at_location(Location::NorthEast, None, 200, 100, &outputs, 1),
+            Some((1, 592, 8))
         );
     }
 
     #[test]
     fn north_places_the_card_at_the_top_of_the_output() {
         assert_eq!(
-            place_at_location(Location::North, 100, 80, 200, 100, &output(), 0),
+            place_at_location(Location::North, Some((100, 80)), 200, 100, &output(), 0),
             Some((0, 860, 8))
         );
     }
@@ -364,7 +418,7 @@ mod tests {
     #[test]
     fn south_east_places_the_card_at_the_bottom_right() {
         assert_eq!(
-            place_at_location(Location::SouthEast, 100, 80, 200, 100, &output(), 0),
+            place_at_location(Location::SouthEast, Some((100, 80)), 200, 100, &output(), 0),
             Some((0, 1712, 972))
         );
     }

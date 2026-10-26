@@ -57,8 +57,8 @@ pub fn run(
             cx.spawn(async move |cx| {
                 while let Ok(cmd) = rx.recv().await {
                     dispatcher.update(cx, |this, cx| match cmd {
-                        UiCmd::ShowMenu { source, x, y } => {
-                            this.show_source_menu(&source, x, y, cx)
+                        UiCmd::Show { source, pointer } => {
+                            this.show_source_menu(&source, pointer, cx)
                         }
                         UiCmd::RecordHistory(text) => this.record_history(&text),
                         UiCmd::Quit => cx.quit(),
@@ -177,14 +177,19 @@ impl Klemmbrett {
 
     fn prewarm_popup(&mut self, cx: &mut Context<Self>) {
         let Some(placement) =
-            popup_placement(cx, 0, 0, 1, self.label_max, &self.theme, Location::Pointer)
+            popup_placement(cx, None, 1, self.label_max, &self.theme, Location::Pointer)
         else {
             return;
         };
         self.open_popup(Vec::new(), placement, false, String::new(), cx);
     }
 
-    fn show_source_menu(&mut self, source: &str, x: i32, y: i32, cx: &mut Context<Self>) {
+    fn show_source_menu(
+        &mut self,
+        source: &str,
+        pointer: Option<(i32, i32)>,
+        cx: &mut Context<Self>,
+    ) {
         let entries = match self.sources.records(source) {
             Ok(entries) => entries,
             Err(err) => {
@@ -203,8 +208,7 @@ impl Klemmbrett {
 
         let Some(placement) = popup_placement(
             cx,
-            x,
-            y,
+            pointer,
             entries.len(),
             self.label_max,
             &presentation.theme,
@@ -291,8 +295,7 @@ struct PopupPlacement {
 
 fn popup_placement(
     cx: &App,
-    x: i32,
-    y: i32,
+    pointer: Option<(i32, i32)>,
     rows: usize,
     label_max: usize,
     theme: &Theme,
@@ -321,8 +324,7 @@ fn popup_placement(
     let (width, height) = theme.card_size(rows, label_max);
     let (index, margin_x, margin_y) = place_at_location(
         location,
-        x,
-        y,
+        pointer,
         width as i32,
         height as i32,
         &outputs,
@@ -900,10 +902,9 @@ impl ksni::Tray for TrayIcon {
                             StandardItem {
                                 label: name.clone(),
                                 activate: Box::new(move |this: &mut Self| {
-                                    let _ = this.tx.send_blocking(UiCmd::ShowMenu {
+                                    let _ = this.tx.send_blocking(UiCmd::Show {
                                         source: name.clone(),
-                                        x: 0,
-                                        y: 0,
+                                        pointer: None,
                                     });
                                 }),
                                 ..Default::default()

@@ -61,7 +61,7 @@ That writes `$XDG_CONFIG_HOME/systemd/user/klemmbrett.service` (normally
 `org.wontfix.klemmbrett`, and a session D-Bus service file at
 `$XDG_DATA_HOME/dbus-1/services/org.wontfix.klemmbrett.service`. The unit is
 pulled in by `graphical-session.target` so history is recorded from
-login. The D-Bus file is a fallback: a `ShowMenu` call still starts the
+login. The D-Bus file is a fallback: a `Show` call still starts the
 unit if the bus name is missing. If this process can see
 `WAYLAND_DISPLAY`, that value is imported into the systemd user manager.
 Pass `--config` as well to pin that file in `ExecStart`.
@@ -69,12 +69,14 @@ Pass `--config` as well to pin that file in `ExecStart`.
 To open a configured source without spelling out `busctl`:
 
 ```sh
-klemmbrett activate history
-klemmbrett activate history 120 80
+klemmbrett show history
+klemmbrett show history 120 80
 ```
 
-`x` and `y` are compositor global coordinates and default to `0` `0`.
-The running daemon (or D-Bus activation) still serves the request.
+`x` and `y` are compositor global coordinates. Omit both when there is no
+pointer: the popup is then centered on the primary output, or the first
+output if the compositor does not mark one. The running daemon (or D-Bus
+activation) still serves the request.
 
 ## Configuration
 
@@ -257,17 +259,18 @@ The process owns `org.wontfix.klemmbrett` on the session bus:
 | | |
 | --- | --- |
 | Name | `org.wontfix.klemmbrett` |
-| Object | `/org/wontfix/klemmbrett/Activate` |
-| Interface | `org.wontfix.klemmbrett.Activate` |
-| Method | `ShowMenu(sii)` — source name, then `x`, `y` in global compositor coordinates |
+| Object | `/org/wontfix/klemmbrett` |
+| Interface | `org.wontfix.klemmbrett` |
+| Method | `Show(sa(ii))` — source name, then zero or one `(x, y)` pair |
 
 `x` and `y` are the pointer location in the compositor's global layout (the
 same space qtile's `get_mouse_position()` and Sway output `rect` values use).
 The popup is placed on the output that contains that point, flipping or
-sliding so it stays on that output.
+sliding so it stays on that output. An empty array means no pointer: the
+primary output is used, and a `pointer` location is treated as `center`.
 
 ```sh
-klemmbrett activate history 120 80
+klemmbrett show history 120 80
 ```
 
 That is the same call as:
@@ -275,9 +278,9 @@ That is the same call as:
 ```sh
 busctl --user call \
     org.wontfix.klemmbrett \
-    /org/wontfix/klemmbrett/Activate \
-    org.wontfix.klemmbrett.Activate \
-    ShowMenu sii history 120 80
+    /org/wontfix/klemmbrett \
+    org.wontfix.klemmbrett \
+    Show sa(ii) history 1 120 80
 ```
 
 ## Sway key binding
@@ -326,7 +329,7 @@ def coords():
 
 
 x, y = coords()
-subprocess.check_call(["klemmbrett", "activate", "history", str(x), str(y)])
+subprocess.check_call(["klemmbrett", "show", "history", str(x), str(y)])
 ```
 
 ```sh
@@ -339,16 +342,16 @@ In `~/.config/sway/config`:
 bindsym $mod+v exec ~/.config/sway/clip-history.py
 ```
 
-Without pointer coordinates the popup still opens at the origin:
+Without pointer coordinates the popup is centered on the primary output:
 
 ```
-bindsym $mod+v exec klemmbrett activate history
+bindsym $mod+v exec klemmbrett show history
 ```
 
 ## Qtile key binding
 
 Qtile's Wayland backend exposes the pointer directly. `lazy.spawn` can run
-`klemmbrett activate history`, or the example below uses
+`klemmbrett show history`, or the example below uses
 [dbus-fast](https://github.com/Bluetooth-Devices/dbus-fast) on Qtile's asyncio
 loop (`libqtile.utils.create_task`) so the binding does not fork a helper.
 Qtile already talks to D-Bus through dbus-fast (notifications, StatusNotifier,
@@ -374,11 +377,11 @@ async def _show_source(source, x, y):
     global _bus
     message = Message(
         destination="org.wontfix.klemmbrett",
-        path="/org/wontfix/klemmbrett/Activate",
-        interface="org.wontfix.klemmbrett.Activate",
-        member="ShowMenu",
-        signature="sii",
-        body=[source, int(x), int(y)],
+        path="/org/wontfix/klemmbrett",
+        interface="org.wontfix.klemmbrett",
+        member="Show",
+        signature="sa(ii)",
+        body=[source, [(int(x), int(y))]],
     )
     try:
         reply = await (await _session_bus()).call(message)
@@ -388,7 +391,7 @@ async def _show_source(source, x, y):
         reply = await (await _session_bus()).call(message)
     if reply.message_type == MessageType.ERROR:
         logger.error(
-            "Klemmbrett ShowMenu failed: %s %s",
+            "Klemmbrett Show failed: %s %s",
             reply.error_name,
             reply.body,
         )
