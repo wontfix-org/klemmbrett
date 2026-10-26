@@ -42,8 +42,13 @@ impl Default for PopupConfig {
 pub enum SelectAction {
     #[default]
     CopyToClipboard,
+    Launch {
+        command: Vec<String>,
+        args: BTreeMap<String, String>,
+    },
     Exec {
         command: Vec<String>,
+        stdin: String,
         args: BTreeMap<String, String>,
     },
     ActivateWindow,
@@ -53,6 +58,7 @@ impl SelectAction {
     fn builtin(name: &str) -> Option<Self> {
         match name {
             "copy-to-clipboard" => Some(Self::CopyToClipboard),
+            "launch" => Some(Self::default_launch()),
             "exec" => Some(Self::default_exec()),
             "activate-window" => Some(Self::ActivateWindow),
             _ => None,
@@ -60,18 +66,29 @@ impl SelectAction {
     }
 
     fn is_reserved(name: &str) -> bool {
-        matches!(name, "copy-to-clipboard" | "exec" | "activate-window")
+        matches!(
+            name,
+            "copy-to-clipboard" | "launch" | "exec" | "activate-window"
+        )
     }
 
-    fn default_exec() -> Self {
-        Self::Exec {
+    fn default_launch() -> Self {
+        Self::Launch {
             command: vec!["${value}".into()],
             args: BTreeMap::new(),
         }
     }
 
-    fn shipped_xdg_open() -> Self {
+    fn default_exec() -> Self {
         Self::Exec {
+            command: vec!["${value}".into()],
+            stdin: String::new(),
+            args: BTreeMap::new(),
+        }
+    }
+
+    fn shipped_xdg_open() -> Self {
+        Self::Launch {
             command: vec!["xdg-open".into(), "${value}".into()],
             args: BTreeMap::new(),
         }
@@ -79,7 +96,7 @@ impl SelectAction {
 
     fn default_for_provider(ty: &str) -> Self {
         match ty {
-            "executables" => Self::default_exec(),
+            "executables" => Self::default_launch(),
             "wayland-windows" => Self::ActivateWindow,
             _ => Self::CopyToClipboard,
         }
@@ -87,11 +104,21 @@ impl SelectAction {
 
     pub fn argv(&self, key: &str, label: &str, value: &str) -> Option<Vec<String>> {
         match self {
-            Self::Exec { command, args } => {
+            Self::Launch { command, args } | Self::Exec { command, args, .. } => {
                 let extras = interpolate_arg_map(args, key, label, value);
                 Some(interpolate_command_with(
                     command, key, label, value, &extras,
                 ))
+            }
+            _ => None,
+        }
+    }
+
+    pub fn stdin(&self, key: &str, label: &str, value: &str) -> Option<String> {
+        match self {
+            Self::Exec { stdin, args, .. } => {
+                let extras = interpolate_arg_map(args, key, label, value);
+                Some(interpolate_text(stdin, key, label, value, &extras))
             }
             _ => None,
         }
@@ -522,35 +549,59 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
             reject_action_args(name, raw)?;
             Ok(SelectAction::ActivateWindow)
         }
-        "exec" => {
+        "launch" => {
             reject_unknown("action", name, &raw.properties, &["type", "command"])?;
             let args = declared_arg_defaults("action", name, &raw.args)?;
             for default in args.values() {
                 validate_placeholders("action", name, default, &[])?;
             }
             let extra: Vec<&str> = args.keys().map(String::as_str).collect();
-            let command = match raw.properties.get("command") {
-                None => vec!["${value}".into()],
-                Some(value) => {
-                    let items = value.as_list().ok_or_else(|| {
-                        format!("action {name:?}: command must be a list of strings")
-                    })?;
-                    if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
-                        return Err(format!(
-                            "action {name:?}: command must be a non-empty list of strings"
-                        ));
-                    }
-                    for item in items {
-                        validate_placeholders("action", name, item, &extra)?;
-                    }
-                    items.to_vec()
-                }
-            };
-            Ok(SelectAction::Exec { command, args })
+            Ok(SelectAction::Launch {
+                command: action_command(name, raw, &extra)?,
+                args,
+            })
+        }
+        "exec" => {
+            reject_unknown(
+                "action",
+                name,
+                &raw.properties,
+                &["type", "command", "stdin"],
+            )?;
+            let args = declared_arg_defaults("action", name, &raw.args)?;
+            for default in args.values() {
+                validate_placeholders("action", name, default, &[])?;
+            }
+            let extra: Vec<&str> = args.keys().map(String::as_str).collect();
+            Ok(SelectAction::Exec {
+                command: action_command(name, raw, &extra)?,
+                stdin: optional_stdin("action", name, &raw.properties, &extra, "")?,
+                args,
+            })
         }
         other => Err(format!(
-            "action {name:?}: unknown type {other}; expected copy-to-clipboard, exec, or activate-window"
+            "action {name:?}: unknown type {other}; expected copy-to-clipboard, launch, exec, or activate-window"
         )),
+    }
+}
+
+fn action_command(name: &str, raw: &RawAction, extra: &[&str]) -> Result<Vec<String>, String> {
+    match raw.properties.get("command") {
+        None => Ok(vec!["${value}".into()]),
+        Some(value) => {
+            let items = value
+                .as_list()
+                .ok_or_else(|| format!("action {name:?}: command must be a list of strings"))?;
+            if items.is_empty() || items.iter().any(|item| item.trim().is_empty()) {
+                return Err(format!(
+                    "action {name:?}: command must be a non-empty list of strings"
+                ));
+            }
+            for item in items {
+                validate_placeholders("action", name, item, extra)?;
+            }
+            Ok(items.to_vec())
+        }
     }
 }
 
@@ -647,7 +698,9 @@ fn reject_action_args(name: &str, raw: &RawAction) -> Result<(), String> {
     if raw.args.is_empty() {
         return Ok(());
     }
-    Err(format!("action {name:?}: args are only supported for exec"))
+    Err(format!(
+        "action {name:?}: args are only supported for launch or exec"
+    ))
 }
 
 fn optional_stdin(
@@ -700,7 +753,7 @@ fn resolve_action_invocation(
     let mut action = resolve_action_name(&invocation.name, actions)
         .map_err(|err| format!("widget {widget:?}: {err}"))?;
     match &mut action {
-        SelectAction::Exec { args, .. } => {
+        SelectAction::Launch { args, .. } | SelectAction::Exec { args, .. } => {
             *args = overlay_action_args(widget, &invocation.name, args, &invocation.properties)?;
         }
         _ if invocation.properties.is_empty() => {}
@@ -802,7 +855,7 @@ fn resolve_action_name(
 }
 
 fn supported_actions(actions: &BTreeMap<String, SelectAction>) -> String {
-    let mut names: Vec<&str> = vec!["copy-to-clipboard", "exec", "activate-window"];
+    let mut names: Vec<&str> = vec!["copy-to-clipboard", "launch", "exec", "activate-window"];
     for name in actions.keys() {
         if !names.contains(&name.as_str()) {
             names.push(name);
@@ -1238,7 +1291,7 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap();
-        assert_eq!(config.widgets[0].action(), SelectAction::default_exec());
+        assert_eq!(config.widgets[0].action(), SelectAction::default_launch());
         assert_eq!(config.widgets[1].action(), SelectAction::ActivateWindow);
         assert!(matches!(
             config.widgets[0],
@@ -1319,6 +1372,7 @@ mod tests {
                     "--private-window".into(),
                     "${value}".into()
                 ],
+                stdin: String::new(),
                 args: BTreeMap::new(),
             }
         );
@@ -1355,6 +1409,16 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("unknown placeholder ${title}"), "{error}");
+    }
+
+    #[test]
+    fn reserved_launch_name_cannot_be_redefined() {
+        let error = parse_config(
+            r#"action "launch" { type = "copy-to-clipboard" }"#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("built-in"), "{error}");
     }
 
     #[test]
@@ -1397,6 +1461,84 @@ mod tests {
     }
 
     #[test]
+    fn launch_action_is_selectable_by_name() {
+        let config = parse_config(
+            r#"
+                action "open" {
+                    type    = "launch"
+                    command = ["xdg-open", "${value}"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action   = "open"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].action(),
+            SelectAction::Launch {
+                command: vec!["xdg-open".into(), "${value}".into()],
+                args: BTreeMap::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn exec_action_stdin_defaults_to_empty() {
+        let config = parse_config(
+            r#"
+                action "notify" {
+                    type    = "exec"
+                    command = ["true"]
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action   = "notify"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].action().stdin("k", "Readable", "payload"),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn exec_action_can_set_stdin() {
+        let config = parse_config(
+            r#"
+                action "write" {
+                    type    = "exec"
+                    command = ["cat"]
+                    stdin   = "${key}: ${value}"
+                }
+                widget "links" {
+                    provider = "file"
+                    path     = "links.yaml"
+                    format   = "yaml"
+                    action   = "write"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0]
+                .action()
+                .stdin("url", "Site", "https://ex"),
+            Some("url: https://ex".into())
+        );
+    }
+
+    #[test]
     fn widget_action_can_override_declared_args() {
         let config = parse_config(
             r#"
@@ -1425,6 +1567,7 @@ mod tests {
             config.widgets[0].action(),
             SelectAction::Exec {
                 command: vec!["notify-send".into(), "${title}".into(), "${body}".into()],
+                stdin: String::new(),
                 args: BTreeMap::from([
                     ("title".into(), "${label}".into()),
                     ("body".into(), "${key}: ${value}".into()),
@@ -1604,7 +1747,10 @@ mod tests {
             Path::new("/config"),
         )
         .unwrap_err();
-        assert!(error.contains("only supported for exec"), "{error}");
+        assert!(
+            error.contains("only supported for launch or exec"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1612,7 +1758,7 @@ mod tests {
         let config = parse_config(
             r#"
                 action "xdg-open" {
-                    type    = "exec"
+                    type    = "launch"
                     command = ["handlr", "open", "${value}"]
                 }
                 widget "links" {
@@ -1627,7 +1773,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             config.widgets[0].action(),
-            SelectAction::Exec {
+            SelectAction::Launch {
                 command: vec!["handlr".into(), "open".into(), "${value}".into()],
                 args: BTreeMap::new(),
             }
