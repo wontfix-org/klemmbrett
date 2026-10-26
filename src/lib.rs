@@ -201,8 +201,8 @@ mod theme;
 mod windows;
 
 pub use activate_api::{
-    request_show_menu, request_show_menu_on, ActivateApi, ACTIVATE_INTERFACE, ACTIVATE_OBJECT_PATH,
-    HISTORY_BUS_NAME,
+    pointer_from_pairs, request_show, request_show_on, BusInterface, HISTORY_BUS_NAME,
+    INTERFACE, OBJECT_PATH,
 };
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{

@@ -4,7 +4,7 @@ mod ui;
 
 use clap::{Parser, Subcommand};
 use klemmbrett::{
-    load_config, request_show_menu, ArboardBackend, ClipboardSync, Sources, HISTORY_BUS_NAME,
+    load_config, request_show, ArboardBackend, ClipboardSync, Sources, HISTORY_BUS_NAME,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -29,24 +29,32 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Ask the running daemon to show a popup source
-    Activate {
+    Show {
         /// Configured source name
         source: String,
-        /// Pointer X in compositor global coordinates
-        #[arg(allow_hyphen_values = true, default_value_t = 0)]
-        x: i32,
-        /// Pointer Y in compositor global coordinates
-        #[arg(allow_hyphen_values = true, default_value_t = 0)]
-        y: i32,
+        /// Pointer X in compositor global coordinates. Requires y.
+        #[arg(allow_hyphen_values = true)]
+        x: Option<i32>,
+        /// Pointer Y in compositor global coordinates. Requires x.
+        #[arg(allow_hyphen_values = true)]
+        y: Option<i32>,
     },
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
     match args.command {
-        Some(Command::Activate { source, x, y }) => {
-            if let Err(err) = request_show_menu(HISTORY_BUS_NAME, &source, x, y) {
-                eprintln!("failed to activate {source:?}: {err}");
+        Some(Command::Show { source, x, y }) => {
+            let pointer = match (x, y) {
+                (None, None) => None,
+                (Some(x), Some(y)) => Some((x, y)),
+                _ => {
+                    eprintln!("show: x and y must both be given, or both omitted");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if let Err(err) = request_show(HISTORY_BUS_NAME, &source, pointer) {
+                eprintln!("failed to show {source:?}: {err}");
                 return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS
@@ -95,24 +103,24 @@ mod tests {
     }
 
     #[test]
-    fn activate_defaults_coordinates_to_the_origin() {
-        let args = Args::try_parse_from(["klemmbrett", "activate", "history"]).unwrap();
+    fn show_omits_pointer_coordinates() {
+        let args = Args::try_parse_from(["klemmbrett", "show", "history"]).unwrap();
         match args.command {
-            Some(Command::Activate { source, x, y }) => {
-                assert_eq!((source.as_str(), x, y), ("history", 0, 0));
+            Some(Command::Show { source, x, y }) => {
+                assert_eq!((source.as_str(), x, y), ("history", None, None));
             }
-            other => panic!("expected activate, got {other:?}"),
+            other => panic!("expected show, got {other:?}"),
         }
     }
 
     #[test]
-    fn activate_accepts_pointer_coordinates() {
-        let args = Args::try_parse_from(["klemmbrett", "activate", "run", "120", "-40"]).unwrap();
+    fn show_accepts_pointer_coordinates() {
+        let args = Args::try_parse_from(["klemmbrett", "show", "run", "120", "-40"]).unwrap();
         match args.command {
-            Some(Command::Activate { source, x, y }) => {
-                assert_eq!((source.as_str(), x, y), ("run", 120, -40));
+            Some(Command::Show { source, x, y }) => {
+                assert_eq!((source.as_str(), x, y), ("run", Some(120), Some(-40)));
             }
-            other => panic!("expected activate, got {other:?}"),
+            other => panic!("expected show, got {other:?}"),
         }
     }
 

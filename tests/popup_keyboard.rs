@@ -7,7 +7,7 @@
 //! so this drives a private headless sway and types into it.
 
 use klemmbrett::{
-    request_show_menu_on, ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME,
+    request_show_on, ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME,
 };
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -211,13 +211,15 @@ impl Drop for Session {
 }
 
 /// Waits for the daemon to claim the bus name, then asks for the popup.
-fn show_menu(session: &Session, source: &str, x: i32, y: i32) {
+fn show_popup(session: &Session, source: &str, x: i32, y: i32) {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut last_error = None;
     while Instant::now() < deadline {
         let attempt = zbus::blocking::connection::Builder::address(session.bus_address.as_str())
             .and_then(|builder| builder.build())
-            .and_then(|conn| request_show_menu_on(&conn, HISTORY_BUS_NAME, source, x, y));
+            .and_then(|conn| {
+                request_show_on(&conn, HISTORY_BUS_NAME, source, Some((x, y)))
+            });
         match attempt {
             Ok(_) => return,
             Err(err) => last_error = Some(err),
@@ -225,7 +227,7 @@ fn show_menu(session: &Session, source: &str, x: i32, y: i32) {
         std::thread::sleep(Duration::from_millis(250));
     }
     panic!(
-        "the daemon never answered ShowMenu: {last_error:?}\n{}",
+        "the daemon never answered Show: {last_error:?}\n{}",
         session.app_log()
     );
 }
@@ -248,7 +250,7 @@ fn a_history_entry_can_be_picked_by_key_without_moving_the_pointer() {
 
     session.open_focused_window();
     session.start_app(&db);
-    show_menu(&session, "history", 100, 100);
+    show_popup(&session, "history", 100, 100);
     std::thread::sleep(Duration::from_millis(750));
 
     // A headless seat has no keyboard until wtype creates a virtual one, and

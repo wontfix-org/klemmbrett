@@ -360,8 +360,9 @@ Value-level conditions can also use HCL: `border = monitor.width >= 120 ? 3 : 1`
 | `west` | left, vertically centered |
 | `north west` | top left |
 
-Anchored placements inset 8 px from the output edge. The `ShowMenu` `x`,`y`
-arguments still pick the output.
+Anchored placements inset 8 px from the output edge. A `Show` pointer
+pair still picks the output. An empty pointer array means no pointer: the
+primary output is used, and `pointer` falls back to `center`.
 
 ## defaults and locals
 
