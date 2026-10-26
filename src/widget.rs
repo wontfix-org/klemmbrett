@@ -392,7 +392,7 @@ mod tests {
         }
         assert_eq!(
             widgets.action("run"),
-            Some(SelectAction::Exec {
+            Some(SelectAction::Launch {
                 command: vec!["${value}".into()],
                 args: Default::default(),
             })
@@ -519,7 +519,7 @@ mod tests {
         let widgets = Widgets::from_config(&config).unwrap();
         assert_eq!(
             widgets.action("links"),
-            Some(SelectAction::Exec {
+            Some(SelectAction::Launch {
                 command: vec!["xdg-open".into(), "${value}".into()],
                 args: Default::default(),
             })

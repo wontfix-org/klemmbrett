@@ -115,12 +115,12 @@ widget "history" {
 }
 
 action "xdg-open" {
-  type    = "exec"
+  type    = "launch"
   command = ["xdg-open", "${value}"]
 }
 
 action "private-firefox" {
-  type    = "exec"
+  type    = "launch"
   command = ["firefox", "--private-window", "${value}"]
 }
 
@@ -149,15 +149,18 @@ relative to the configuration file. The history `db` defaults to
 `$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
 `coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
 true, and `action` defaults to `copy-to-clipboard` except `executables`
-(`exec`) and `wayland-windows` (`activate-window`). Named `action` blocks
-extend a built-in handler (`copy-to-clipboard`, `exec`, or
-`activate-window`) with their own settings. `exec` takes an optional
-`command` list (default `["${value}"]`) and substitutes `${value}`,
-`${key}`, `${label}`, and names declared in `args`. `args` gives each extra
-name a default; a widget may override those names on `action "name" { }`.
-Widget-passed values and defaults may use `${value}`, `${key}`, and
-`${label}` — they are expanded when the row is selected, then substituted
-into `command`. `action = "name"` still works and keeps the defaults:
+(`launch`) and `wayland-windows` (`activate-window`). Named `action` blocks
+extend a built-in handler (`copy-to-clipboard`, `launch`, `exec`, or
+`activate-window`) with their own settings. `launch` and `exec` take an
+optional `command` list (default `["${value}"]`) and substitute `${value}`,
+`${key}`, `${label}`, and names declared in `args`. `launch` uses the
+`launch` setting and does not wait. `exec` waits, logs a failing exit, and
+does not use `launch`; `stdin` is written to the command and defaults to
+empty. `args` gives each extra name a default; a widget may override those
+names on `action "name" { }`. Widget-passed values and defaults may use
+`${value}`, `${key}`, and `${label}` — they are expanded when the row is
+selected, then substituted into `command` and `stdin`. `action = "name"`
+still works and keeps the defaults:
 
 ```hcl
 action "notify" {
@@ -181,7 +184,7 @@ widget "links" {
 ```
 
 `xdg-open` is a shipped
-`exec` preset (`["xdg-open", "${value}"]`) unless the config defines that
+`launch` preset (`["xdg-open", "${value}"]`) unless the config defines that
 name. Built-in names cannot be redefined. `launch` defaults to
 `auto`: `systemd-run --user --scope` when klemmbrett itself is a systemd
 unit (`INVOCATION_ID` is set), otherwise a POSIX double-fork + `setsid`.

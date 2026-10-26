@@ -223,7 +223,7 @@ pub use theme::{
     parse_document, parse_theme, Edges, HclDocument, HclValue, Location, Orientation, Presentation,
     RawWidget, Rgba, Style, Theme, Widget,
 };
-pub use transform::run_transform;
+pub use transform::{run_transform, run_waited_command};
 pub use widget::{Record, Widgets};
 
 #[cfg(target_os = "linux")]

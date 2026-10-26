@@ -19,9 +19,9 @@ use gpui::{
 };
 use klemmbrett::{
     filter_records, history_candidate, index_for_accelerator, menu_item_spec, place_at_location,
-    run_transform, spawn_detached, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location,
-    Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget,
-    Widgets, POLL_INTERVAL,
+    run_transform, run_waited_command, spawn_detached, ArboardBackend, Backend, ClipboardSync,
+    Edges, Launch, Location, Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction,
+    Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -168,10 +168,21 @@ impl Klemmbrett {
         let action = self.widgets.action(widget).unwrap_or_default();
         match action {
             SelectAction::CopyToClipboard => self.restore(&value),
-            exec @ SelectAction::Exec { .. } => {
-                let argv = exec.argv(key, label, &value).expect("exec action has argv");
+            launch @ SelectAction::Launch { .. } => {
+                let argv = launch
+                    .argv(key, label, &value)
+                    .expect("launch action has argv");
                 let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
                 if let Err(err) = run_user_command(&self.launch, &argv) {
+                    eprintln!("Failed to launch {argv:?}: {err}");
+                }
+            }
+            exec @ SelectAction::Exec { .. } => {
+                let argv = exec.argv(key, label, &value).expect("exec action has argv");
+                let stdin = exec
+                    .stdin(key, label, &value)
+                    .expect("exec action has stdin");
+                if let Err(err) = run_waited_command(&argv, &stdin) {
                     eprintln!("Failed to exec {argv:?}: {err}");
                 }
             }
