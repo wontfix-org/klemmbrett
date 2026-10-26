@@ -23,7 +23,7 @@ widget "links" "file" {
   path     = "links.yaml"
   format   = "yaml"
   action "copy-to-clipboard" {}
-  action "notify" {
+  action "notify-send" {
     title = "${label}"
   }
 }
@@ -94,7 +94,9 @@ widget "snippets" "file" {
 Named `action` blocks extend a built-in (`copy-to-clipboard`, `launch`,
 `exec`, or `activate-window`). Built-in names cannot be redefined.
 `xdg-open` is a shipped `launch` preset (`["xdg-open", "${value}"]`) unless
-the config defines that name.
+the config defines that name. `notify-send` is a shipped `exec` preset
+(`["notify-send", "${title}", "${body}"]`) with `title = "klemmbrett"` and
+`body = "${value}"`.
 
 `launch` and `exec` take an optional `command` (default `["${value}"]`).
 `${value}`, `${key}`, `${label}`, and names declared in `args` are
@@ -113,14 +115,6 @@ on `action "name" { }`. Widget-passed values and defaults may use
 rejected. `args` is only valid on `launch` and `exec`.
 
 ```hcl
-action "notify" "exec" {
-  args {
-    title = "klemmbrett"
-    body  = "${value}"
-  }
-  command = ["notify-send", "${title}", "${body}"]
-}
-
 action "private-firefox" "launch" {
   command = ["firefox", "--private-window", "${value}"]
 }
@@ -128,7 +122,8 @@ action "private-firefox" "launch" {
 widget "links" "file" {
   path     = "links.yaml"
   format   = "yaml"
-  action "notify" {
+  action "copy-to-clipboard" {}
+  action "notify-send" {
     title = "${label}"
     body  = "${key}: ${value}"
   }

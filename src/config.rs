@@ -94,6 +94,17 @@ impl SelectAction {
         }
     }
 
+    fn shipped_notify_send() -> Self {
+        Self::Exec {
+            command: vec!["notify-send".into(), "${title}".into(), "${body}".into()],
+            stdin: String::new(),
+            args: BTreeMap::from([
+                ("title".into(), "klemmbrett".into()),
+                ("body".into(), "${value}".into()),
+            ]),
+        }
+    }
+
     fn default_for_provider(ty: &str) -> Self {
         match ty {
             "executables" => Self::default_launch(),
@@ -527,6 +538,9 @@ fn collect_actions(doc: &HclDocument) -> Result<BTreeMap<String, SelectAction>, 
     actions
         .entry("xdg-open".into())
         .or_insert_with(SelectAction::shipped_xdg_open);
+    actions
+        .entry("notify-send".into())
+        .or_insert_with(SelectAction::shipped_notify_send);
     Ok(actions)
 }
 
@@ -1749,6 +1763,58 @@ mod tests {
         assert!(
             error.contains("only supported for launch or exec"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn shipped_notify_send_is_selectable() {
+        let config = parse_config(
+            r#"
+                widget "links" "file" {
+                    path   = "links.yaml"
+                    format = "yaml"
+                    action = "notify-send"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].actions()[0],
+            SelectAction::shipped_notify_send()
+        );
+        assert_eq!(
+            config.widgets[0].actions()[0].argv("url", "Site", "https://ex"),
+            Some(vec![
+                "notify-send".into(),
+                "klemmbrett".into(),
+                "https://ex".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn shipped_notify_send_args_can_be_overridden() {
+        let config = parse_config(
+            r#"
+                widget "links" "file" {
+                    path   = "links.yaml"
+                    format = "yaml"
+                    action "notify-send" {
+                        title = "${label}"
+                    }
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].actions()[0].argv("url", "Site", "https://ex"),
+            Some(vec![
+                "notify-send".into(),
+                "Site".into(),
+                "https://ex".into()
+            ])
         );
     }
 
