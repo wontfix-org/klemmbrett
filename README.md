@@ -80,12 +80,10 @@ activation) still serves the request.
 
 ## Configuration
 
-The default configuration is
-`$XDG_CONFIG_HOME/klemmbrett/config.hcl` (normally
-`~/.config/klemmbrett/config.hcl`). If it does not exist, clipboard/primary
-selection syncing still runs, but no popup widgets or history database are
-initialized. A leftover `config.toml` in that directory is
-rejected with a convert hint.
+The default file is `$XDG_CONFIG_HOME/klemmbrett/config.hcl` (normally
+`~/.config/klemmbrett/config.hcl`). If it is missing, clipboard/primary
+sync still runs, but no popup widgets or history database are created. A
+leftover `config.toml` in that directory is rejected with a convert hint.
 
 ```hcl
 configuration {
@@ -95,221 +93,45 @@ configuration {
 
 theme "nord" {}
 
-layout "filter" {
-  location = "center"
-  window { children = ["inputbar", "listview"] }
-  inputbar {
-    children = ["prompt", "entry"]
-    padding  = 8
-    spacing  = 8
-  }
+widget "history" "clipboard-history" {
+  layout   = "filter"
 }
 
-widget "history" {
-  provider               = "clipboard-history"
-  history_limit          = 50
-  coalesce_growing       = true
-  skip_whitespace_only   = true
-  layout                 = "filter"
-  action                 = "copy-to-clipboard"
-}
-
-action "xdg-open" {
-  type    = "launch"
-  command = ["xdg-open", "${value}"]
-}
-
-action "private-firefox" {
-  type    = "launch"
-  command = ["firefox", "--private-window", "${value}"]
-}
-
-widget "snippets" {
-  provider = "file"
+widget "snippets" "file" {
   path     = "snippets.yaml"
   format   = "yaml"
-  layout   = "menu"
-  theme    = "dracula"
   action   = "xdg-open"
 }
 
-widget "run" {
-  provider = "executables"
+widget "run" "executables" {
   layout   = "filter"
 }
 
-widget "windows" {
-  provider = "wayland-windows"
+widget "windows" "wayland-windows" {
   layout   = "filter"
 }
 ```
 
-Widget names must be unique. Relative `db` and `path` values are resolved
-relative to the configuration file. The history `db` defaults to
-`$XDG_DATA_HOME/klemmbrett/history.sqlite`; `history_limit` defaults to 50,
-`coalesce_growing` defaults to true, `skip_whitespace_only` defaults to
-true, and `action` defaults to `copy-to-clipboard` except `executables`
-(`launch`) and `wayland-windows` (`activate-window`). Named `action` blocks
-extend a built-in handler (`copy-to-clipboard`, `launch`, `exec`, or
-`activate-window`) with their own settings. `launch` and `exec` take an
-optional `command` list (default `["${value}"]`) and substitute `${value}`,
-`${key}`, `${label}`, and names declared in `args`. `launch` uses the
-`launch` setting and does not wait. `exec` waits, logs a failing exit, and
-does not use `launch`; `stdin` is written to the command and defaults to
-empty. `args` gives each extra name a default; a widget may override those
-names on `action "name" { }`. Widget-passed values and defaults may use
-`${value}`, `${key}`, and `${label}` — they are expanded when the row is
-selected, then substituted into `command` and `stdin`. `action = "name"`
-still works and keeps the defaults:
+Selecting a row runs that widget's transforms, then its action. `launch`
+defaults to `auto` (`systemd-run --user --scope` when klemmbrett is a
+systemd unit, otherwise a POSIX double-fork). Override with
+`launch = "posix"`, `launch = "systemd-run"`, or a wrapper list.
 
-```hcl
-action "notify" {
-  type = "exec"
-  args {
-    title = "klemmbrett"
-    body  = "${value}"
-  }
-  command = ["notify-send", "${title}", "${body}"]
-}
+Widgets, transforms, and actions are documented in
+[`docs/widgets.md`](docs/widgets.md).
 
-widget "links" {
-  provider = "file"
-  path     = "links.yaml"
-  format   = "yaml"
-  action "notify" {
-    title = "${label}"
-    body  = "${key}: ${value}"
-  }
-}
-```
+## Popup theme
 
-`xdg-open` is a shipped
-`launch` preset (`["xdg-open", "${value}"]`) unless the config defines that
-name. Built-in names cannot be redefined. `launch` defaults to
-`auto`: `systemd-run --user --scope` when klemmbrett itself is a systemd
-unit (`INVOCATION_ID` is set), otherwise a POSIX double-fork + `setsid`.
-Set `launch = "posix"`, `launch = "systemd-run"`, or a wrapper list such as
-`launch = ["uwsm", "app", "--"]` to override. Coalescing replaces the newest row when a new selection contains it,
-avoiding one row per character while a selection grows. Whitespace-only
-selections (spaces, tabs, newlines) are not stored unless
-`skip_whitespace_only` is set to false.
-
-File widgets are read again whenever their popup opens. `text` format uses one
-non-empty line per record. JSON and YAML files contain an array whose records
-may be strings:
-
-```json
-["plain value", {"key": "url", "label": "Project website", "value": "https://example.com"}]
-```
-
-or the equivalent YAML:
-
-```yaml
-- plain value
-- key: url
-  label: Project website
-  value: https://example.com
-```
-
-Every record requires a value. Its key and label default to the value when
-omitted, and keys must be unique within a widget. The popup displays the label.
-Selecting a row runs that widget's `transform` pipeline, then its `action`.
-`copy-to-clipboard` copies the (possibly rewritten) value to the clipboard.
-`exec` (including shipped `xdg-open`) goes through `launch`. `activate-window`
-focuses a toplevel from a `wayland-windows` widget via
-`zwlr_foreign_toplevel_manager_v1`. `executables` lists `PATH` (first basename
-wins). `wayland-windows` lists open windows; use `layout = "filter"` for both
-(the lists are long).
-
-Named `transform` blocks rewrite the selected value before the action.
-`type` is required. `exec` runs a command and replaces the value with
-stdout (one trailing newline is stripped). `stdin` is written to the
-command and defaults to `${value}`. `${value}`, `${key}`, `${label}`, and
-names declared in `args` are substituted in `command` and `stdin`. `args`
-gives each extra name a default; a widget may override those names on its
-`transform "name"` step. `exec` waits for the command and does not use
-`launch`; a failing command skips the action.
-
-`regex` applies `pattern` to the current value and substitutes `replace`
-for every match. `on_miss` is `keep` (default: leave the value unchanged)
-or `fail` (skip the action). Named captures use `(?P<name>…)` or
-`(?<name>…)` and `$name` / `${name}` in `replace`. Capture names must not
-collide with `value`, `key`, `label`, or declared args — those are
-expanded first.
-
-```hcl
-transform "jq" {
-  type = "exec"
-  args {
-    expr = ".data"
-  }
-  command = ["jq", "-r", "${expr}"]
-}
-
-transform "ticket" {
-  type    = "regex"
-  pattern = "https://[^/]+/browse/(?P<ticket>[A-Z]+-\\d+)"
-  replace = "${ticket}"
-  on_miss = "fail"
-}
-
-widget "payloads" {
-  provider = "file"
-  path     = "payloads.yaml"
-  format   = "yaml"
-  transform "jq" {
-    expr = ".title"
-  }
-  transform "ticket" {}
-  action = "copy-to-clipboard"
-}
-```
-
-## Popup theme and widgets
-
-A full catalog and property reference is in [`docs/theming.md`](docs/theming.md).
-
-The same `config.hcl` styles the popup. `theme "nord" {}` is a file-wide
-default palette; `theme = "dracula"` on a widget replaces it for that widget
-only. Named `layout` blocks pack the tree and set `location` (`pointer`,
-`center`, `north east`). `layout = "menu"` and `layout = "filter"` are
-shipped. A widget with no `layout` keeps the list-only card at the pointer.
-
-If `window` packs an `inputbar`, typing filters labels and accelerators are
-off. Otherwise `1`–`9` / `a`–`z` still pick a row.
+`theme "nord" {}` sets a file-wide palette; `theme = "dracula"` on a widget
+replaces it for that widget. `layout = "menu"` and `layout = "filter"` are
+shipped. Catalog, lengths, colors, and packing are in
+[`docs/theming.md`](docs/theming.md).
 
 ```hcl
 theme "nord" {}
 
 element "selected" { background_color = hex("5e81ac") }
-element { children = ["element-text", "element-index"] }
 ```
-
-Catalog: `overlay`, `window`, `listview`, `element`, `element-index`,
-`element-text`, `inputbar`, `prompt`, `entry`. `element` accepts the states
-`selected` and `hover` as a label. `window` may pack `inputbar` and
-`listview`; `inputbar` may pack `prompt` and `entry`; `element` may pack
-`element-index` and `element-text` (order and `orientation` are honored).
-`enabled = false` hides a widget.
-
-Properties: `enabled`, `padding`, `margin`, `border`, `border_radius`,
-`border_color`, `background_color`, `background_image`, `text_color`,
-`spacing`, `orientation`, `children`, `width`, `height`, `max_height`,
-`font_size`, `location`. Lengths are numbers (pixels) or `px()`, `em()`,
-`ch()`, `mm()`, `pct()` / `vpct()` (of a 1920×1080 monitor at load). HCL
-`+` / `-` / `*` / `/` replace `calc()`. Padding/border/margin take a number
-or a list of 1–4 numbers. Colors are `hex()`, `rgb[a]()`, `hsl[a]()`,
-`hwb()`, `cmyk()`, `color("SeaGreen")`, or `transparent()`. `locals` and
-`local.name` replace CSS variables; `env("NAME", default)` and `inherit()`
-work. `import "extra.hcl" {}` merges another file (`optional = true` if
-missing); `media { min_width = 120 … }` is evaluated against that same
-canvas.
-
-`window { location = "north east" }` uses the 9-point grid; `pointer` sits
-at the pointer. A widget `location` still overrides.
-
-`background_image` accepts a color and otherwise paints transparent. Extra
-widgets (preview) are not implemented.
 
 Shipped palettes (`theme "nord" {}` or `theme = "nord"`):
 
