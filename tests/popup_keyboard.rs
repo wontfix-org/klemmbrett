@@ -163,7 +163,7 @@ impl Session {
         fs::write(
             &config,
             format!(
-                "widget \"history\" {{\n    provider = \"clipboard-history\"\n    db   = {:?}\n}}\n",
+                "widget \"history\" \"clipboard-history\" {{\n    db   = {:?}\n}}\n",
                 db
             ),
         )
