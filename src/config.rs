@@ -1979,6 +1979,7 @@ mod tests {
         let snippets = config.widgets[1].presentation();
         assert_eq!(snippets.location, Location::Pointer);
         assert!(!snippets.theme.has_inputbar());
+        assert!(snippets.theme.has_listview());
         assert_eq!(
             snippets.theme.window().background,
             crate::Rgba {
@@ -2006,6 +2007,24 @@ mod tests {
             config.widgets[0].presentation().location,
             Location::SouthEast
         );
+    }
+
+    #[test]
+    fn prompt_layout_submits_typed_text() {
+        let config = parse_config(
+            r#"
+                widget "ask" "clipboard-history" {
+                    layout = "prompt"
+                    action = "copy-to-clipboard"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        let presentation = config.widgets[0].presentation();
+        assert_eq!(presentation.location, Location::Center);
+        assert!(presentation.theme.has_inputbar());
+        assert!(!presentation.theme.has_listview());
     }
 
     #[test]

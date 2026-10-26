@@ -123,7 +123,7 @@ Widgets, transforms, and actions are documented in
 ## Popup theme
 
 `theme "nord" {}` sets a file-wide palette; `theme = "dracula"` on a widget
-replaces it for that widget. `layout = "menu"` and `layout = "filter"` are
+replaces it for that widget. `layout = "menu"`, `layout = "filter"`, and `layout = "prompt"` are
 shipped. Catalog, lengths, colors, and packing are in
 [`docs/theming.md`](docs/theming.md).
 

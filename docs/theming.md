@@ -43,7 +43,8 @@ Layouts used by a widget are evaluated with `widget.name` and
 A layout may be:
 
 - a `layout "name" { … }` block in `config.hcl`
-- a shipped name: `menu` or `filter` (also `menu.hcl` / `filter.hcl`)
+- a shipped name: `menu`, `filter`, or `prompt` (also `menu.hcl` /
+  `filter.hcl` / `prompt.hcl`)
 - a `.hcl` path relative to the config file, or absolute
 
 `widget { layout = "filter" }` looks up an in-file block named `filter` first,
@@ -74,10 +75,12 @@ Shipped recipes:
 | --- | --- | --- |
 | `menu` | `pointer` | `["listview"]` |
 | `filter` | `center` | `["inputbar", "listview"]` |
+| `prompt` | `center` | `["inputbar"]` |
 
 A widget with no `layout` keeps the default: list-only card at the pointer,
 accelerators `1`–`9` then `a`–`z`. If `window` packs an enabled `inputbar`,
-typing filters labels (case-insensitive) and accelerators are off.
+typing filters labels (case-insensitive) and accelerators are off. `prompt`
+has no list: Enter submits the typed text as `key`, `label`, and `value`.
 
 ## Catalog
 

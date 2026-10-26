@@ -215,13 +215,6 @@ impl Klemmbrett {
         pointer: Option<(i32, i32)>,
         cx: &mut Context<Self>,
     ) {
-        let entries = match self.widgets.records(widget) {
-            Ok(entries) => entries,
-            Err(err) => {
-                eprintln!("Failed to read widget {widget:?}: {err}");
-                return;
-            }
-        };
         let presentation = self
             .widgets
             .presentation(widget)
@@ -230,6 +223,17 @@ impl Klemmbrett {
                 theme: self.theme.clone(),
                 location: Location::Pointer,
             });
+        let entries = if presentation.theme.has_listview() {
+            match self.widgets.records(widget) {
+                Ok(entries) => entries,
+                Err(err) => {
+                    eprintln!("Failed to read widget {widget:?}: {err}");
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
 
         let Some(placement) = popup_placement(
             cx,
@@ -598,14 +602,20 @@ impl PopupView {
     }
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((key, label, value)) = self.visible_entries().get(index).map(|record| {
-            (
-                record.key.clone(),
-                record.label.clone(),
-                record.value.clone(),
-            )
-        }) else {
-            return;
+        let (key, label, value) = if !self.theme.has_listview() {
+            let text = self.query.clone();
+            (text.clone(), text.clone(), text)
+        } else {
+            let Some((key, label, value)) = self.visible_entries().get(index).map(|record| {
+                (
+                    record.key.clone(),
+                    record.label.clone(),
+                    record.value.clone(),
+                )
+            }) else {
+                return;
+            };
+            (key, label, value)
         };
         let widget = self.widget_name.clone();
         self.app.update(cx, |app, _cx| {
@@ -633,11 +643,7 @@ impl Render for PopupView {
 
         let theme = self.theme.clone();
         let visible = self.visible_entries();
-        let show_list = theme
-            .window()
-            .packed_children(&theme)
-            .contains(&Widget::ListView)
-            && theme.listview().enabled;
+        let show_list = theme.has_listview();
         let rows = if !show_list {
             div().flex_1().into_any()
         } else if visible.is_empty() {
