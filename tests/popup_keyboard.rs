@@ -217,7 +217,7 @@ fn show_popup(session: &Session, widget: &str, x: i32, y: i32) {
     while Instant::now() < deadline {
         let attempt = zbus::blocking::connection::Builder::address(session.bus_address.as_str())
             .and_then(|builder| builder.build())
-            .and_then(|conn| request_show_on(&conn, HISTORY_BUS_NAME, widget, Some((x, y))));
+            .and_then(|conn| request_show_on(&conn, HISTORY_BUS_NAME, widget, Some((x, y)), &[]));
         match attempt {
             Ok(_) => return,
             Err(err) => last_error = Some(err),

@@ -203,8 +203,8 @@ mod widget;
 mod windows;
 
 pub use activate_api::{
-    pointer_from_pairs, request_show, request_show_on, BusInterface, HISTORY_BUS_NAME, INTERFACE,
-    OBJECT_PATH,
+    pointer_from_pairs, request_prompt, request_prompt_on, request_show, request_show_on,
+    BusInterface, ShowRequest, HISTORY_BUS_NAME, INTERFACE, OBJECT_PATH,
 };
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
@@ -227,7 +227,7 @@ pub use theme::{
     RawWidget, Rgba, Style, Theme, Widget,
 };
 pub use transform::{run_transform, run_waited_command};
-pub use widget::{Record, Widgets};
+pub use widget::{parse_records, validate_records, Record, Widgets};
 
 #[cfg(target_os = "linux")]
 pub use arboard_backend::ArboardBackend;

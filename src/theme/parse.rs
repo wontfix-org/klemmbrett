@@ -202,7 +202,9 @@ pub struct HclDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawWidget {
     pub name: String,
-    pub provider: String,
+    /// `None` when the widget block has no provider label. Those widgets only
+    /// accept records passed to `Show` or `Prompt`.
+    pub provider: Option<String>,
     pub properties: BTreeMap<String, HclValue>,
     pub actions: Vec<RawActionInvocation>,
     pub transforms: Vec<RawTransformInvocation>,
@@ -1126,7 +1128,7 @@ fn raw_transform_from_block(block: &Block) -> Result<(String, RawTransform), Str
 }
 
 fn raw_widget_from_block(block: &Block) -> Result<RawWidget, String> {
-    let (name, provider) = two_labels(block, "widget", "provider")?;
+    let (name, provider) = widget_labels(block)?;
     let mut properties = BTreeMap::new();
     for attr in block.body().attributes() {
         properties.insert(
@@ -1211,6 +1213,24 @@ fn value_to_hcl(value: &Value) -> Result<HclValue, String> {
     Err(format!(
         "expected number, string, boolean, or list, found {value}"
     ))
+}
+
+fn widget_labels(block: &Block) -> Result<(String, Option<String>), String> {
+    match block.labels().len() {
+        1 => {
+            let name = one_label(block, "widget")?;
+            if name.trim().is_empty() {
+                return Err("widget name must not be empty".into());
+            }
+            Ok((name, None))
+        }
+        2 => {
+            let (name, provider) = two_labels(block, "widget", "provider")?;
+            Ok((name, Some(provider)))
+        }
+        0 => Err("widget name must not be empty".into()),
+        _ => Err("widget takes a name and an optional provider".into()),
+    }
 }
 
 fn one_label(block: &Block, kind: &str) -> Result<String, String> {
@@ -1829,6 +1849,25 @@ window { padding = 3 }
     }
 
     #[test]
+    fn widget_provider_label_is_optional() {
+        let doc = parse_document(
+            r#"
+                widget "pick" {
+                    layout = "filter"
+                }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(doc.widgets[0].name, "pick");
+        assert_eq!(doc.widgets[0].provider, None);
+
+        let error = parse_document(r#"widget "pick" "file" "extra" {}"#).unwrap_err();
+        assert!(error.contains("optional provider"), "{error}");
+        let error = parse_document(r#"widget "pick" "" {}"#).unwrap_err();
+        assert!(error.contains("provider must not be empty"), "{error}");
+    }
+
+    #[test]
     fn document_parses_config_widgets_theme_and_strings() {
         let doc = parse_document(
             r#"
@@ -1853,8 +1892,11 @@ window { padding = 3 }
         );
         assert_eq!(doc.widgets.len(), 2);
         assert_eq!(doc.widgets[0].name, "history");
-        assert_eq!(doc.widgets[0].provider, "clipboard-history");
-        assert_eq!(doc.widgets[1].provider, "file");
+        assert_eq!(
+            doc.widgets[0].provider.as_deref(),
+            Some("clipboard-history")
+        );
+        assert_eq!(doc.widgets[1].provider.as_deref(), Some("file"));
         assert_eq!(
             doc.widgets[1]
                 .properties

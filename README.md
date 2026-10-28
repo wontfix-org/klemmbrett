@@ -71,12 +71,23 @@ To open a configured widget without spelling out `busctl`:
 ```sh
 klemmbrett show history
 klemmbrett show history 120 80
+klemmbrett show snippets --format yaml --input snippets.yaml
+klemmbrett prompt history
+printf '%s\n' one two | klemmbrett prompt snippets --format text
 ```
 
 `x` and `y` are compositor global coordinates. Omit both when there is no
 pointer: the popup is then centered on the primary output, or the first
 output if the compositor does not mark one. The running daemon (or D-Bus
 activation) still serves the request.
+
+`--format text|json|yaml` reads records and passes them to the daemon in
+place of the widget provider. `--input` is the file; without it, the
+records are read from stdin. The formats are the same ones a `file` widget
+accepts. A widget configured without a provider has no records of its own,
+so `show` and `prompt` must pass `--input` or `--format` with stdin.
+`prompt` uses the same arguments, blocks until the popup closes, and prints
+each selected value on its own line. Cancelling prints nothing and exits 1.
 
 ## Configuration
 
@@ -110,7 +121,14 @@ widget "run" "executables" {
 widget "windows" "wayland-windows" {
   layout   = "filter"
 }
+
+widget "pick" {
+  layout = "filter"
+}
 ```
+
+`pick` has no provider. Open it with records, for example
+`printf '%s\n' one two | klemmbrett show pick --format text`.
 
 Selecting a row runs that widget's transforms, then its actions. `launch`
 defaults to `auto` (`systemd-run --user --scope` when klemmbrett is a
@@ -158,13 +176,21 @@ The process owns `org.wontfix.klemmbrett` on the session bus:
 | Name | `org.wontfix.klemmbrett` |
 | Object | `/org/wontfix/klemmbrett` |
 | Interface | `org.wontfix.klemmbrett` |
-| Method | `Show(sa(ii))` — widget name, then zero or one `(x, y)` pair |
+| Method | `Show(sa(ii)aa{ss})` — widget, zero or one `(x, y)` pair, then records |
+| Method | `Prompt(sa(ii)aa{ss}) -> as` — same arguments; returns the selected values |
 
 `x` and `y` are the pointer location in the compositor's global layout (the
 same space qtile's `get_mouse_position()` and Sway output `rect` values use).
 The popup is placed on the output that contains that point, flipping or
-sliding so it stays on that output. An empty array means no pointer: the
-primary output is used, and a `pointer` location is treated as `center`.
+sliding so it stays on that output. An empty pointer array means no pointer:
+the primary output is used, and a `pointer` location is treated as `center`.
+
+An empty record array uses the widget provider. A widget with no provider
+rejects that empty array. A non-empty array replaces those rows.
+Each dict needs `value`; omitted `key` and `label` become the value. `Show` still runs the widget's transforms and actions. `Prompt`
+blocks until the popup closes and returns the selected values. It does not
+run transforms or actions. Cancelling, or opening another popup, returns
+an empty array.
 
 ```sh
 klemmbrett show history 120 80
@@ -177,7 +203,7 @@ busctl --user call \
     org.wontfix.klemmbrett \
     /org/wontfix/klemmbrett \
     org.wontfix.klemmbrett \
-    Show sa(ii) history 1 120 80
+    Show sa(ii)aa{ss} history 1 120 80 0
 ```
 
 ## Sway key binding
@@ -277,8 +303,8 @@ async def _show_widget(widget, x, y):
         path="/org/wontfix/klemmbrett",
         interface="org.wontfix.klemmbrett",
         member="Show",
-        signature="sa(ii)",
-        body=[widget, [(int(x), int(y))]],
+        signature="sa(ii)aa{ss}",
+        body=[widget, [(int(x), int(y))], []],
     )
     try:
         reply = await (await _session_bus()).call(message)

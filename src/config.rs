@@ -295,6 +295,14 @@ pub enum WidgetConfig {
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
+    /// No record source. `Show` and `Prompt` must pass records.
+    OnDemand {
+        name: String,
+        presentation: Presentation,
+        actions: Vec<SelectAction>,
+        transforms: Vec<Transform>,
+        multi: Option<MultiSelect>,
+    },
 }
 
 impl WidgetConfig {
@@ -303,7 +311,8 @@ impl WidgetConfig {
             Self::ClipboardHistory { name, .. }
             | Self::File { name, .. }
             | Self::Executables { name, .. }
-            | Self::WaylandWindows { name, .. } => name,
+            | Self::WaylandWindows { name, .. }
+            | Self::OnDemand { name, .. } => name,
         }
     }
 
@@ -312,7 +321,8 @@ impl WidgetConfig {
             Self::ClipboardHistory { presentation, .. }
             | Self::File { presentation, .. }
             | Self::Executables { presentation, .. }
-            | Self::WaylandWindows { presentation, .. } => presentation,
+            | Self::WaylandWindows { presentation, .. }
+            | Self::OnDemand { presentation, .. } => presentation,
         }
     }
 
@@ -321,7 +331,8 @@ impl WidgetConfig {
             Self::ClipboardHistory { actions, .. }
             | Self::File { actions, .. }
             | Self::Executables { actions, .. }
-            | Self::WaylandWindows { actions, .. } => actions,
+            | Self::WaylandWindows { actions, .. }
+            | Self::OnDemand { actions, .. } => actions,
         }
     }
 
@@ -330,7 +341,8 @@ impl WidgetConfig {
             Self::ClipboardHistory { transforms, .. }
             | Self::File { transforms, .. }
             | Self::Executables { transforms, .. }
-            | Self::WaylandWindows { transforms, .. } => transforms,
+            | Self::WaylandWindows { transforms, .. }
+            | Self::OnDemand { transforms, .. } => transforms,
         }
     }
 
@@ -339,7 +351,8 @@ impl WidgetConfig {
             Self::ClipboardHistory { multi, .. }
             | Self::File { multi, .. }
             | Self::Executables { multi, .. }
-            | Self::WaylandWindows { multi, .. } => multi.as_ref(),
+            | Self::WaylandWindows { multi, .. }
+            | Self::OnDemand { multi, .. } => multi.as_ref(),
         }
     }
 }
@@ -349,6 +362,19 @@ pub enum FileFormat {
     Text,
     Json,
     Yaml,
+}
+
+impl FileFormat {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            "yaml" => Ok(Self::Yaml),
+            other => Err(format!(
+                "unknown format {other}; expected text, json, or yaml"
+            )),
+        }
+    }
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -473,18 +499,28 @@ fn widget_from_raw(
     named_transforms: &BTreeMap<String, Transform>,
 ) -> Result<WidgetConfig, String> {
     let name = raw.name;
-    let ty = raw.provider.as_str();
+    let provider = raw.provider;
     let multi = parse_multi(&name, &raw.properties)?;
-    let presentation = widget_presentation(&name, ty, &raw.properties, multi.is_some(), doc, base_dir)?;
+    let presentation = widget_presentation(
+        &name,
+        provider.as_deref(),
+        &raw.properties,
+        multi.is_some(),
+        doc,
+        base_dir,
+    )?;
     let actions = parse_select_actions(&name, &raw.properties, &raw.actions, actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
     let actions = if actions.is_empty() {
-        vec![SelectAction::default_for_provider(ty)]
+        vec![match provider.as_deref() {
+            Some(ty) => SelectAction::default_for_provider(ty),
+            None => SelectAction::CopyToClipboard,
+        }]
     } else {
         actions
     };
-    match ty {
-        "clipboard-history" => {
+    match provider.as_deref() {
+        Some("clipboard-history") => {
             reject_unknown(
                 "widget",
                 &name,
@@ -527,7 +563,7 @@ fn widget_from_raw(
                 multi,
             })
         }
-        "file" => {
+        Some("file") => {
             reject_unknown(
                 "widget",
                 &name,
@@ -546,21 +582,13 @@ fn widget_from_raw(
             )?;
             let mut path = required_path(&name, &raw.properties, "path")?;
             resolve_relative(&mut path, base_dir);
-            let format = match raw
+            let format_name = raw
                 .properties
                 .get("format")
                 .and_then(HclValue::as_ident)
-                .ok_or_else(|| format!("widget {name:?}: format is required"))?
-            {
-                "text" => FileFormat::Text,
-                "json" => FileFormat::Json,
-                "yaml" => FileFormat::Yaml,
-                other => {
-                    return Err(format!(
-                        "widget {name:?}: unknown format {other}; expected text, json, or yaml"
-                    ));
-                }
-            };
+                .ok_or_else(|| format!("widget {name:?}: format is required"))?;
+            let format = FileFormat::parse(&format_name)
+                .map_err(|err| format!("widget {name:?}: {err}"))?;
             Ok(WidgetConfig::File {
                 name,
                 path,
@@ -571,7 +599,7 @@ fn widget_from_raw(
                 multi,
             })
         }
-        "executables" => {
+        Some("executables") => {
             reject_unknown(
                 "widget",
                 &name,
@@ -594,7 +622,7 @@ fn widget_from_raw(
                 multi,
             })
         }
-        "wayland-windows" => {
+        Some("wayland-windows") => {
             reject_unknown(
                 "widget",
                 &name,
@@ -617,9 +645,32 @@ fn widget_from_raw(
                 multi,
             })
         }
-        other => Err(format!(
+        Some(other) => Err(format!(
             "widget {name:?}: unknown provider {other}; expected clipboard-history, file, executables, or wayland-windows"
         )),
+        None => {
+            reject_unknown(
+                "widget",
+                &name,
+                &raw.properties,
+                &[
+                    "layout",
+                    "theme",
+                    "location",
+                    "action",
+                    "multi",
+                    "select",
+                    "deselect",
+                ],
+            )?;
+            Ok(WidgetConfig::OnDemand {
+                name,
+                presentation,
+                actions,
+                transforms,
+                multi,
+            })
+        }
     }
 }
 
@@ -1125,7 +1176,11 @@ fn parse_multi(
     }
     Ok(Some(MultiSelect {
         select: parse_widget_key(widget, "select", select.as_deref().unwrap_or("tab"))?,
-        deselect: parse_widget_key(widget, "deselect", deselect.as_deref().unwrap_or("shift-tab"))?,
+        deselect: parse_widget_key(
+            widget,
+            "deselect",
+            deselect.as_deref().unwrap_or("shift-tab"),
+        )?,
     }))
 }
 
@@ -1135,7 +1190,7 @@ fn parse_widget_key(widget: &str, name: &str, spec: &str) -> Result<KeySpec, Str
 
 fn widget_presentation(
     widget: &str,
-    provider: &str,
+    provider: Option<&str>,
     properties: &BTreeMap<String, HclValue>,
     multi: bool,
     doc: &HclDocument,
@@ -1157,7 +1212,7 @@ fn widget_presentation(
         layout.as_deref(),
         location,
         Some(widget),
-        Some(provider),
+        provider,
         multi,
         base_dir,
     )
@@ -1445,6 +1500,59 @@ mod tests {
         assert_eq!(
             config.widgets[0].actions()[0],
             SelectAction::shipped_xdg_open()
+        );
+    }
+
+    #[test]
+    fn widget_without_a_provider_only_accepts_presentation_and_actions() {
+        let config = parse_config(
+            r#"
+                widget "pick" {
+                    layout = "filter"
+                    action = "copy-to-clipboard"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert!(matches!(config.widgets[0], WidgetConfig::OnDemand { .. }));
+        assert_eq!(
+            config.widgets[0].actions(),
+            [SelectAction::CopyToClipboard].as_slice()
+        );
+        assert!(config.widgets[0].presentation().theme.has_inputbar());
+
+        let error = parse_config(
+            r#"
+                widget "pick" {
+                    path = "items.txt"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown property"), "{error}");
+        assert!(error.contains("path"), "{error}");
+    }
+
+    #[test]
+    fn layout_sees_an_empty_provider_when_the_label_is_omitted() {
+        let config = parse_config(
+            r#"
+                layout "smart" {
+                    location = widget.provider == "" ? "center" : "pointer"
+                }
+                widget "pick" {
+                    layout = "smart"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(config.widgets[0].presentation().location, Location::Center);
+        assert_eq!(
+            config.widgets[0].actions(),
+            [SelectAction::CopyToClipboard].as_slice()
         );
     }
 

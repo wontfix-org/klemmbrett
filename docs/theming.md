@@ -36,8 +36,8 @@ Location is chosen separately from colors:
 Layouts used by a widget are evaluated with `widget.name`,
 `widget.provider`, and `widget.multi` in scope, so packing can depend on
 the widget. `widget.provider` is `clipboard-history`, `file`,
-`executables`, or `wayland-windows`. `widget.multi` is true when the
-widget sets `multi = true`.
+`executables`, `wayland-windows`, or an empty string when the widget has
+no provider. `widget.multi` is true when the widget sets `multi = true`.
 
 ## Layouts
 

@@ -469,12 +469,18 @@ mod tests {
         toggle_record(&mut checked, &one);
         toggle_record(&mut checked, &two);
         assert_eq!(
-            checked.iter().map(|record| record.key.as_str()).collect::<Vec<_>>(),
+            checked
+                .iter()
+                .map(|record| record.key.as_str())
+                .collect::<Vec<_>>(),
             ["one", "two"]
         );
         toggle_record(&mut checked, &one);
         assert_eq!(
-            checked.iter().map(|record| record.key.as_str()).collect::<Vec<_>>(),
+            checked
+                .iter()
+                .map(|record| record.key.as_str())
+                .collect::<Vec<_>>(),
             ["two"]
         );
     }
