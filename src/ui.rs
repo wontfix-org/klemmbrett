@@ -18,11 +18,11 @@ use gpui::{
     WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use klemmbrett::{
-    activation_records, filter_records, history_candidate, index_for_accelerator,
-    logical_output_positions, menu_item_spec, place_at_location, run_transform, run_waited_command,
-    spawn_detached, toggle_record, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location,
-    Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget,
-    Widgets, POLL_INTERVAL,
+    activation_records, filter_records, focused_display_index, history_candidate,
+    index_for_accelerator, menu_item_spec, output_layout, place_at_location, run_transform,
+    run_waited_command, spawn_detached, toggle_record, ArboardBackend, Backend, ClipboardSync,
+    Edges, Launch, Location, Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction,
+    Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -375,18 +375,21 @@ fn popup_placement(
         .and_then(|primary| displays.iter().position(|d| d.id() == primary.id()))
         .unwrap_or(0);
 
-    let positions = logical_output_positions();
+    let layout = output_layout();
+    let mut display_ids = Vec::with_capacity(displays.len());
     let mut outputs = Vec::with_capacity(displays.len());
     for display in &displays {
         let bounds = display.bounds();
         let mut x = pixels_i32(bounds.origin.x);
         let mut y = pixels_i32(bounds.origin.y);
-        if let Ok(id) = display.uuid() {
-            if let Some(&(global_x, global_y)) = positions.get(&id) {
+        let id = display.uuid().ok();
+        if let Some(id) = id {
+            if let Some(&(global_x, global_y)) = layout.positions.get(&id) {
                 x = global_x;
                 y = global_y;
             }
         }
+        display_ids.push(id);
         outputs.push(OutputGeom::new(
             x,
             y,
@@ -396,13 +399,18 @@ fn popup_placement(
     }
 
     let (width, height) = theme.card_size(rows, label_max);
+    let output_index = if pointer.is_none() {
+        focused_display_index(&display_ids, layout.focused, primary)
+    } else {
+        primary
+    };
     let (index, margin_x, margin_y) = place_at_location(
         location,
         pointer,
         width as i32,
         height as i32,
         &outputs,
-        primary,
+        output_index,
     )?;
     let output_size = displays[index].bounds().size;
 

@@ -53,9 +53,9 @@ action arguments are expanded when the row is selected.
 `key`, `label`, and `value`. Provider records are unused.
 
 A widget with no provider label has no record source. `show` and `prompt`
-must pass `--input`, or `--format` and read stdin. An empty record array
-is rejected, including for `layout = "prompt"`. The tray menu omits these
-widgets, because a click cannot supply records.
+must pass a record file, or `-` to read stdin. `--format` defaults to
+`text`. An empty record array is rejected, including for `layout = "prompt"`.
+The tray menu omits these widgets, because a click cannot supply records.
 
 ```hcl
 widget "pick" {
@@ -65,7 +65,7 @@ widget "pick" {
 ```
 
 ```sh
-printf '%s\n' one two | klemmbrett show pick --format text
+printf '%s\n' one two | klemmbrett show pick -
 ```
 
 `multi = true` lets Tab toggle the current row and move down, and
@@ -132,12 +132,12 @@ widget "snippets" "file" {
 }
 ```
 
-`klemmbrett show` and `klemmbrett prompt` read those same formats
-(`--format text|json|yaml`, from `--input` or stdin) and pass the records
-to D-Bus. On the bus each record is a dict: `value` is required, and a
-missing `key` or `label` defaults to the value. An empty record array
-keeps the widget's own provider. A widget with no provider rejects that
-empty array.
+`klemmbrett show` and `klemmbrett prompt` read those same formats from a
+positional path. `--format text|json|yaml` defaults to `text`. The path `-`
+reads stdin. Omitting the path uses the widget provider. On the bus each
+record is a dict: `value` is required, and a missing `key` or `label`
+defaults to the value. An empty record array keeps the widget's own
+provider. A widget with no provider rejects that empty array.
 
 ## Actions
 
