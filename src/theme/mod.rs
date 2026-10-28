@@ -765,7 +765,11 @@ fn validate_children(parent: Widget, children: &[Widget]) -> Result<(), String> 
     let allowed = match parent {
         Widget::Window => &[Widget::InputBar, Widget::ListView][..],
         Widget::InputBar => &[Widget::Prompt, Widget::Entry][..],
-        Widget::Element => &[Widget::ElementMarker, Widget::ElementIndex, Widget::ElementText][..],
+        Widget::Element => &[
+            Widget::ElementMarker,
+            Widget::ElementIndex,
+            Widget::ElementText,
+        ][..],
         _ => &[][..],
     };
     for child in children {
@@ -917,10 +921,8 @@ mod tests {
 
     #[test]
     fn element_may_pack_a_marker() {
-        let theme = parse_theme(
-            r#"element { children = ["element-marker", "element-text"] }"#,
-        )
-        .unwrap();
+        let theme =
+            parse_theme(r#"element { children = ["element-marker", "element-text"] }"#).unwrap();
         assert_eq!(
             theme.element().children,
             vec![Widget::ElementMarker, Widget::ElementText]
@@ -978,10 +980,7 @@ mod tests {
         assert_eq!(presentation.location, Location::Center);
         assert!(presentation.theme.has_inputbar());
         assert!(!presentation.theme.has_listview());
-        assert_eq!(
-            presentation.theme.window().children,
-            vec![Widget::InputBar]
-        );
+        assert_eq!(presentation.theme.window().children, vec![Widget::InputBar]);
         assert_eq!(
             presentation.theme.inputbar().children,
             vec![Widget::Prompt, Widget::Entry]

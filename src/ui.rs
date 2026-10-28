@@ -18,11 +18,11 @@ use gpui::{
     WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use klemmbrett::{
-    activation_records, filter_records, history_candidate, index_for_accelerator, menu_item_spec,
-    logical_output_positions, place_at_location, run_transform, run_waited_command,
-    spawn_detached, toggle_record,
-    ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location, Orientation, OutputGeom,
-    Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
+    activation_records, filter_records, history_candidate, index_for_accelerator,
+    logical_output_positions, menu_item_spec, place_at_location, run_transform, run_waited_command,
+    spawn_detached, toggle_record, ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location,
+    Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget,
+    Widgets, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -44,8 +44,9 @@ pub fn run(
 ) {
     let (tx, rx) = async_channel::unbounded::<UiCmd>();
     let widget_names: HashSet<_> = widgets.names().into_iter().collect();
-    dbus::spawn(widget_names, tx.clone());
-    install_tray(widgets.names(), tx.clone());
+    let on_demand: HashSet<_> = widgets.names_without_provider().into_iter().collect();
+    dbus::spawn(widget_names, on_demand, tx.clone());
+    install_tray(widgets.names_with_provider(), tx.clone());
     let clip_tx = spawn_clipboard(sync, tx);
 
     gpui_platform::application()
@@ -58,9 +59,12 @@ pub fn run(
             cx.spawn(async move |cx| {
                 while let Ok(cmd) = rx.recv().await {
                     dispatcher.update(cx, |this, cx| match cmd {
-                        UiCmd::Show { widget, pointer } => {
-                            this.show_widget_menu(&widget, pointer, cx)
-                        }
+                        UiCmd::Show {
+                            widget,
+                            pointer,
+                            records,
+                            reply,
+                        } => this.show_widget_menu(&widget, pointer, records, reply, cx),
                         UiCmd::RecordHistory(text) => this.record_history(&text),
                         UiCmd::Quit => cx.quit(),
                     });
@@ -207,13 +211,15 @@ impl Klemmbrett {
         else {
             return;
         };
-        self.open_popup(Vec::new(), placement, false, String::new(), cx);
+        self.open_popup(Vec::new(), placement, false, String::new(), None, cx);
     }
 
     fn show_widget_menu(
         &mut self,
         widget: &str,
         pointer: Option<(i32, i32)>,
+        records: Option<Vec<Record>>,
+        reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
         cx: &mut Context<Self>,
     ) {
         let presentation = self
@@ -224,16 +230,25 @@ impl Klemmbrett {
                 theme: self.theme.clone(),
                 location: Location::Pointer,
             });
-        let entries = if presentation.theme.has_listview() {
+        if records.is_none() && self.widgets.requires_records(widget) {
+            let err = format!("widget {widget:?} has no provider; pass records");
+            eprintln!("Failed to read widget {widget:?}: {err}");
+            finish_prompt(reply, Err(err));
+            return;
+        }
+        let entries = if !presentation.theme.has_listview() {
+            Vec::new()
+        } else if let Some(records) = records {
+            records
+        } else {
             match self.widgets.records(widget) {
                 Ok(entries) => entries,
                 Err(err) => {
                     eprintln!("Failed to read widget {widget:?}: {err}");
+                    finish_prompt(reply, Err(err));
                     return;
                 }
             }
-        } else {
-            Vec::new()
         };
 
         let Some(placement) = popup_placement(
@@ -244,44 +259,50 @@ impl Klemmbrett {
             &presentation.theme,
             presentation.location,
         ) else {
-            eprintln!("Failed to place the popup: no displays.");
+            let err = "Failed to place the popup: no displays.".to_string();
+            eprintln!("{err}");
+            finish_prompt(reply, Err(err));
             return;
         };
 
-        if self.reuse_popup(&entries, &placement, widget, cx) {
-            return;
+        match self.reuse_popup(&entries, &placement, widget, reply, cx) {
+            None => {}
+            Some(reply) => self.open_popup(entries, placement, true, widget.to_owned(), reply, cx),
         }
-        self.open_popup(entries, placement, true, widget.to_owned(), cx);
     }
 
+    /// `None` when the existing popup was reused. `Some(reply)` when the caller
+    /// still has to open a window.
     fn reuse_popup(
         &mut self,
         entries: &[Record],
         placement: &PopupPlacement,
         widget: &str,
+        mut reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> Option<Option<mpsc::Sender<Result<Vec<String>, String>>>> {
         let Some(handle) = self.popup else {
-            return false;
+            return Some(reply);
         };
         match handle.update(cx, |view, window, cx| {
             if view.display_id != placement.display_id {
+                view.finish_prompt(Ok(Vec::new()));
                 return false;
             }
             window.resize(placement.output_size);
-            view.reload(entries.to_vec(), placement, widget, cx);
+            view.reload(entries.to_vec(), placement, widget, reply.take(), cx);
             view.reveal(window, cx);
             true
         }) {
-            Ok(true) => true,
+            Ok(true) => None,
             Ok(false) => {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
                 self.popup = None;
-                false
+                Some(reply)
             }
             Err(_) => {
                 self.popup = None;
-                false
+                Some(reply)
             }
         }
     }
@@ -292,13 +313,14 @@ impl Klemmbrett {
         placement: PopupPlacement,
         visible: bool,
         widget: String,
+        reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
         cx: &mut Context<Self>,
     ) {
         let app = cx.entity();
         let options = overlay_options(&placement, visible);
         match cx.open_window(options, move |window, cx| {
             let view = if visible {
-                cx.new(|cx| PopupView::shown(app, entries, placement, widget, cx))
+                cx.new(|cx| PopupView::shown(app, entries, placement, widget, reply, cx))
             } else {
                 cx.new(|cx| PopupView::new(app, entries, placement, widget, cx))
             };
@@ -310,8 +332,21 @@ impl Klemmbrett {
             view
         }) {
             Ok(handle) => self.popup = Some(handle),
-            Err(err) => eprintln!("Failed to open the history popup: {err}"),
+            Err(err) => {
+                eprintln!("Failed to open the history popup: {err}");
+                // The closure, and its reply sender, are dropped with the
+                // failed open. `Prompt` then fails instead of waiting.
+            }
         }
+    }
+}
+
+fn finish_prompt(
+    reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
+    result: Result<Vec<String>, String>,
+) {
+    if let Some(reply) = reply {
+        let _ = reply.send(result);
     }
 }
 
@@ -431,6 +466,7 @@ struct PopupView {
     seen_active: bool,
     scroll: UniformListScrollHandle,
     checked: Vec<Record>,
+    reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
 }
 
 impl PopupView {
@@ -456,6 +492,7 @@ impl PopupView {
             seen_active: false,
             scroll: UniformListScrollHandle::new(),
             checked: Vec::new(),
+            reply: None,
         }
     }
 
@@ -464,10 +501,12 @@ impl PopupView {
         entries: Vec<Record>,
         placement: PopupPlacement,
         widget: String,
+        reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut view = Self::new(app, entries, placement, widget, cx);
         view.visible = true;
+        view.reply = reply;
         view
     }
 
@@ -476,8 +515,11 @@ impl PopupView {
         entries: Vec<Record>,
         placement: &PopupPlacement,
         widget: &str,
+        reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
         cx: &mut Context<Self>,
     ) {
+        self.finish_prompt(Ok(Vec::new()));
+        self.reply = reply;
         self.entries = entries;
         self.card = placement.card;
         self.theme = placement.theme.clone();
@@ -507,10 +549,17 @@ impl PopupView {
         cx.notify();
     }
 
+    fn finish_prompt(&mut self, result: Result<Vec<String>, String>) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(result);
+        }
+    }
+
     fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.visible {
             return;
         }
+        self.finish_prompt(Ok(Vec::new()));
         self.visible = false;
         self.seen_active = false;
         // Layer-shell remap after a null-buffer unmap is broken in GPUI-CE:
@@ -693,13 +742,24 @@ impl PopupView {
         if records.is_empty() {
             return;
         }
-        let widget = self.widget_name.clone();
-        self.app.update(cx, |app, _cx| {
-            for record in records {
-                app.select_record(&widget, &record.key, &record.label, &record.value);
-            }
-        });
+        if self.reply.is_some() {
+            let values = records.iter().map(|record| record.value.clone()).collect();
+            self.finish_prompt(Ok(values));
+        } else {
+            let widget = self.widget_name.clone();
+            self.app.update(cx, |app, _cx| {
+                for record in records {
+                    app.select_record(&widget, &record.key, &record.label, &record.value);
+                }
+            });
+        }
         self.hide(window, cx);
+    }
+}
+
+impl Drop for PopupView {
+    fn drop(&mut self) {
+        self.finish_prompt(Ok(Vec::new()));
     }
 }
 
@@ -1038,6 +1098,8 @@ impl ksni::Tray for TrayIcon {
                                     let _ = this.tx.send_blocking(UiCmd::Show {
                                         widget: name.clone(),
                                         pointer: None,
+                                        records: None,
+                                        reply: None,
                                     });
                                 }),
                                 ..Default::default()

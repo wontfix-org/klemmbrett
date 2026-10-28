@@ -1,9 +1,10 @@
 # Widgets, transforms, and actions
 
 A **widget** is a named list of records. Selecting a row runs that widget's
-**transform** pipeline, then its **actions** in order. The second label is
-the provider, action type, or transform type (`widget "history"
-"clipboard-history"`, `action "notify" "exec"`, `transform "jq" "exec"`).
+**transform** pipeline, then its **actions** in order. A widget's optional
+second label is its provider (`widget "history" "clipboard-history"`).
+Omit that label when every open must pass records. Action and transform
+blocks still take a type (`action "notify" "exec"`, `transform "jq" "exec"`).
 Widget names must be unique. Relative `db` and `path` values are resolved
 relative to the configuration file.
 
@@ -45,10 +46,27 @@ action arguments are expanded when the row is selected.
 | `file` | `copy-to-clipboard` | Reloaded each time the popup opens |
 | `executables` | `launch` | `PATH` entries; first basename wins |
 | `wayland-windows` | `activate-window` | Open toplevels via `zwlr_foreign_toplevel_manager_v1` |
+| omitted | `copy-to-clipboard` | No records of its own; each open must pass them |
 
 `executables` and `wayland-windows` lists are long; use `layout = "filter"`.
 `layout = "prompt"` is inputbar-only: Enter returns the typed text as
 `key`, `label`, and `value`. Provider records are unused.
+
+A widget with no provider label has no record source. `show` and `prompt`
+must pass `--input`, or `--format` and read stdin. An empty record array
+is rejected, including for `layout = "prompt"`. The tray menu omits these
+widgets, because a click cannot supply records.
+
+```hcl
+widget "pick" {
+  layout = "filter"
+  action = "copy-to-clipboard"
+}
+```
+
+```sh
+printf '%s\n' one two | klemmbrett show pick --format text
+```
 
 `multi = true` lets Tab toggle the current row and move down, and
 Shift-Tab toggle and move up (fzf `--multi`). Enter runs transforms and
@@ -110,6 +128,13 @@ widget "snippets" "file" {
   action   = "xdg-open"
 }
 ```
+
+`klemmbrett show` and `klemmbrett prompt` read those same formats
+(`--format text|json|yaml`, from `--input` or stdin) and pass the records
+to D-Bus. On the bus each record is a dict: `value` is required, and a
+missing `key` or `label` defaults to the value. An empty record array
+keeps the widget's own provider. A widget with no provider rejects that
+empty array.
 
 ## Actions
 

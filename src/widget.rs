@@ -1,7 +1,7 @@
 //! Named widgets that provide records for popups.
 
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use crate::config::{Config, FileFormat, MultiSelect, SelectAction, Transform, WidgetConfig};
@@ -61,7 +61,8 @@ pub struct Widgets {
 
 struct NamedWidget {
     name: String,
-    provider: Provider,
+    /// `None` for a widget that only accepts records passed to `Show` or `Prompt`.
+    provider: Option<Provider>,
     presentation: Presentation,
     actions: Vec<SelectAction>,
     transforms: Vec<Transform>,
@@ -112,14 +113,15 @@ impl Widgets {
                         })?
                         .with_coalesce_growing(*coalesce_growing)
                         .with_skip_whitespace_only(*skip_whitespace_only);
-                    Provider::ClipboardHistory(store)
+                    Some(Provider::ClipboardHistory(store))
                 }
-                WidgetConfig::File { path, format, .. } => Provider::File(FileSource {
+                WidgetConfig::File { path, format, .. } => Some(Provider::File(FileSource {
                     path: path.clone(),
                     format: *format,
-                }),
-                WidgetConfig::Executables { .. } => Provider::Executables,
-                WidgetConfig::WaylandWindows { .. } => Provider::WaylandWindows,
+                })),
+                WidgetConfig::Executables { .. } => Some(Provider::Executables),
+                WidgetConfig::WaylandWindows { .. } => Some(Provider::WaylandWindows),
+                WidgetConfig::OnDemand { .. } => None,
             };
             entries.push(NamedWidget {
                 name,
@@ -135,7 +137,7 @@ impl Widgets {
         // Validate file readability, format, and keys at startup. Files are
         // still reloaded when opened so changes do not require a restart.
         for entry in &widgets.entries {
-            if matches!(entry.provider, Provider::File(_)) {
+            if matches!(entry.provider, Some(Provider::File(_))) {
                 widgets.records(&entry.name)?;
             }
         }
@@ -147,6 +149,29 @@ impl Widgets {
             .iter()
             .map(|entry| entry.name.clone())
             .collect()
+    }
+
+    /// Widgets the tray can open. On-demand widgets need records from the caller.
+    pub fn names_with_provider(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.provider.is_some())
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    pub fn names_without_provider(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.provider.is_none())
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    pub fn requires_records(&self, name: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.name == name && entry.provider.is_none())
     }
 
     pub fn presentation(&self, name: &str) -> Option<&Presentation> {
@@ -183,7 +208,10 @@ impl Widgets {
             .iter()
             .find(|entry| entry.name == name)
             .ok_or_else(|| format!("unknown widget {name:?}"))?;
-        let records = match &entry.provider {
+        let Some(provider) = &entry.provider else {
+            return Err(format!("widget {name:?} has no provider; pass records"));
+        };
+        let records = match provider {
             Provider::ClipboardHistory(store) => store
                 .entries()
                 .map(|entries| entries.into_iter().map(Record::new).collect())
@@ -211,7 +239,7 @@ impl Widgets {
 
     pub fn record_history(&mut self, text: &str) -> Result<(), String> {
         for entry in &mut self.entries {
-            if let Provider::ClipboardHistory(store) = &mut entry.provider {
+            if let Some(Provider::ClipboardHistory(store)) = &mut entry.provider {
                 store.record(text).map_err(|err| {
                     format!("widget {:?}: failed to record history: {err}", entry.name)
                 })?;
@@ -225,31 +253,71 @@ impl FileSource {
     fn records(&self) -> Result<Vec<Record>, String> {
         let text = std::fs::read_to_string(&self.path)
             .map_err(|err| format!("failed to read {}: {err}", self.path.display()))?;
-        let records = match self.format {
-            FileFormat::Text => text
-                .lines()
-                .map(|line| line.strip_suffix('\r').unwrap_or(line))
-                .filter(|line| !line.is_empty())
-                .map(Record::new)
-                .collect(),
-            FileFormat::Json => deserialize_records(
-                serde_json::from_str(&text)
-                    .map_err(|err| format!("invalid JSON in {}: {err}", self.path.display()))?,
-            ),
-            FileFormat::Yaml => deserialize_records(
-                serde_yaml::from_str(&text)
-                    .map_err(|err| format!("invalid YAML in {}: {err}", self.path.display()))?,
-            ),
-        };
-        Ok(records)
+        parse_records(&text, self.format).map_err(|err| format!("{}: {err}", self.path.display()))
     }
+}
+
+/// Decodes text, JSON, or YAML the way a `file` widget does.
+///
+/// JSON and YAML are an array of strings or objects. A string is the value.
+/// An object requires `value`; omitted `key` and `label` become that value.
+/// Text is one non-empty line per value.
+pub fn parse_records(text: &str, format: FileFormat) -> Result<Vec<Record>, String> {
+    match format {
+        FileFormat::Text => Ok(text
+            .lines()
+            .map(|line| line.strip_suffix('\r').unwrap_or(line))
+            .filter(|line| !line.is_empty())
+            .map(Record::new)
+            .collect()),
+        FileFormat::Json => {
+            let records =
+                serde_json::from_str(text).map_err(|err| format!("invalid JSON: {err}"))?;
+            Ok(deserialize_records(records))
+        }
+        FileFormat::Yaml => {
+            let records =
+                serde_yaml::from_str(text).map_err(|err| format!("invalid YAML: {err}"))?;
+            Ok(deserialize_records(records))
+        }
+    }
+}
+
+/// An empty list means the caller did not supply records. A non-empty list
+/// uses the same field defaults as [`parse_records`] and rejects duplicate
+/// or empty keys.
+pub(crate) fn records_from_maps(
+    widget: &str,
+    rows: Vec<BTreeMap<String, String>>,
+) -> Result<Option<Vec<Record>>, String> {
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut records = Vec::with_capacity(rows.len());
+    for (index, mut row) in rows.into_iter().enumerate() {
+        let Some(value) = row.remove("value") else {
+            return Err(format!(
+                "widget {widget:?}: record {}: value is required",
+                index + 1
+            ));
+        };
+        let key = row.remove("key");
+        let label = row.remove("label");
+        records.push(Record {
+            key: key.unwrap_or_else(|| value.clone()),
+            label: label.unwrap_or_else(|| value.clone()),
+            value,
+        });
+    }
+    validate_records(widget, &records)?;
+    Ok(Some(records))
 }
 
 fn deserialize_records(records: Vec<SerializedRecord>) -> Vec<Record> {
     records.into_iter().map(Record::from).collect()
 }
 
-fn validate_records(widget_name: &str, records: &[Record]) -> Result<(), String> {
+pub fn validate_records(widget_name: &str, records: &[Record]) -> Result<(), String> {
     let mut keys = HashSet::new();
     for (index, record) in records.iter().enumerate() {
         if record.key.is_empty() {
@@ -536,6 +604,43 @@ mod tests {
     }
 
     #[test]
+    fn widget_without_a_provider_rejects_its_own_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = parse_config(
+            r#"
+                widget "pick" {
+                    action = "xdg-open"
+                }
+                widget "items" "file" {
+                    path   = "records"
+                    format = "text"
+                }
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("records"), "one\n").unwrap();
+        let widgets = Widgets::from_config(&config).unwrap();
+        assert_eq!(widgets.names_without_provider(), vec!["pick".to_string()]);
+        assert_eq!(widgets.names_with_provider(), vec!["items".to_string()]);
+        assert!(widgets.requires_records("pick"));
+        assert!(!widgets.requires_records("items"));
+        let error = widgets.records("pick").unwrap_err();
+        assert!(error.contains("has no provider"), "{error}");
+        assert!(error.contains("pass records"), "{error}");
+        assert_eq!(
+            widgets.actions("pick"),
+            Some(
+                [SelectAction::Launch {
+                    command: vec!["xdg-open".into(), "${value}".into()],
+                    args: Default::default(),
+                }]
+                .as_slice()
+            )
+        );
+    }
+
+    #[test]
     fn history_is_not_created_without_a_history_widget() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("records"), "one\n").unwrap();
@@ -552,5 +657,58 @@ mod tests {
         let mut widgets = Widgets::from_config(&config).unwrap();
         widgets.record_history("ignored").unwrap();
         assert!(!dir.path().join("history.sqlite").exists());
+    }
+
+    #[test]
+    fn parse_records_shares_text_json_and_yaml_rules() {
+        assert_eq!(
+            parse_records("one\n\ntwo\n", FileFormat::Text).unwrap(),
+            vec![Record::new("one"), Record::new("two")]
+        );
+        assert_eq!(
+            parse_records(
+                r#"["plain", {"label":"Readable", "value":"copied", "extra":"ignored"}]"#,
+                FileFormat::Json,
+            )
+            .unwrap(),
+            vec![
+                Record::new("plain"),
+                Record {
+                    key: "copied".into(),
+                    label: "Readable".into(),
+                    value: "copied".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            parse_records("- value: copied\n", FileFormat::Yaml).unwrap(),
+            vec![Record::new("copied")]
+        );
+    }
+
+    #[test]
+    fn dbus_maps_default_missing_fields_and_reject_bad_keys() {
+        let mut partial = BTreeMap::new();
+        partial.insert("value".into(), "copied".into());
+        partial.insert("extra".into(), "ignored".into());
+        assert_eq!(
+            records_from_maps("items", vec![partial]).unwrap(),
+            Some(vec![Record::new("copied")])
+        );
+
+        let mut missing = BTreeMap::new();
+        missing.insert("key".into(), "id".into());
+        let error = records_from_maps("items", vec![missing]).unwrap_err();
+        assert!(error.contains("value is required"), "{error}");
+
+        let mut first = BTreeMap::new();
+        first.insert("key".into(), "same".into());
+        first.insert("value".into(), "one".into());
+        let mut second = BTreeMap::new();
+        second.insert("key".into(), "same".into());
+        second.insert("value".into(), "two".into());
+        let error = records_from_maps("items", vec![first, second]).unwrap_err();
+        assert!(error.contains("duplicate record key"), "{error}");
+        assert!(records_from_maps("items", Vec::new()).unwrap().is_none());
     }
 }
