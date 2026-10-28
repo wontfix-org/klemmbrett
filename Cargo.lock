@@ -3275,7 +3275,9 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "uuid",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "zbus",
 ]
