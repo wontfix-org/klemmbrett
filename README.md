@@ -70,22 +70,22 @@ To open a configured widget without spelling out `busctl`:
 
 ```sh
 klemmbrett show history
-klemmbrett show history 120 80
-klemmbrett show snippets --format yaml --input snippets.yaml
+klemmbrett show history -x 120 -y 80
+klemmbrett show snippets snippets.yaml --format yaml
 klemmbrett prompt history
-printf '%s\n' one two | klemmbrett prompt snippets --format text
+printf '%s\n' one two | klemmbrett prompt snippets -
 ```
 
-`x` and `y` are compositor global coordinates. Omit both when there is no
-pointer: the popup is then centered on the primary output, or the first
-output if the compositor does not mark one. The running daemon (or D-Bus
+`-x` and `-y` are compositor global coordinates. Omit both when there is
+no pointer: the popup uses the output of the keyboard-focused window, then
+the primary output, then the first output. The running daemon (or D-Bus
 activation) still serves the request.
 
-`--format text|json|yaml` reads records and passes them to the daemon in
-place of the widget provider. `--input` is the file; without it, the
-records are read from stdin. The formats are the same ones a `file` widget
-accepts. A widget configured without a provider has no records of its own,
-so `show` and `prompt` must pass `--input` or `--format` with stdin.
+A positional path replaces the widget provider. `-` reads that input from
+stdin. `--format text|json|yaml` selects the record format and defaults to
+`text`. The formats are the same ones a `file` widget accepts. Omitting the
+path uses the widget's provider. A widget configured without a provider has
+no records of its own, so `show` and `prompt` must pass a path or `-`.
 `prompt` uses the same arguments, blocks until the popup closes, and prints
 each selected value on its own line. Cancelling prints nothing and exits 1.
 
@@ -128,7 +128,7 @@ widget "pick" {
 ```
 
 `pick` has no provider. Open it with records, for example
-`printf '%s\n' one two | klemmbrett show pick --format text`.
+`printf '%s\n' one two | klemmbrett show pick -`.
 
 Selecting a row runs that widget's transforms, then its actions. `launch`
 defaults to `auto` (`systemd-run --user --scope` when klemmbrett is a
@@ -182,18 +182,20 @@ The process owns `org.wontfix.klemmbrett` on the session bus:
 `x` and `y` are the pointer location in the compositor's global layout (the
 same space qtile's `get_mouse_position()` and Sway output `rect` values use).
 The popup is placed on the output that contains that point, flipping or
-sliding so it stays on that output. An empty pointer array means no pointer:
-the primary output is used, and a `pointer` location is treated as `center`.
+sliding so it stays on that output. An empty pointer array means no pointer: the focused window's output is
+used, then the primary output, then the first output. A `pointer` location
+is treated as `center`.
 
 An empty record array uses the widget provider. A widget with no provider
-rejects that empty array. A non-empty array replaces those rows.
-Each dict needs `value`; omitted `key` and `label` become the value. `Show` still runs the widget's transforms and actions. `Prompt`
+rejects that empty array. A non-empty array replaces the provider rows.
+Each dict needs `value`; omitted `key` and `label` become the value.
+`Show` still runs the widget's transforms and actions. `Prompt`
 blocks until the popup closes and returns the selected values. It does not
 run transforms or actions. Cancelling, or opening another popup, returns
 an empty array.
 
 ```sh
-klemmbrett show history 120 80
+klemmbrett show history -x 120 -y 80
 ```
 
 That is the same call as:
@@ -252,7 +254,7 @@ def coords():
 
 
 x, y = coords()
-subprocess.check_call(["klemmbrett", "show", "history", str(x), str(y)])
+subprocess.check_call(["klemmbrett", "show", "history", "-x", str(x), "-y", str(y)])
 ```
 
 ```sh
@@ -265,7 +267,7 @@ In `~/.config/sway/config`:
 bindsym $mod+v exec ~/.config/sway/clip-history.py
 ```
 
-Without pointer coordinates the popup is centered on the primary output:
+Without pointer coordinates the popup opens on the focused window's output:
 
 ```
 bindsym $mod+v exec klemmbrett show history

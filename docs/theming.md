@@ -393,7 +393,8 @@ Value-level conditions can also use HCL: `border = monitor.width >= 120 ? 3 : 1`
 
 Anchored placements inset 8 px from the output edge. A `Show` pointer
 pair still picks the output. An empty pointer array means no pointer: the
-primary output is used, and `pointer` falls back to `center`.
+focused window's output is used, then the primary output, then the first
+output, and `pointer` falls back to `center`.
 
 ## defaults and locals
 

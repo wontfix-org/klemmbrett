@@ -8,7 +8,7 @@ use klemmbrett::{
     ClipboardSync, FileFormat, Record, Widgets, HISTORY_BUS_NAME,
 };
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
@@ -40,18 +40,18 @@ enum Command {
 struct PopupArgs {
     /// Configured widget name
     widget: String,
-    /// Pointer X in compositor global coordinates. Requires y.
-    #[arg(allow_hyphen_values = true)]
+    /// Record file, or "-" for stdin. Omit to use the widget provider.
+    #[arg(value_name = "INPUT", allow_hyphen_values = true)]
+    input: Option<String>,
+    /// Pointer X in compositor global coordinates. Requires -y.
+    #[arg(short = 'x', allow_hyphen_values = true)]
     x: Option<i32>,
-    /// Pointer Y in compositor global coordinates. Requires x.
-    #[arg(allow_hyphen_values = true)]
+    /// Pointer Y in compositor global coordinates. Requires -x.
+    #[arg(short = 'y', allow_hyphen_values = true)]
     y: Option<i32>,
-    /// Record format (text, json, or yaml). Reads --input, or stdin when --input is omitted.
-    #[arg(long)]
+    /// Record format for INPUT: text, json, or yaml. Defaults to text.
+    #[arg(long, value_name = "FORMAT")]
     format: Option<String>,
-    /// Record file. Requires --format. Omit to read stdin.
-    #[arg(long)]
-    input: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -94,7 +94,7 @@ fn show_popup(command: &str, args: PopupArgs, prompt: bool) -> ExitCode {
         (None, None) => None,
         (Some(x), Some(y)) => Some((x, y)),
         _ => {
-            eprintln!("{command}: x and y must both be given, or both omitted");
+            eprintln!("{command}: -x and -y must both be given, or both omitted");
             return ExitCode::FAILURE;
         }
     };
@@ -130,25 +130,23 @@ fn show_popup(command: &str, args: PopupArgs, prompt: bool) -> ExitCode {
 fn load_records(
     widget: &str,
     format: Option<&str>,
-    input: Option<&Path>,
+    input: Option<&str>,
 ) -> Result<Vec<Record>, String> {
-    let Some(format) = format else {
-        if input.is_some() {
-            return Err("--input requires --format".into());
+    let Some(input) = input else {
+        if format.is_some() {
+            return Err("--format requires an input path or -".into());
         }
         return Ok(Vec::new());
     };
-    let format = FileFormat::parse(format)?;
-    let text = match input {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|err| format!("failed to read {}: {err}", path.display()))?,
-        None => {
-            let mut text = String::new();
-            std::io::stdin()
-                .read_to_string(&mut text)
-                .map_err(|err| format!("failed to read stdin: {err}"))?;
-            text
-        }
+    let format = FileFormat::parse(format.unwrap_or("text"))?;
+    let text = if input == "-" {
+        let mut text = String::new();
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .map_err(|err| format!("failed to read stdin: {err}"))?;
+        text
+    } else {
+        std::fs::read_to_string(input).map_err(|err| format!("failed to read {input}: {err}"))?
     };
     let records = parse_records(&text, format)?;
     if records.is_empty() {
@@ -189,16 +187,33 @@ mod tests {
 
     #[test]
     fn show_accepts_pointer_coordinates() {
-        let args = Args::try_parse_from(["klemmbrett", "show", "run", "120", "-40"]).unwrap();
+        let args =
+            Args::try_parse_from(["klemmbrett", "show", "run", "-x", "120", "-y", "-40"]).unwrap();
         match args.command {
             Some(Command::Show(popup)) => {
                 assert_eq!(
-                    (popup.widget.as_str(), popup.x, popup.y),
-                    ("run", Some(120), Some(-40))
+                    (
+                        popup.widget.as_str(),
+                        popup.x,
+                        popup.y,
+                        popup.input.as_deref()
+                    ),
+                    ("run", Some(120), Some(-40), None)
                 );
             }
             other => panic!("expected show, got {other:?}"),
         }
+        let error = Args::try_parse_from(["klemmbrett", "show", "run", "--x", "120", "--y", "80"])
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("unexpected"), "{message}");
+    }
+
+    #[test]
+    fn positional_coordinates_are_not_accepted() {
+        let error = Args::try_parse_from(["klemmbrett", "show", "run", "120", "-40"]).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("unexpected"), "{message}");
     }
 
     #[test]
@@ -207,16 +222,15 @@ mod tests {
             "klemmbrett",
             "show",
             "history",
+            "items.yaml",
             "--format",
             "yaml",
-            "--input",
-            "items.yaml",
         ])
         .unwrap();
         match args.command {
             Some(Command::Show(popup)) => {
                 assert_eq!(popup.format.as_deref(), Some("yaml"));
-                assert_eq!(popup.input.unwrap(), PathBuf::from("items.yaml"));
+                assert_eq!(popup.input.as_deref(), Some("items.yaml"));
             }
             other => panic!("expected show, got {other:?}"),
         }
@@ -224,7 +238,9 @@ mod tests {
             "klemmbrett",
             "prompt",
             "run",
+            "-x",
             "120",
+            "-y",
             "-40",
             "--format",
             "json",
@@ -237,13 +253,21 @@ mod tests {
                         popup.widget.as_str(),
                         popup.x,
                         popup.y,
-                        popup.format.as_deref()
+                        popup.format.as_deref(),
+                        popup.input.as_deref(),
                     ),
-                    ("run", Some(120), Some(-40), Some("json"))
+                    ("run", Some(120), Some(-40), Some("json"), None)
                 );
-                assert!(popup.input.is_none());
             }
             other => panic!("expected prompt, got {other:?}"),
+        }
+        let args = Args::try_parse_from(["klemmbrett", "show", "pick", "-"]).unwrap();
+        match args.command {
+            Some(Command::Show(popup)) => {
+                assert_eq!(popup.input.as_deref(), Some("-"));
+                assert!(popup.format.is_none());
+            }
+            other => panic!("expected show, got {other:?}"),
         }
     }
 
@@ -256,8 +280,9 @@ mod tests {
             r#"["plain", {"label":"Readable", "value":"copied"}]"#,
         )
         .unwrap();
+        let path = path.to_str().unwrap();
         assert_eq!(
-            load_records("items", Some("json"), Some(&path)).unwrap(),
+            load_records("items", Some("json"), Some(path)).unwrap(),
             vec![
                 Record::new("plain"),
                 Record {
@@ -267,12 +292,18 @@ mod tests {
                 },
             ]
         );
-        std::fs::write(dir.path().join("empty.txt"), "\n").unwrap();
-        let error =
-            load_records("items", Some("text"), Some(&dir.path().join("empty.txt"))).unwrap_err();
+        let text_path = dir.path().join("items.txt");
+        std::fs::write(&text_path, "one\n\ntwo\n").unwrap();
+        assert_eq!(
+            load_records("items", None, Some(text_path.to_str().unwrap())).unwrap(),
+            vec![Record::new("one"), Record::new("two")]
+        );
+        let empty = dir.path().join("empty.txt");
+        std::fs::write(&empty, "\n").unwrap();
+        let error = load_records("items", None, Some(empty.to_str().unwrap())).unwrap_err();
         assert!(error.contains("no records"), "{error}");
-        let error = load_records("items", None, Some(&path)).unwrap_err();
-        assert!(error.contains("--input requires --format"), "{error}");
+        let error = load_records("items", Some("yaml"), None).unwrap_err();
+        assert!(error.contains("--format requires"), "{error}");
         assert!(load_records("items", None, None).unwrap().is_empty());
     }
 
