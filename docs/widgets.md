@@ -105,6 +105,9 @@ newest row when a new selection contains it, so growing a selection does
 not create one row per character. Whitespace-only selections are not stored
 unless `skip_whitespace_only` is `false`.
 
+`key` is the SQLite row id. `label` and `value` are the clip text, so the
+same text can appear twice and copying still uses the text.
+
 ### file
 
 `text` is one non-empty line per record. JSON and YAML are an array of
