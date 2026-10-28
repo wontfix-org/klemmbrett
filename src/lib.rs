@@ -195,6 +195,7 @@ mod config;
 mod executables;
 mod history;
 mod launch;
+mod outputs;
 mod popup;
 mod theme;
 mod transform;
@@ -215,6 +216,7 @@ pub use history::{
     DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, DEFAULT_SKIP_WHITESPACE_ONLY,
 };
 pub use launch::{running_as_systemd_unit, spawn_detached, Launch, ResolvedLaunch};
+pub use outputs::logical_output_positions;
 pub use popup::{
     accelerator_for, activation_records, filter_records, index_for_accelerator, menu_item_spec,
     place_at_location, place_on_outputs, position_on_outputs, toggle_record, MenuItemSpec,

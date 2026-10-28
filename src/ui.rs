@@ -19,10 +19,10 @@ use gpui::{
 };
 use klemmbrett::{
     activation_records, filter_records, history_candidate, index_for_accelerator, menu_item_spec,
-    place_at_location, run_transform, run_waited_command, spawn_detached, toggle_record,
-    ArboardBackend, Backend, ClipboardSync,
-    Edges, Launch, Location, Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction,
-    Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
+    logical_output_positions, place_at_location, run_transform, run_waited_command,
+    spawn_detached, toggle_record,
+    ArboardBackend, Backend, ClipboardSync, Edges, Launch, Location, Orientation, OutputGeom,
+    Record, ResolvedLaunch, SelectAction, Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -340,12 +340,21 @@ fn popup_placement(
         .and_then(|primary| displays.iter().position(|d| d.id() == primary.id()))
         .unwrap_or(0);
 
+    let positions = logical_output_positions();
     let mut outputs = Vec::with_capacity(displays.len());
     for display in &displays {
         let bounds = display.bounds();
+        let mut x = pixels_i32(bounds.origin.x);
+        let mut y = pixels_i32(bounds.origin.y);
+        if let Ok(id) = display.uuid() {
+            if let Some(&(global_x, global_y)) = positions.get(&id) {
+                x = global_x;
+                y = global_y;
+            }
+        }
         outputs.push(OutputGeom::new(
-            pixels_i32(bounds.origin.x),
-            pixels_i32(bounds.origin.y),
+            x,
+            y,
             pixels_i32(bounds.size.width).max(1),
             pixels_i32(bounds.size.height).max(1),
         ));
