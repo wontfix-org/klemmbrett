@@ -48,6 +48,12 @@ pub fn shorten_label(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// One clipboard history row. `id` is the autoincrement primary key.
+pub struct HistoryRow {
+    pub id: i64,
+    pub text: String,
+}
+
 pub struct HistoryStore {
     conn: Connection,
     limit: usize,
@@ -130,12 +136,22 @@ impl HistoryStore {
         self.trim()
     }
 
-    pub fn entries(&self) -> rusqlite::Result<Vec<String>> {
+    /// Newest row first. `id` is the SQLite row id and stays unique when `text` repeats.
+    pub fn rows(&self) -> rusqlite::Result<Vec<HistoryRow>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT text FROM history ORDER BY id DESC")?;
-        let rows = stmt.query_map([], |row| row.get(0))?;
+            .prepare("SELECT id, text FROM history ORDER BY id DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(HistoryRow {
+                id: row.get(0)?,
+                text: row.get(1)?,
+            })
+        })?;
         rows.collect()
+    }
+
+    pub fn entries(&self) -> rusqlite::Result<Vec<String>> {
+        Ok(self.rows()?.into_iter().map(|row| row.text).collect())
     }
 
     fn newest(&self) -> rusqlite::Result<Option<(i64, String)>> {

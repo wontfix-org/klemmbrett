@@ -213,8 +213,16 @@ impl Widgets {
         };
         let records = match provider {
             Provider::ClipboardHistory(store) => store
-                .entries()
-                .map(|entries| entries.into_iter().map(Record::new).collect())
+                .rows()
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|row| Record {
+                            key: row.id.to_string(),
+                            label: row.text.clone(),
+                            value: row.text,
+                        })
+                        .collect()
+                })
                 .map_err(|err| format!("failed to read history: {err}"))?,
             Provider::File(file) => file.records()?,
             Provider::Executables => {
@@ -444,7 +452,64 @@ mod tests {
         widgets.record_history("   \n").unwrap();
         assert_eq!(
             widgets.records("history").unwrap(),
-            vec![Record::new("   \n")]
+            vec![Record {
+                key: "1".into(),
+                label: "   \n".into(),
+                value: "   \n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn duplicate_history_text_uses_distinct_row_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "CREATE TABLE history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO history (text, created_at) VALUES ('same', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO history (text, created_at) VALUES ('same', 2)",
+                [],
+            )
+            .unwrap();
+        }
+        let config = parse_config(
+            r#"
+                widget "history" "clipboard-history" {
+                    db = "history.sqlite"
+                }
+            "#,
+            dir.path(),
+        )
+        .unwrap();
+        let widgets = Widgets::from_config(&config).unwrap();
+        assert_eq!(
+            widgets.records("history").unwrap(),
+            vec![
+                Record {
+                    key: "2".into(),
+                    label: "same".into(),
+                    value: "same".into(),
+                },
+                Record {
+                    key: "1".into(),
+                    label: "same".into(),
+                    value: "same".into(),
+                },
+            ]
         );
     }
 
