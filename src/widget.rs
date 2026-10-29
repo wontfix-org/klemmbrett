@@ -65,6 +65,7 @@ struct NamedWidget {
     provider: Option<Provider>,
     presentation: Presentation,
     actions: Vec<SelectAction>,
+    highlight: Vec<SelectAction>,
     transforms: Vec<Transform>,
     multi: Option<MultiSelect>,
 }
@@ -93,6 +94,7 @@ impl Widgets {
             let name = widget.name().to_owned();
             let presentation = widget.presentation().clone();
             let actions = widget.actions().to_vec();
+            let highlight = widget.highlight().to_vec();
             let transforms = widget.transforms().to_vec();
             let multi = widget.multi().cloned();
             let provider = match widget {
@@ -128,6 +130,7 @@ impl Widgets {
                 provider,
                 presentation,
                 actions,
+                highlight,
                 transforms,
                 multi,
             });
@@ -186,6 +189,13 @@ impl Widgets {
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| entry.actions.as_slice())
+    }
+
+    pub fn highlight_actions(&self, name: &str) -> Option<&[SelectAction]> {
+        self.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.highlight.as_slice())
     }
 
     pub fn transforms(&self, name: &str) -> Option<&[Transform]> {
@@ -702,6 +712,24 @@ mod tests {
                 }]
                 .as_slice()
             )
+        );
+    }
+
+    #[test]
+    fn highlight_actions_are_available_by_widget_name() {
+        let config = parse_config(
+            r#"
+                widget "pick" {
+                    highlight_action = "copy-to-clipboard"
+                }
+            "#,
+            std::path::Path::new("/config"),
+        )
+        .unwrap();
+        let widgets = Widgets::from_config(&config).unwrap();
+        assert_eq!(
+            widgets.highlight_actions("pick"),
+            Some([SelectAction::CopyToClipboard].as_slice())
         );
     }
 
