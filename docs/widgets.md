@@ -46,6 +46,7 @@ action arguments are expanded when the row is selected.
 | `file` | `copy-to-clipboard` | Reloaded each time the popup opens |
 | `executables` | `launch` | `PATH` entries; first basename wins |
 | `wayland-windows` | `activate-window` | Open toplevels via `zwlr_foreign_toplevel_manager_v1` |
+| `themes` | `set-theme` | `default`, then every shipped palette |
 | omitted | `copy-to-clipboard` | No records of its own; each open must pass them |
 
 `executables` and `wayland-windows` lists are long; use `layout = "filter"`.
@@ -144,10 +145,25 @@ record is a dict: `value` is required, and a missing `key` or `label`
 defaults to the value. An empty record array keeps the widget's own
 provider. A widget with no provider rejects that empty array.
 
+### themes
+
+Lists `default` (the embedded look, no palette) followed by the shipped
+palettes from the [README](../README.md#popup-theme). With
+`highlight_action = "set-theme"` the open popup restyles as you move
+through the list; Enter keeps the current row, and Escape keeps whatever
+was last highlighted.
+
+```hcl
+widget "themes" "themes" {
+  layout           = "filter"
+  highlight_action = "set-theme"
+}
+```
+
 ## Actions
 
 Named `action` blocks extend a built-in (`copy-to-clipboard`, `launch`,
-`exec`, or `activate-window`). Built-in names cannot be redefined.
+`exec`, `activate-window`, or `set-theme`). Built-in names cannot be redefined.
 `xdg-open` is a shipped `launch` preset (`["xdg-open", "${value}"]`) unless
 the config defines that name. `notify-send` is a shipped `exec` preset
 (`["notify-send", "${title}", "${body}"]`) with `title = "klemmbrett"` and
@@ -163,6 +179,12 @@ substituted in `command` and `stdin`.
 | `launch` | detach, do not wait | yes | — |
 | `exec` | wait; log a failing exit | no | optional, default empty |
 | `activate-window` | focus a `wayland-windows` toplevel | — | — |
+| `set-theme` | use the value as the file-wide palette until the daemon exits | — | — |
+
+`set-theme` takes a shipped palette name, a theme file path (relative to
+the config file), or `default`. It replaces every `theme "name" {}` block;
+a widget's own `theme = "…"` and in-file catalog blocks still win. An
+unknown theme is logged and leaves the current one in place.
 
 `args` gives each extra name a default. A widget may override those names
 on `action "name" { }`. Widget-passed values and defaults may use

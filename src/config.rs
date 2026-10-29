@@ -116,24 +116,32 @@ pub enum SelectAction {
         args: BTreeMap<String, String>,
     },
     ActivateWindow,
+    /// Replaces the file-wide palette with the value until the daemon exits.
+    SetTheme,
 }
 
 impl SelectAction {
+    const BUILTINS: [&'static str; 5] = [
+        "copy-to-clipboard",
+        "launch",
+        "exec",
+        "activate-window",
+        "set-theme",
+    ];
+
     fn builtin(name: &str) -> Option<Self> {
         match name {
             "copy-to-clipboard" => Some(Self::CopyToClipboard),
             "launch" => Some(Self::default_launch()),
             "exec" => Some(Self::default_exec()),
             "activate-window" => Some(Self::ActivateWindow),
+            "set-theme" => Some(Self::SetTheme),
             _ => None,
         }
     }
 
     fn is_reserved(name: &str) -> bool {
-        matches!(
-            name,
-            "copy-to-clipboard" | "launch" | "exec" | "activate-window"
-        )
+        Self::BUILTINS.contains(&name)
     }
 
     fn default_launch() -> Self {
@@ -173,6 +181,7 @@ impl SelectAction {
         match ty {
             "executables" => Self::default_launch(),
             "wayland-windows" => Self::ActivateWindow,
+            "themes" => Self::SetTheme,
             _ => Self::CopyToClipboard,
         }
     }
@@ -363,6 +372,15 @@ pub enum WidgetConfig {
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
+    /// The embedded default plus every shipped palette.
+    Themes {
+        name: String,
+        presentation: Presentation,
+        actions: Vec<SelectAction>,
+        highlight: Vec<SelectAction>,
+        transforms: Vec<Transform>,
+        multi: Option<MultiSelect>,
+    },
     /// No record source. `Show` and `Prompt` must pass records.
     OnDemand {
         name: String,
@@ -381,6 +399,7 @@ macro_rules! widget_field {
             | WidgetConfig::File { $field, .. }
             | WidgetConfig::Executables { $field, .. }
             | WidgetConfig::WaylandWindows { $field, .. }
+            | WidgetConfig::Themes { $field, .. }
             | WidgetConfig::OnDemand { $field, .. } => $field,
         }
     };
@@ -670,9 +689,20 @@ fn widget_from_raw(
                 multi,
             }
         }
+        Some("themes") => {
+            allow(&[])?;
+            WidgetConfig::Themes {
+                name,
+                presentation,
+                actions,
+                highlight,
+                transforms,
+                multi,
+            }
+        }
         Some(other) => {
             return Err(format!(
-                "widget {name:?}: unknown provider {other}; expected clipboard-history, file, executables, or wayland-windows"
+                "widget {name:?}: unknown provider {other}; expected clipboard-history, file, executables, wayland-windows, or themes"
             ))
         }
         None => {
@@ -755,6 +785,11 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
             reject_action_args(name, raw)?;
             Ok(SelectAction::ActivateWindow)
         }
+        "set-theme" => {
+            reject_unknown("action", name, &raw.properties, &[])?;
+            reject_action_args(name, raw)?;
+            Ok(SelectAction::SetTheme)
+        }
         "launch" => {
             reject_unknown("action", name, &raw.properties, &["command"])?;
             let args = declared_arg_defaults("action", name, &raw.args)?;
@@ -786,7 +821,7 @@ fn action_from_raw(name: &str, raw: &RawAction) -> Result<SelectAction, String> 
             })
         }
         other => Err(format!(
-            "action {name:?}: unknown type {other}; expected copy-to-clipboard, launch, exec, or activate-window"
+            "action {name:?}: unknown type {other}; expected copy-to-clipboard, launch, exec, activate-window, or set-theme"
         )),
     }
 }
@@ -1051,7 +1086,7 @@ fn resolve_action_name(
 }
 
 fn supported_actions(actions: &BTreeMap<String, SelectAction>) -> String {
-    let mut names: Vec<&str> = vec!["copy-to-clipboard", "launch", "exec", "activate-window"];
+    let mut names: Vec<&str> = SelectAction::BUILTINS.to_vec();
     for name in actions.keys() {
         if !names.contains(&name.as_str()) {
             names.push(name);
@@ -1677,6 +1712,55 @@ mod tests {
         let (theme, _) = config.themes.apply(DEFAULT_THEME_NAME).unwrap();
         assert_eq!(theme, Theme::default());
         assert!(config.themes.apply("missing").is_err());
+    }
+
+    #[test]
+    fn themes_widget_defaults_to_set_theme_and_can_preview_on_highlight() {
+        let config = parse_config(
+            r#"
+                widget "themes" "themes" {
+                    layout           = "filter"
+                    highlight_action = "set-theme"
+                }
+                widget "history" "clipboard-history" {}
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert!(matches!(config.widgets[0], WidgetConfig::Themes { .. }));
+        assert_eq!(
+            config.widgets[0].actions(),
+            [SelectAction::SetTheme].as_slice()
+        );
+        assert_eq!(
+            config.widgets[0].highlight(),
+            [SelectAction::SetTheme].as_slice()
+        );
+        assert!(config.widgets[1].highlight().is_empty());
+    }
+
+    #[test]
+    fn set_theme_is_a_reserved_builtin() {
+        let error = parse_config(
+            r#"action "set-theme" "copy-to-clipboard" {}"#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("built-in"), "{error}");
+        let config = parse_config(
+            r#"
+                action "palette" "set-theme" {}
+                widget "pick" {
+                    action = "palette"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].actions(),
+            [SelectAction::SetTheme].as_slice()
+        );
     }
 
     #[test]

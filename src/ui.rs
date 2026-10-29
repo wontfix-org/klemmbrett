@@ -222,6 +222,10 @@ impl Klemmbrett {
                         eprintln!("Failed to activate window {value:?}: {err}");
                     }
                 }
+                SelectAction::SetTheme => match self.widgets.set_theme(&value) {
+                    Ok(theme) => self.theme = theme,
+                    Err(err) => eprintln!("Failed to set theme {value:?}: {err}"),
+                },
             }
         }
     }

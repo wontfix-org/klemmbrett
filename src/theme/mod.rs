@@ -491,21 +491,43 @@ fn load_theme_spec(name: &str, base_dir: &Path) -> Result<ThemeSpec, String> {
         .map_err(|err| format!("invalid theme {}: {err}", path.display()))
 }
 
+const SHIPPED_THEMES: &[(&str, &str)] = &[
+    (
+        "solarized-dark",
+        include_str!("../../themes/solarized-dark.hcl"),
+    ),
+    (
+        "solarized-light",
+        include_str!("../../themes/solarized-light.hcl"),
+    ),
+    ("nord", include_str!("../../themes/nord.hcl")),
+    (
+        "gruvbox-dark",
+        include_str!("../../themes/gruvbox-dark.hcl"),
+    ),
+    (
+        "catppuccin-mocha",
+        include_str!("../../themes/catppuccin-mocha.hcl"),
+    ),
+    ("dracula", include_str!("../../themes/dracula.hcl")),
+    ("tokyo-night", include_str!("../../themes/tokyo-night.hcl")),
+    ("rose-pine", include_str!("../../themes/rose-pine.hcl")),
+    ("everforest", include_str!("../../themes/everforest.hcl")),
+    ("kanagawa", include_str!("../../themes/kanagawa.hcl")),
+    ("mbra", include_str!("../../themes/mbra.hcl")),
+];
+
+/// Names `theme "name" {}`, `theme = "name"`, and `set-theme` accept without a path.
+pub fn shipped_theme_names() -> impl Iterator<Item = &'static str> {
+    SHIPPED_THEMES.iter().map(|(name, _)| *name)
+}
+
 fn shipped_theme(name: &str) -> Option<&'static str> {
-    match name.trim_end_matches(".hcl") {
-        "solarized-dark" => Some(include_str!("../../themes/solarized-dark.hcl")),
-        "solarized-light" => Some(include_str!("../../themes/solarized-light.hcl")),
-        "nord" => Some(include_str!("../../themes/nord.hcl")),
-        "gruvbox-dark" => Some(include_str!("../../themes/gruvbox-dark.hcl")),
-        "catppuccin-mocha" => Some(include_str!("../../themes/catppuccin-mocha.hcl")),
-        "dracula" => Some(include_str!("../../themes/dracula.hcl")),
-        "tokyo-night" => Some(include_str!("../../themes/tokyo-night.hcl")),
-        "rose-pine" => Some(include_str!("../../themes/rose-pine.hcl")),
-        "everforest" => Some(include_str!("../../themes/everforest.hcl")),
-        "kanagawa" => Some(include_str!("../../themes/kanagawa.hcl")),
-        "mbra" => Some(include_str!("../../themes/mbra.hcl")),
-        _ => None,
-    }
+    let name = name.trim_end_matches(".hcl");
+    SHIPPED_THEMES
+        .iter()
+        .find(|(shipped, _)| *shipped == name)
+        .map(|(_, text)| *text)
 }
 
 fn parse_theme_from_spec(spec: ThemeSpec) -> Result<Theme, String> {
@@ -1169,6 +1191,15 @@ mod tests {
                 vec![Widget::ElementIndex, Widget::ElementText],
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn every_listed_theme_name_resolves() {
+        let names: Vec<_> = shipped_theme_names().collect();
+        assert_eq!(names.len(), 11);
+        for name in names {
+            assert!(shipped_theme(name).is_some(), "{name}");
         }
     }
 
