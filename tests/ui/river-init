@@ -1,0 +1,5 @@
+#!/bin/sh
+# River init for the UI placement test. River keeps running after this exits.
+# The test sizes the output itself through wlr-output-management, so nothing
+# here depends on the headless output name.
+riverctl background-color 0x000000

@@ -1,0 +1,20 @@
+# UI placement test image: Ubuntu LTS with whichever of the tested
+# compositors it packages. Missing ones are skipped by the test.
+FROM docker.io/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential pkg-config curl ca-certificates \
+        libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+        libfontconfig-dev libfreetype-dev \
+        libvulkan-dev mesa-vulkan-drivers fonts-dejavu-core \
+        dbus-daemon wlr-randr sway \
+    && for package in river qtile cosmic-comp; do \
+        apt-get install -y --no-install-recommends "$package" || true; \
+    done \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path \
+    && chmod -R a+rX /opt/rustup /opt/cargo
