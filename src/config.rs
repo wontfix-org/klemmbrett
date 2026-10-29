@@ -20,6 +20,70 @@ pub struct Config {
     pub popup: PopupConfig,
     pub launch: Launch,
     pub widgets: Vec<WidgetConfig>,
+    pub themes: ThemeSwitch,
+}
+
+/// `set-theme` value that drops the file-wide palette and keeps the embedded default.
+pub const DEFAULT_THEME_NAME: &str = "default";
+
+/// Rebuilds the popup theme and every widget presentation with another
+/// file-wide palette, as if `config.hcl` had said `theme "name" {}`.
+#[derive(Debug, Clone, Default)]
+pub struct ThemeSwitch {
+    doc: HclDocument,
+    base_dir: PathBuf,
+    widgets: Vec<WidgetStyle>,
+}
+
+impl ThemeSwitch {
+    pub fn apply(&self, palette: &str) -> Result<(Theme, Vec<(String, Presentation)>), String> {
+        if palette.trim().is_empty() {
+            return Err("theme name must not be empty".into());
+        }
+        let mut doc = self.doc.clone();
+        doc.theme_refs = if palette == DEFAULT_THEME_NAME {
+            Vec::new()
+        } else {
+            vec![palette.to_owned()]
+        };
+        let theme = theme_from_document(&doc, &self.base_dir)?;
+        let widgets = self
+            .widgets
+            .iter()
+            .map(|style| {
+                style
+                    .presentation(&doc, &self.base_dir)
+                    .map(|presentation| (style.name.clone(), presentation))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok((theme, widgets))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct WidgetStyle {
+    name: String,
+    provider: Option<String>,
+    theme: Option<String>,
+    layout: Option<String>,
+    location: Option<Location>,
+    multi: bool,
+}
+
+impl WidgetStyle {
+    fn presentation(&self, doc: &HclDocument, base_dir: &Path) -> Result<Presentation, String> {
+        presentation_for_widget(
+            doc,
+            self.theme.as_deref(),
+            self.layout.as_deref(),
+            self.location,
+            Some(&self.name),
+            self.provider.as_deref(),
+            self.multi,
+            base_dir,
+        )
+        .map_err(|err| format!("widget {:?}: {err}", self.name))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -408,10 +472,11 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
     let named_transforms = collect_transforms(&doc)?;
     let raw_widgets = std::mem::take(&mut doc.widgets);
     let mut widgets = Vec::new();
+    let mut styles = Vec::new();
     let mut names = HashSet::new();
 
     for raw in raw_widgets {
-        let widget = widget_from_raw(raw, &doc, base_dir, &actions, &named_transforms)?;
+        let (widget, style) = widget_from_raw(raw, &doc, base_dir, &actions, &named_transforms)?;
         let name = widget.name().to_owned();
         if name.trim().is_empty() {
             return Err("widget name must not be empty".into());
@@ -420,6 +485,7 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
             return Err(format!("widget name {name:?} is configured more than once"));
         }
         widgets.push(widget);
+        styles.push(style);
     }
 
     let theme = theme_from_document(&doc, base_dir)?;
@@ -431,6 +497,11 @@ pub fn parse_config(text: &str, base_dir: &Path) -> Result<Config, String> {
         },
         launch,
         widgets,
+        themes: ThemeSwitch {
+            doc,
+            base_dir: base_dir.to_owned(),
+            widgets: styles,
+        },
     })
 }
 
@@ -501,18 +572,12 @@ fn widget_from_raw(
     base_dir: &Path,
     actions: &BTreeMap<String, SelectAction>,
     named_transforms: &BTreeMap<String, Transform>,
-) -> Result<WidgetConfig, String> {
+) -> Result<(WidgetConfig, WidgetStyle), String> {
     let name = raw.name;
     let provider = raw.provider;
     let multi = parse_multi(&name, &raw.properties)?;
-    let presentation = widget_presentation(
-        &name,
-        provider.as_deref(),
-        &raw.properties,
-        multi.is_some(),
-        doc,
-        base_dir,
-    )?;
+    let style = widget_style(&name, provider.as_deref(), &raw.properties, multi.is_some())?;
+    let presentation = style.presentation(doc, base_dir)?;
     let highlight = parse_highlight_action(&name, &raw.properties, actions)?;
     let actions = parse_select_actions(&name, &raw.properties, &raw.actions, actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
@@ -622,7 +687,7 @@ fn widget_from_raw(
             }
         }
     };
-    Ok(widget)
+    Ok((widget, style))
 }
 
 fn parse_highlight_action(
@@ -1152,16 +1217,12 @@ fn parse_widget_key(widget: &str, name: &str, spec: &str) -> Result<KeySpec, Str
     KeySpec::parse(spec).map_err(|err| format!("widget {widget:?}: {name} is {err}"))
 }
 
-fn widget_presentation(
+fn widget_style(
     widget: &str,
     provider: Option<&str>,
     properties: &BTreeMap<String, HclValue>,
     multi: bool,
-    doc: &HclDocument,
-    base_dir: &Path,
-) -> Result<Presentation, String> {
-    let theme = optional_name(properties, "theme")?;
-    let layout = optional_name(properties, "layout")?;
+) -> Result<WidgetStyle, String> {
     let location = match optional_name(properties, "location")? {
         None => None,
         Some(name) => Some(Location::parse(&name).ok_or_else(|| {
@@ -1170,17 +1231,14 @@ fn widget_presentation(
             )
         })?),
     };
-    presentation_for_widget(
-        doc,
-        theme.as_deref(),
-        layout.as_deref(),
+    Ok(WidgetStyle {
+        name: widget.to_owned(),
+        provider: provider.map(str::to_owned),
+        theme: optional_name(properties, "theme")?,
+        layout: optional_name(properties, "layout")?,
         location,
-        Some(widget),
-        provider,
         multi,
-        base_dir,
-    )
-    .map_err(|err| format!("widget {widget:?}: {err}"))
+    })
 }
 
 fn optional_name(
@@ -1582,6 +1640,43 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("highlight_action"), "{error}");
         assert!(error.contains("unknown action preview"), "{error}");
+    }
+
+    #[test]
+    fn theme_switch_replaces_the_file_palette_but_not_widget_themes() {
+        let config = parse_config(
+            r#"
+                theme "nord" {}
+                widget "pick" {
+                    layout = "filter"
+                }
+                widget "pinned" {
+                    theme = "dracula"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        let (theme, widgets) = config.themes.apply("gruvbox-dark").unwrap();
+        let gruvbox = crate::Rgba {
+            r: 0x28,
+            g: 0x28,
+            b: 0x28,
+            a: 255,
+        };
+        assert_eq!(theme.window().background, gruvbox);
+        assert_eq!(widgets[0].0, "pick");
+        assert_eq!(widgets[0].1.theme.window().background, gruvbox);
+        assert!(widgets[0].1.theme.has_inputbar());
+        assert_eq!(widgets[0].1.location, Location::Center);
+        assert_eq!(
+            widgets[1].1.theme.window().background,
+            config.widgets[1].presentation().theme.window().background
+        );
+
+        let (theme, _) = config.themes.apply(DEFAULT_THEME_NAME).unwrap();
+        assert_eq!(theme, Theme::default());
+        assert!(config.themes.apply("missing").is_err());
     }
 
     #[test]

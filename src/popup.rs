@@ -163,6 +163,32 @@ fn place_on_output(
     Some((margin_x, margin_y))
 }
 
+/// New card origin after a resize from `old` to `new`, keeping the edge or
+/// center `location` anchors to and staying on an output of size `output`.
+/// A `pointer` card keeps its top-left corner.
+pub fn resize_at_location(
+    location: Location,
+    origin: (f32, f32),
+    old: (f32, f32),
+    new: (f32, f32),
+    output: (f32, f32),
+) -> (f32, f32) {
+    let x = match location {
+        Location::Pointer | Location::West | Location::NorthWest | Location::SouthWest => origin.0,
+        Location::East | Location::NorthEast | Location::SouthEast => origin.0 + old.0 - new.0,
+        _ => origin.0 + (old.0 - new.0) / 2.0,
+    };
+    let y = match location {
+        Location::Pointer | Location::North | Location::NorthEast | Location::NorthWest => origin.1,
+        Location::South | Location::SouthEast | Location::SouthWest => origin.1 + old.1 - new.1,
+        _ => origin.1 + (old.1 - new.1) / 2.0,
+    };
+    (
+        x.clamp(0.0, (output.0 - new.0).max(0.0)),
+        y.clamp(0.0, (output.1 - new.1).max(0.0)),
+    )
+}
+
 /// Toggle `record` in the checked set, preserving selection order.
 pub fn toggle_record(checked: &mut Vec<Record>, record: &Record) {
     if let Some(index) = checked.iter().position(|item| item.key == record.key) {
@@ -441,6 +467,41 @@ mod tests {
         assert_eq!(
             place_at_location(Location::SouthEast, Some((100, 80)), 200, 100, &output(), 0),
             Some((0, 1712, 972))
+        );
+    }
+
+    #[test]
+    fn resized_cards_keep_their_location_anchor() {
+        let output = (1920.0, 1080.0);
+        assert_eq!(
+            resize_at_location(
+                Location::Center,
+                (860.0, 490.0),
+                (200.0, 100.0),
+                (220.0, 120.0),
+                output
+            ),
+            (850.0, 480.0)
+        );
+        assert_eq!(
+            resize_at_location(
+                Location::SouthEast,
+                (1712.0, 972.0),
+                (200.0, 100.0),
+                (220.0, 120.0),
+                output
+            ),
+            (1692.0, 952.0)
+        );
+        assert_eq!(
+            resize_at_location(
+                Location::Pointer,
+                (1800.0, 40.0),
+                (100.0, 100.0),
+                (200.0, 100.0),
+                output
+            ),
+            (1720.0, 40.0)
         );
     }
 

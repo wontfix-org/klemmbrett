@@ -209,7 +209,8 @@ pub use activate_api::{
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
     config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
-    KeySpec, Miss, MultiSelect, PopupConfig, SelectAction, Transform, WidgetConfig,
+    KeySpec, Miss, MultiSelect, PopupConfig, SelectAction, ThemeSwitch, Transform, WidgetConfig,
+    DEFAULT_THEME_NAME,
 };
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
@@ -219,8 +220,8 @@ pub use launch::{running_as_systemd_unit, spawn_detached, Launch, ResolvedLaunch
 pub use outputs::{focused_display_index, logical_output_positions, output_layout, OutputLayout};
 pub use popup::{
     accelerator_for, activation_records, filter_records, index_for_accelerator, menu_item_spec,
-    place_at_location, place_on_outputs, position_on_outputs, toggle_record, MenuItemSpec,
-    OutputGeom,
+    place_at_location, place_on_outputs, position_on_outputs, resize_at_location, toggle_record,
+    MenuItemSpec, OutputGeom,
 };
 pub use theme::{
     parse_document, parse_theme, Edges, HclDocument, HclValue, Location, Orientation, Presentation,
