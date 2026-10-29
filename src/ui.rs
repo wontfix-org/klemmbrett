@@ -158,6 +158,27 @@ impl Klemmbrett {
     }
 
     fn select_record(&mut self, widget: &str, key: &str, label: &str, value: &str) {
+        let actions = self.widgets.actions(widget).unwrap_or_default().to_vec();
+        self.run_actions(widget, &actions, key, label, value);
+    }
+
+    fn highlight_record(&mut self, widget: &str, record: &Record) {
+        let actions = self
+            .widgets
+            .highlight_actions(widget)
+            .unwrap_or_default()
+            .to_vec();
+        self.run_actions(widget, &actions, &record.key, &record.label, &record.value);
+    }
+
+    fn run_actions(
+        &mut self,
+        widget: &str,
+        actions: &[SelectAction],
+        key: &str,
+        label: &str,
+        value: &str,
+    ) {
         let mut value = value.to_owned();
         if let Some(transforms) = self.widgets.transforms(widget) {
             for transform in transforms {
@@ -170,8 +191,7 @@ impl Klemmbrett {
                 }
             }
         }
-        let actions = self.widgets.actions(widget).unwrap_or_default().to_vec();
-        for action in &actions {
+        for action in actions {
             match action {
                 SelectAction::CopyToClipboard => self.restore(&value),
                 launch @ SelectAction::Launch { .. } => {
@@ -474,6 +494,8 @@ struct PopupView {
     seen_active: bool,
     scroll: UniformListScrollHandle,
     checked: Vec<Record>,
+    /// Key of the row highlight actions last ran for (or the row the popup opened on).
+    highlighted: Option<String>,
     reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
 }
 
@@ -485,6 +507,7 @@ impl PopupView {
         widget: String,
         cx: &mut Context<Self>,
     ) -> Self {
+        let highlighted = entries.first().map(|record| record.key.clone());
         Self {
             focus_handle: cx.focus_handle(),
             app,
@@ -500,6 +523,7 @@ impl PopupView {
             seen_active: false,
             scroll: UniformListScrollHandle::new(),
             checked: Vec::new(),
+            highlighted,
             reply: None,
         }
     }
@@ -528,6 +552,7 @@ impl PopupView {
     ) {
         self.finish_prompt(Ok(Vec::new()));
         self.reply = reply;
+        self.highlighted = entries.first().map(|record| record.key.clone());
         self.entries = entries;
         self.card = placement.card;
         self.theme = placement.theme.clone();
@@ -638,6 +663,7 @@ impl PopupView {
             "backspace" if filter => {
                 self.query.pop();
                 self.clamp_selection();
+                self.sync_highlight(cx);
                 cx.notify();
                 cx.stop_propagation();
                 return;
@@ -652,6 +678,7 @@ impl PopupView {
             if let Some(ch) = typed_filter_char(event) {
                 self.query.push(ch);
                 self.clamp_selection();
+                self.sync_highlight(cx);
                 cx.notify();
                 cx.stop_propagation();
             }
@@ -688,7 +715,30 @@ impl PopupView {
         self.selected = (self.selected as i32 + delta).rem_euclid(count) as usize;
         self.scroll
             .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+        self.sync_highlight(cx);
         cx.notify();
+    }
+
+    /// Runs the widget's highlight actions when the selected row changes.
+    /// `Prompt` popups only return values, so they skip them like other actions.
+    fn sync_highlight(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self
+            .visible_entries()
+            .get(self.selected)
+            .map(|record| (*record).clone())
+        else {
+            return;
+        };
+        if self.highlighted.as_deref() == Some(record.key.as_str()) {
+            return;
+        }
+        self.highlighted = Some(record.key.clone());
+        if self.reply.is_some() {
+            return;
+        }
+        let widget = self.widget_name.clone();
+        self.app
+            .update(cx, |app, _cx| app.highlight_record(&widget, &record));
     }
 
     fn widget_multi(&self, cx: &Context<Self>) -> Option<klemmbrett::MultiSelect> {

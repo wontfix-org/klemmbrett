@@ -88,6 +88,11 @@ widget "links" "file" {
 }
 ```
 
+`highlight_action = "name"` runs one action, after the widget's transforms,
+each time the keyboard selection (arrow keys, Tab, or typing into the
+filter) lands on a different row. The row the popup opens on does not
+trigger it, and `prompt` skips it like other actions.
+
 ### clipboard-history
 
 ```hcl

@@ -269,6 +269,7 @@ pub enum WidgetConfig {
         skip_whitespace_only: bool,
         presentation: Presentation,
         actions: Vec<SelectAction>,
+        highlight: Vec<SelectAction>,
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
@@ -278,6 +279,7 @@ pub enum WidgetConfig {
         format: FileFormat,
         presentation: Presentation,
         actions: Vec<SelectAction>,
+        highlight: Vec<SelectAction>,
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
@@ -285,6 +287,7 @@ pub enum WidgetConfig {
         name: String,
         presentation: Presentation,
         actions: Vec<SelectAction>,
+        highlight: Vec<SelectAction>,
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
@@ -292,6 +295,7 @@ pub enum WidgetConfig {
         name: String,
         presentation: Presentation,
         actions: Vec<SelectAction>,
+        highlight: Vec<SelectAction>,
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
@@ -300,60 +304,48 @@ pub enum WidgetConfig {
         name: String,
         presentation: Presentation,
         actions: Vec<SelectAction>,
+        highlight: Vec<SelectAction>,
         transforms: Vec<Transform>,
         multi: Option<MultiSelect>,
     },
 }
 
+macro_rules! widget_field {
+    ($self:expr, $field:ident) => {
+        match $self {
+            WidgetConfig::ClipboardHistory { $field, .. }
+            | WidgetConfig::File { $field, .. }
+            | WidgetConfig::Executables { $field, .. }
+            | WidgetConfig::WaylandWindows { $field, .. }
+            | WidgetConfig::OnDemand { $field, .. } => $field,
+        }
+    };
+}
+
 impl WidgetConfig {
     pub fn name(&self) -> &str {
-        match self {
-            Self::ClipboardHistory { name, .. }
-            | Self::File { name, .. }
-            | Self::Executables { name, .. }
-            | Self::WaylandWindows { name, .. }
-            | Self::OnDemand { name, .. } => name,
-        }
+        widget_field!(self, name)
     }
 
     pub fn presentation(&self) -> &Presentation {
-        match self {
-            Self::ClipboardHistory { presentation, .. }
-            | Self::File { presentation, .. }
-            | Self::Executables { presentation, .. }
-            | Self::WaylandWindows { presentation, .. }
-            | Self::OnDemand { presentation, .. } => presentation,
-        }
+        widget_field!(self, presentation)
     }
 
     pub fn actions(&self) -> &[SelectAction] {
-        match self {
-            Self::ClipboardHistory { actions, .. }
-            | Self::File { actions, .. }
-            | Self::Executables { actions, .. }
-            | Self::WaylandWindows { actions, .. }
-            | Self::OnDemand { actions, .. } => actions,
-        }
+        widget_field!(self, actions)
+    }
+
+    /// Actions run on the row the keyboard selection moves to.
+    pub fn highlight(&self) -> &[SelectAction] {
+        widget_field!(self, highlight)
     }
 
     pub fn transforms(&self) -> &[Transform] {
-        match self {
-            Self::ClipboardHistory { transforms, .. }
-            | Self::File { transforms, .. }
-            | Self::Executables { transforms, .. }
-            | Self::WaylandWindows { transforms, .. }
-            | Self::OnDemand { transforms, .. } => transforms,
-        }
+        widget_field!(self, transforms)
     }
 
     pub fn multi(&self) -> Option<&MultiSelect> {
-        match self {
-            Self::ClipboardHistory { multi, .. }
-            | Self::File { multi, .. }
-            | Self::Executables { multi, .. }
-            | Self::WaylandWindows { multi, .. }
-            | Self::OnDemand { multi, .. } => multi.as_ref(),
-        }
+        widget_field!(self, multi).as_ref()
     }
 }
 
@@ -491,6 +483,18 @@ fn parse_launch(value: &HclValue) -> Result<Launch, String> {
     }
 }
 
+/// Properties every widget accepts, whatever its provider.
+const WIDGET_PROPERTIES: &[&str] = &[
+    "layout",
+    "theme",
+    "location",
+    "action",
+    "highlight_action",
+    "multi",
+    "select",
+    "deselect",
+];
+
 fn widget_from_raw(
     raw: RawWidget,
     doc: &HclDocument,
@@ -509,6 +513,7 @@ fn widget_from_raw(
         doc,
         base_dir,
     )?;
+    let highlight = parse_highlight_action(&name, &raw.properties, actions)?;
     let actions = parse_select_actions(&name, &raw.properties, &raw.actions, actions)?;
     let transforms = resolve_transforms(&name, &raw.transforms, named_transforms)?;
     let actions = if actions.is_empty() {
@@ -519,26 +524,18 @@ fn widget_from_raw(
     } else {
         actions
     };
-    match provider.as_deref() {
+    let allow = |extra: &[&str]| {
+        let allowed = [extra, WIDGET_PROPERTIES].concat();
+        reject_unknown("widget", &name, &raw.properties, &allowed)
+    };
+    let widget = match provider.as_deref() {
         Some("clipboard-history") => {
-            reject_unknown(
-                "widget",
-                &name,
-                &raw.properties,
-                &[
-                    "db",
-                    "history_limit",
-                    "coalesce_growing",
-                    "skip_whitespace_only",
-                    "layout",
-                    "theme",
-                    "location",
-                    "action",
-                    "multi",
-                    "select",
-                    "deselect",
-                ],
-            )?;
+            allow(&[
+                "db",
+                "history_limit",
+                "coalesce_growing",
+                "skip_whitespace_only",
+            ])?;
             let history_limit =
                 optional_usize(&raw.properties, "history_limit")?.unwrap_or(DEFAULT_HISTORY_LIMIT);
             if history_limit == 0 {
@@ -549,7 +546,7 @@ fn widget_from_raw(
             let mut db = optional_path(&raw.properties, "db")?;
             let path = db.get_or_insert_with(default_db_path);
             resolve_relative(path, base_dir);
-            Ok(WidgetConfig::ClipboardHistory {
+            WidgetConfig::ClipboardHistory {
                 name,
                 db,
                 history_limit,
@@ -559,27 +556,13 @@ fn widget_from_raw(
                     .unwrap_or(DEFAULT_SKIP_WHITESPACE_ONLY),
                 presentation,
                 actions,
+                highlight,
                 transforms,
                 multi,
-            })
+            }
         }
         Some("file") => {
-            reject_unknown(
-                "widget",
-                &name,
-                &raw.properties,
-                &[
-                    "path",
-                    "format",
-                    "layout",
-                    "theme",
-                    "location",
-                    "action",
-                    "multi",
-                    "select",
-                    "deselect",
-                ],
-            )?;
+            allow(&["path", "format"])?;
             let mut path = required_path(&name, &raw.properties, "path")?;
             resolve_relative(&mut path, base_dir);
             let format_name = raw
@@ -589,88 +572,69 @@ fn widget_from_raw(
                 .ok_or_else(|| format!("widget {name:?}: format is required"))?;
             let format = FileFormat::parse(&format_name)
                 .map_err(|err| format!("widget {name:?}: {err}"))?;
-            Ok(WidgetConfig::File {
+            WidgetConfig::File {
                 name,
                 path,
                 format,
                 presentation,
                 actions,
+                highlight,
                 transforms,
                 multi,
-            })
+            }
         }
         Some("executables") => {
-            reject_unknown(
-                "widget",
-                &name,
-                &raw.properties,
-                &[
-                    "layout",
-                    "theme",
-                    "location",
-                    "action",
-                    "multi",
-                    "select",
-                    "deselect",
-                ],
-            )?;
-            Ok(WidgetConfig::Executables {
+            allow(&[])?;
+            WidgetConfig::Executables {
                 name,
                 presentation,
                 actions,
+                highlight,
                 transforms,
                 multi,
-            })
+            }
         }
         Some("wayland-windows") => {
-            reject_unknown(
-                "widget",
-                &name,
-                &raw.properties,
-                &[
-                    "layout",
-                    "theme",
-                    "location",
-                    "action",
-                    "multi",
-                    "select",
-                    "deselect",
-                ],
-            )?;
-            Ok(WidgetConfig::WaylandWindows {
+            allow(&[])?;
+            WidgetConfig::WaylandWindows {
                 name,
                 presentation,
                 actions,
+                highlight,
                 transforms,
                 multi,
-            })
+            }
         }
-        Some(other) => Err(format!(
-            "widget {name:?}: unknown provider {other}; expected clipboard-history, file, executables, or wayland-windows"
-        )),
+        Some(other) => {
+            return Err(format!(
+                "widget {name:?}: unknown provider {other}; expected clipboard-history, file, executables, or wayland-windows"
+            ))
+        }
         None => {
-            reject_unknown(
-                "widget",
-                &name,
-                &raw.properties,
-                &[
-                    "layout",
-                    "theme",
-                    "location",
-                    "action",
-                    "multi",
-                    "select",
-                    "deselect",
-                ],
-            )?;
-            Ok(WidgetConfig::OnDemand {
+            allow(&[])?;
+            WidgetConfig::OnDemand {
                 name,
                 presentation,
                 actions,
+                highlight,
                 transforms,
                 multi,
-            })
+            }
         }
+    };
+    Ok(widget)
+}
+
+fn parse_highlight_action(
+    widget: &str,
+    properties: &BTreeMap<String, HclValue>,
+    actions: &BTreeMap<String, SelectAction>,
+) -> Result<Vec<SelectAction>, String> {
+    match optional_name(properties, "highlight_action")? {
+        None => Ok(Vec::new()),
+        Some(name) => resolve_action_name(&name, actions)
+            .map(|action| vec![action])
+            .map_err(|err| format!("widget {widget:?}: highlight_action: {err}")),
     }
 }
 
@@ -1579,6 +1543,45 @@ mod tests {
             config.widgets[1],
             WidgetConfig::WaylandWindows { .. }
         ));
+    }
+
+    #[test]
+    fn highlight_action_resolves_a_named_action() {
+        let config = parse_config(
+            r#"
+                widget "pick" {
+                    layout           = "filter"
+                    highlight_action = "notify-send"
+                }
+                widget "history" "clipboard-history" {}
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap();
+        assert_eq!(
+            config.widgets[0].highlight(),
+            [SelectAction::shipped_notify_send()].as_slice()
+        );
+        assert_eq!(
+            config.widgets[0].actions(),
+            [SelectAction::CopyToClipboard].as_slice()
+        );
+        assert!(config.widgets[1].highlight().is_empty());
+    }
+
+    #[test]
+    fn unknown_highlight_action_is_rejected() {
+        let error = parse_config(
+            r#"
+                widget "pick" {
+                    highlight_action = "preview"
+                }
+            "#,
+            Path::new("/config"),
+        )
+        .unwrap_err();
+        assert!(error.contains("highlight_action"), "{error}");
+        assert!(error.contains("unknown action preview"), "{error}");
     }
 
     #[test]
