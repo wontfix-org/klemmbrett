@@ -19,10 +19,10 @@ use gpui::{
 };
 use klemmbrett::{
     activation_records, filter_records, focused_display_index, history_candidate,
-    index_for_accelerator, menu_item_spec, output_layout, place_at_location, run_transform,
-    run_waited_command, spawn_detached, toggle_record, ArboardBackend, Backend, ClipboardSync,
-    Edges, Launch, Location, Orientation, OutputGeom, Record, ResolvedLaunch, SelectAction,
-    Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
+    index_for_accelerator, menu_item_spec, output_layout, place_at_location, resize_at_location,
+    run_transform, run_waited_command, spawn_detached, toggle_record, ArboardBackend, Backend,
+    ClipboardSync, Edges, Launch, Location, Orientation, OutputGeom, Record, ResolvedLaunch,
+    SelectAction, Selection, Style, Theme, Widget, Widgets, POLL_INTERVAL,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::HashSet;
@@ -162,13 +162,18 @@ impl Klemmbrett {
         self.run_actions(widget, &actions, key, label, value);
     }
 
-    fn highlight_record(&mut self, widget: &str, record: &Record) {
+    /// Returns whether any action ran, so the popup knows to restyle.
+    fn highlight_record(&mut self, widget: &str, record: &Record) -> bool {
         let actions = self
             .widgets
             .highlight_actions(widget)
             .unwrap_or_default()
             .to_vec();
+        if actions.is_empty() {
+            return false;
+        }
         self.run_actions(widget, &actions, &record.key, &record.label, &record.value);
+        true
     }
 
     fn run_actions(
@@ -376,6 +381,7 @@ struct PopupPlacement {
     card: Bounds<Pixels>,
     label_max: usize,
     theme: Theme,
+    location: Location,
 }
 
 fn popup_placement(
@@ -443,6 +449,7 @@ fn popup_placement(
         ),
         label_max,
         theme: theme.clone(),
+        location,
     })
 }
 
@@ -490,6 +497,8 @@ struct PopupView {
     query: String,
     display_id: DisplayId,
     card: Bounds<Pixels>,
+    location: Location,
+    output_size: gpui::Size<Pixels>,
     visible: bool,
     seen_active: bool,
     scroll: UniformListScrollHandle,
@@ -519,6 +528,8 @@ impl PopupView {
             query: String::new(),
             display_id: placement.display_id,
             card: placement.card,
+            location: placement.location,
+            output_size: placement.output_size,
             visible: false,
             seen_active: false,
             scroll: UniformListScrollHandle::new(),
@@ -555,6 +566,8 @@ impl PopupView {
         self.highlighted = entries.first().map(|record| record.key.clone());
         self.entries = entries;
         self.card = placement.card;
+        self.location = placement.location;
+        self.output_size = placement.output_size;
         self.theme = placement.theme.clone();
         self.label_max = placement.label_max;
         self.widget_name = widget.to_owned();
@@ -737,8 +750,37 @@ impl PopupView {
             return;
         }
         let widget = self.widget_name.clone();
-        self.app
-            .update(cx, |app, _cx| app.highlight_record(&widget, &record));
+        let theme = self.app.update(cx, |app, _cx| {
+            if !app.highlight_record(&widget, &record) {
+                return None;
+            }
+            app.widgets
+                .presentation(&widget)
+                .map(|presentation| presentation.theme.clone())
+        });
+        if let Some(theme) = theme {
+            self.restyle(theme);
+        }
+    }
+
+    fn restyle(&mut self, theme: Theme) {
+        if theme == self.theme {
+            return;
+        }
+        let (width, height) = theme.card_size(self.entries.len(), self.label_max);
+        let old = self.card;
+        let (x, y) = resize_at_location(
+            self.location,
+            (f32::from(old.origin.x), f32::from(old.origin.y)),
+            (f32::from(old.size.width), f32::from(old.size.height)),
+            (width, height),
+            (
+                f32::from(self.output_size.width),
+                f32::from(self.output_size.height),
+            ),
+        );
+        self.card = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
+        self.theme = theme;
     }
 
     fn widget_multi(&self, cx: &Context<Self>) -> Option<klemmbrett::MultiSelect> {

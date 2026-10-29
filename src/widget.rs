@@ -4,11 +4,13 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
-use crate::config::{Config, FileFormat, MultiSelect, SelectAction, Transform, WidgetConfig};
+use crate::config::{
+    Config, FileFormat, MultiSelect, SelectAction, ThemeSwitch, Transform, WidgetConfig,
+};
 use crate::executables::executables_on_path;
 use crate::theme::Presentation;
 use crate::windows::WindowList;
-use crate::{default_db_path, HistoryStore};
+use crate::{default_db_path, HistoryStore, Theme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -57,6 +59,7 @@ impl From<SerializedRecord> for Record {
 pub struct Widgets {
     entries: Vec<NamedWidget>,
     windows: Option<WindowList>,
+    themes: ThemeSwitch,
 }
 
 struct NamedWidget {
@@ -136,7 +139,11 @@ impl Widgets {
             });
         }
 
-        let widgets = Self { entries, windows };
+        let widgets = Self {
+            entries,
+            windows,
+            themes: config.themes.clone(),
+        };
         // Validate file readability, format, and keys at startup. Files are
         // still reloaded when opened so changes do not require a restart.
         for entry in &widgets.entries {
@@ -196,6 +203,18 @@ impl Widgets {
             .iter()
             .find(|entry| entry.name == name)
             .map(|entry| entry.highlight.as_slice())
+    }
+
+    /// Rebuilds every widget presentation with `palette` as the file-wide
+    /// theme and returns the new popup theme. Nothing changes on error.
+    pub fn set_theme(&mut self, palette: &str) -> Result<Theme, String> {
+        let (theme, presentations) = self.themes.apply(palette)?;
+        for (name, presentation) in presentations {
+            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) {
+                entry.presentation = presentation;
+            }
+        }
+        Ok(theme)
     }
 
     pub fn transforms(&self, name: &str) -> Option<&[Transform]> {
@@ -731,6 +750,28 @@ mod tests {
             widgets.highlight_actions("pick"),
             Some([SelectAction::CopyToClipboard].as_slice())
         );
+    }
+
+    #[test]
+    fn set_theme_restyles_every_widget_or_nothing() {
+        let config = parse_config(
+            r#"
+                widget "pick" {
+                    layout = "filter"
+                }
+            "#,
+            std::path::Path::new("/config"),
+        )
+        .unwrap();
+        let mut widgets = Widgets::from_config(&config).unwrap();
+        let before = widgets.presentation("pick").unwrap().clone();
+        let theme = widgets.set_theme("nord").unwrap();
+        let after = widgets.presentation("pick").unwrap().clone();
+        assert_ne!(before.theme, after.theme);
+        assert_eq!(after.theme.window().background, theme.window().background);
+        assert!(after.theme.has_inputbar());
+        assert!(widgets.set_theme("missing").is_err());
+        assert_eq!(widgets.presentation("pick").unwrap(), &after);
     }
 
     #[test]
