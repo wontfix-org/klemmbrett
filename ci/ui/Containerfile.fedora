@@ -1,0 +1,17 @@
+# UI placement test image: Fedora with whichever of the tested compositors
+# it packages. Missing ones are skipped by the test.
+FROM registry.fedoraproject.org/fedora:latest
+
+RUN dnf install -y --setopt=install_weak_deps=False \
+        gcc pkgconf-pkg-config rustup \
+        wayland-devel libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel \
+        fontconfig-devel freetype-devel \
+        vulkan-loader-devel mesa-vulkan-drivers dejavu-sans-fonts \
+        dbus-daemon wlr-randr sway \
+    && dnf install -y --setopt=install_weak_deps=False --skip-unavailable \
+        river qtile qtile-wayland cosmic-comp \
+    && dnf clean all
+
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN rustup-init -y --profile minimal --no-modify-path \
+    && chmod -R a+rX /opt/rustup /opt/cargo

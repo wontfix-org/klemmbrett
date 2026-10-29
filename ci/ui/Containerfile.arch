@@ -1,0 +1,13 @@
+# UI placement test image: Arch Linux with sway, river, qtile and COSMIC.
+FROM docker.io/archlinux:latest
+
+RUN pacman -Syu --noconfirm --needed \
+        base-devel rustup pkgconf \
+        wayland libxkbcommon libxkbcommon-x11 libxcb fontconfig freetype2 \
+        vulkan-icd-loader vulkan-swrast mesa ttf-dejavu \
+        dbus wlr-randr \
+        sway river qtile cosmic-comp \
+    && pacman -Scc --noconfirm
+
+ENV RUSTUP_HOME=/opt/rustup
+RUN rustup default stable && chmod -R a+rX /opt/rustup

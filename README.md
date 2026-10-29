@@ -37,6 +37,10 @@ sudo apt install \
 cargo build --release
 ```
 
+`cargo test` also runs end-to-end tests against private headless
+compositors when they are installed. To check where the popup lands on
+several compositors and distros, see [`docs/ui-tests.md`](docs/ui-tests.md).
+
 ## Run
 
 ```sh
