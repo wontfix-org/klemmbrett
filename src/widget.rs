@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use crate::config::{
     Config, FileFormat, MultiSelect, SelectAction, ThemeSwitch, Transform, WidgetConfig,
+    DEFAULT_THEME_NAME,
 };
 use crate::executables::executables_on_path;
-use crate::theme::Presentation;
+use crate::theme::{shipped_theme_names, Presentation};
 use crate::windows::WindowList;
 use crate::{default_db_path, HistoryStore, Theme};
 
@@ -78,6 +79,7 @@ enum Provider {
     File(FileSource),
     Executables,
     WaylandWindows,
+    Themes,
 }
 
 struct FileSource {
@@ -126,6 +128,7 @@ impl Widgets {
                 })),
                 WidgetConfig::Executables { .. } => Some(Provider::Executables),
                 WidgetConfig::WaylandWindows { .. } => Some(Provider::WaylandWindows),
+                WidgetConfig::Themes { .. } => Some(Provider::Themes),
                 WidgetConfig::OnDemand { .. } => None,
             };
             entries.push(NamedWidget {
@@ -262,6 +265,7 @@ impl Widgets {
                 .as_ref()
                 .ok_or_else(|| "wayland window list is not running".to_string())?
                 .records()?,
+            Provider::Themes => theme_records(),
         };
         validate_records(name, &records)?;
         Ok(records)
@@ -284,6 +288,13 @@ impl Widgets {
         }
         Ok(())
     }
+}
+
+fn theme_records() -> Vec<Record> {
+    std::iter::once(DEFAULT_THEME_NAME)
+        .chain(shipped_theme_names())
+        .map(Record::new)
+        .collect()
 }
 
 impl FileSource {
@@ -772,6 +783,29 @@ mod tests {
         assert!(after.theme.has_inputbar());
         assert!(widgets.set_theme("missing").is_err());
         assert_eq!(widgets.presentation("pick").unwrap(), &after);
+    }
+
+    #[test]
+    fn themes_widget_lists_default_then_shipped_palettes() {
+        let config = parse_config(
+            r#"widget "themes" "themes" {}"#,
+            std::path::Path::new("/config"),
+        )
+        .unwrap();
+        let widgets = Widgets::from_config(&config).unwrap();
+        let keys: Vec<_> = widgets
+            .records("themes")
+            .unwrap()
+            .into_iter()
+            .map(|record| record.key)
+            .collect();
+        assert_eq!(keys.first().map(String::as_str), Some("default"));
+        assert!(keys.iter().any(|key| key == "nord"), "{keys:?}");
+        assert_eq!(keys.len(), 1 + shipped_theme_names().count());
+        assert_eq!(
+            widgets.actions("themes"),
+            Some([SelectAction::SetTheme].as_slice())
+        );
     }
 
     #[test]

@@ -224,8 +224,8 @@ pub use popup::{
     MenuItemSpec, OutputGeom,
 };
 pub use theme::{
-    parse_document, parse_theme, Edges, HclDocument, HclValue, Location, Orientation, Presentation,
-    RawWidget, Rgba, Style, Theme, Widget,
+    parse_document, parse_theme, shipped_theme_names, Edges, HclDocument, HclValue, Location,
+    Orientation, Presentation, RawWidget, Rgba, Style, Theme, Widget,
 };
 pub use transform::{run_transform, run_waited_command};
 pub use widget::{parse_records, validate_records, Record, Widgets};
