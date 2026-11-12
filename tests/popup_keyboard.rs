@@ -6,6 +6,8 @@
 //! interactivity instead. Only a real compositor can show whether that works,
 //! so this drives a private headless sway and types into it.
 
+mod common;
+
 use klemmbrett::{
     request_show_on, ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME,
 };
@@ -159,18 +161,24 @@ impl Session {
     }
 
     fn start_app(&mut self, db: &std::path::Path) {
-        let config = self.runtime_dir.join("config.hcl");
+        let config = self.runtime_dir.join("config.py");
         fs::write(
             &config,
             format!(
-                "widget \"history\" \"clipboard-history\" {{\n    db   = {:?}\n}}\n",
-                db
+                "import klemmbrett as kb\n\
+                 from klemmbrett import providers\n\
+                 kb.widget(\"history\", providers.ClipboardHistory(path={:?}))\n",
+                db.to_str().expect("utf-8 db path")
             ),
         )
         .expect("write app config");
         let log = fs::File::create(self.runtime_dir.join("app.log")).expect("create app log");
-        let app = self
-            .command(env!("CARGO_BIN_EXE_klemmbrett"))
+        let mut app = common::daemon_command();
+        app.env("XDG_RUNTIME_DIR", &self.runtime_dir)
+            .env("WAYLAND_DISPLAY", &self.socket)
+            .env("DBUS_SESSION_BUS_ADDRESS", &self.bus_address)
+            .env_remove("DISPLAY");
+        let app = app
             .arg("--config")
             .arg(config)
             .stdout(log.try_clone().expect("clone log handle"))

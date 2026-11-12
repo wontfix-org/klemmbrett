@@ -7,7 +7,7 @@ Wayland windows to switch to.
 
 A GPUI popup lists a configured widget. Entries longer than a configurable length are
 shown shortened. A widget can pack either today's accelerator menu or a
-filter: `layout: filter` adds an input bar and types into a case-insensitive
+filter: `layout=layouts.filter` adds an input bar and types into a case-insensitive
 label filter; without that, the first 35 items can be chosen with accelerator keys
 (`1`–`9`, then `a`–`z`). `Up`/`Down` and `Enter` also work, and `Escape`
 closes the popup. A StatusNotifierItem tray icon has a Widgets submenu.
@@ -21,9 +21,11 @@ which a D-Bus trigger does not have. Any compositor implementing
 `wlr-layer-shell` works, including sway, Hyprland, river, niri, wayfire,
 labwc, and qtile's Wayland backend. GNOME does not implement it.
 
-## Build
+## Install
 
-Debian/Trixie packages needed in addition to a Rust toolchain (1.95 or newer):
+klemmbrett is a Python package with a Rust extension. It needs Python 3.11
+or newer at runtime. To build it you also need a Rust toolchain (1.95 or
+newer) and, on Debian/Trixie:
 
 ```sh
 sudo apt install \
@@ -33,13 +35,19 @@ sudo apt install \
     pkg-config
 ```
 
+Install the `klemmbrett` command from a checkout:
+
 ```sh
-cargo build --release
+uv tool install .        # or: pipx install .
 ```
 
+For development, `just dev` builds the extension into `.venv` with
+`maturin develop`, and `just test` runs `cargo test` and `pytest`.
 `cargo test` also runs end-to-end tests against private headless
-compositors when they are installed. To check where the popup lands on
-several compositors and distros, see [`docs/ui-tests.md`](docs/ui-tests.md).
+compositors when they are installed. Those tests build `klemmbrett-py` and
+run the package with `python3 -m klemmbrett`; set `KLEMMBRETT_BIN` to test an
+installed `klemmbrett` instead. To check where the popup lands on several
+compositors and distros, see [`docs/ui-tests.md`](docs/ui-tests.md).
 
 ## Run
 
@@ -50,7 +58,7 @@ klemmbrett
 To use a different configuration file:
 
 ```sh
-klemmbrett --config /path/to/config.hcl
+klemmbrett --config /path/to/config.py
 ```
 
 Install a systemd user unit bound to `graphical-session.target` so the
@@ -68,7 +76,9 @@ pulled in by `graphical-session.target` so history is recorded from
 login. The D-Bus file is a fallback: a `Show` call still starts the
 unit if the bus name is missing. If this process can see
 `WAYLAND_DISPLAY`, that value is imported into the systemd user manager.
-Pass `--config` as well to pin that file in `ExecStart`.
+`ExecStart` is the `klemmbrett` script you ran (or `python -m klemmbrett`
+with the same interpreter). Pass `--config` as well to pin that file in
+`ExecStart`.
 
 To open a configured widget without spelling out `busctl`:
 
@@ -83,11 +93,12 @@ printf '%s\n' one two | klemmbrett prompt snippets -
 `-x` and `-y` are compositor global coordinates. Omit both when there is
 no pointer: the popup uses the output of the keyboard-focused window, then
 the primary output, then the first output. The running daemon (or D-Bus
-activation) still serves the request.
+activation) still serves the request. `show` and `prompt` never read the
+configuration.
 
 A positional path replaces the widget provider. `-` reads that input from
 stdin. `--format text|json|yaml` selects the record format and defaults to
-`text`. The formats are the same ones a `file` widget accepts. Omitting the
+`text`. The formats are the same ones a `File` provider reads. Omitting the
 path uses the widget's provider. A widget configured without a provider has
 no records of its own, so `show` and `prompt` must pass a path or `-`.
 `prompt` uses the same arguments, blocks until the popup closes, and prints
@@ -95,82 +106,77 @@ each selected value on its own line. Cancelling prints nothing and exits 1.
 
 ## Configuration
 
-The default file is `$XDG_CONFIG_HOME/klemmbrett/config.hcl` (normally
-`~/.config/klemmbrett/config.hcl`). If it is missing, clipboard/primary
-sync still runs, but no popup widgets or history database are created. A
-leftover `config.toml` in that directory is rejected with a convert hint.
+The configuration is a Python file, `$XDG_CONFIG_HOME/klemmbrett/config.py`
+(normally `~/.config/klemmbrett/config.py`). If it is missing, clipboard and
+primary sync still run, but there are no popup widgets or history. A
+leftover `config.hcl` or `config.toml` in that directory is rejected with a
+hint to convert it.
 
-```hcl
-configuration {
-  label_max = 64
-  launch    = "auto"
-}
+```python
+import subprocess
 
-theme "nord" {}
+import klemmbrett as kb
+from klemmbrett import layouts, providers, themes
 
-widget "history" "clipboard-history" {
-  layout   = "filter"
-}
+kb.configure(label_max=64, launch="auto", theme=themes.nord)
 
-widget "snippets" "file" {
-  path     = "snippets.yaml"
-  format   = "yaml"
-  action   = "xdg-open"
-}
+kb.widget("history", providers.ClipboardHistory(), layout=layouts.filter)
+kb.widget("run", providers.Executables(), layout=layouts.filter)
+kb.widget("windows", providers.WaylandWindows(), layout=layouts.filter)
+kb.widget("pick", layout=layouts.filter)
 
-widget "run" "executables" {
-  layout   = "filter"
-}
-
-widget "windows" "wayland-windows" {
-  layout   = "filter"
-}
-
-widget "pick" {
-  layout = "filter"
-}
+@kb.widget("snippets", providers.File("snippets.yaml"))
+def snippets(record):
+    kb.copy(record.value)
+    subprocess.run(["notify-send", "Copied", record.label])
 ```
 
 `pick` has no provider. Open it with records, for example
 `printf '%s\n' one two | klemmbrett show pick -`.
 
-Selecting a row runs that widget's transforms, then its actions. `launch`
-defaults to `auto` (`systemd-run --user --scope` when klemmbrett is a
-systemd unit, otherwise a POSIX double-fork). Override with
-`launch = "posix"`, `launch = "systemd-run"`, or a wrapper list.
+Selecting a row calls the widget's `on_select` with the `Record`. Without
+one, the provider decides (`Executables` launches, `WaylandWindows` focuses
+the window), and otherwise the value is copied. Handlers are ordinary Python:
+`subprocess`, `re`, and `json` replace the old transforms and actions.
+`kb.launch` starts detached programs. With `launch="auto"`, that is
+`systemd-run --user --scope` when klemmbrett runs as a systemd unit, and a
+POSIX double fork otherwise. `"posix"`, `"systemd-run"`, or a wrapper list
+such as `["uwsm", "app", "--"]` override it.
 
-Widgets, transforms, and actions are documented in
+Widgets, providers, handlers, and recipes are documented in
 [`docs/widgets.md`](docs/widgets.md).
 
 ## Popup theme
 
-`theme "nord" {}` sets a file-wide palette; `theme = "dracula"` on a widget
-replaces it for that widget. A `themes` widget with the `set-theme` action
-switches the file-wide palette for the running session. `layout = "menu"`, `layout = "filter"`, and `layout = "prompt"` are
-shipped. Catalog, lengths, colors, and packing are in
-[`docs/theming.md`](docs/theming.md).
+`kb.configure(theme=themes.nord)` (or `theme="nord"`) sets the palette for
+every widget, and `kb.widget(..., theme=...)` replaces it for one widget.
+`kb.set_theme(name)` switches the palette while the daemon runs, which the
+`Themes` provider does when a row is picked. `layouts.menu`,
+`layouts.filter`, and `layouts.prompt` are shipped, and a layout can be any
+`ui.Window` tree or a function returning one. Elements, properties, colors,
+and lengths are described in [`docs/theming.md`](docs/theming.md).
 
-```hcl
-theme "nord" {}
+```python
+from klemmbrett.style import Style, Theme
 
-element "selected" { background_color = hex("5e81ac") }
+kb.configure(theme=themes.nord | Theme(element_selected=Style(background_color="#5e81ac")))
 ```
 
-Shipped palettes (`theme "nord" {}` or `theme = "nord"`):
+Shipped palettes (`themes.nord`, `themes.get("tokyo-night")`, or by name):
 
-| File | Palette |
+| Name | Palette |
 | --- | --- |
-| `themes/solarized-dark.hcl` | [Solarized](https://ethanschoonover.com/solarized/) dark (`base03` / `base0`) |
-| `themes/solarized-light.hcl` | Solarized light (`base3` / `base00`) |
-| `themes/nord.hcl` | [Nord](https://www.nordtheme.com/docs/colors-and-palettes) polar night |
-| `themes/gruvbox-dark.hcl` | [Gruvbox](https://github.com/morhetz/gruvbox) dark, medium contrast |
-| `themes/catppuccin-mocha.hcl` | [Catppuccin](https://github.com/catppuccin/palette) Mocha |
-| `themes/dracula.hcl` | [Dracula](https://draculatheme.com) |
-| `themes/tokyo-night.hcl` | [Tokyo Night](https://github.com/tokyo-night/tokyo-night-vscode-theme), rounded card |
-| `themes/rose-pine.hcl` | [Rosé Pine](https://rosepinetheme.com), rounded card |
-| `themes/everforest.hcl` | [Everforest](https://github.com/sainnhe/everforest) dark, rounded card |
-| `themes/kanagawa.hcl` | [Kanagawa](https://github.com/rebelot/kanagawa.nvim) wave, rounded card |
-| `themes/mbra.hcl` | Personal moss-on-black (qtile `#60845b`, Alacritty black) |
+| `solarized-dark` | [Solarized](https://ethanschoonover.com/solarized/) dark (`base03` / `base0`) |
+| `solarized-light` | Solarized light (`base3` / `base00`) |
+| `nord` | [Nord](https://www.nordtheme.com/docs/colors-and-palettes) polar night |
+| `gruvbox-dark` | [Gruvbox](https://github.com/morhetz/gruvbox) dark, medium contrast |
+| `catppuccin-mocha` | [Catppuccin](https://github.com/catppuccin/palette) Mocha |
+| `dracula` | [Dracula](https://draculatheme.com) |
+| `tokyo-night` | [Tokyo Night](https://github.com/tokyo-night/tokyo-night-vscode-theme), rounded card |
+| `rose-pine` | [Rosé Pine](https://rosepinetheme.com), rounded card |
+| `everforest` | [Everforest](https://github.com/sainnhe/everforest) dark, rounded card |
+| `kanagawa` | [Kanagawa](https://github.com/rebelot/kanagawa.nvim) wave, rounded card |
+| `mbra` | Personal moss-on-black (qtile `#60845b`, Alacritty black) |
 
 ## D-Bus
 
@@ -194,9 +200,9 @@ is treated as `center`.
 An empty record array uses the widget provider. A widget with no provider
 rejects that empty array. A non-empty array replaces the provider rows.
 Each dict needs `value`; omitted `key` and `label` become the value.
-`Show` still runs the widget's transforms and actions. `Prompt`
+`Show` still runs the widget's `on_select`. `Prompt`
 blocks until the popup closes and returns the selected values. It does not
-run transforms or actions. Cancelling, or opening another popup, returns
+run handlers. Cancelling, or opening another popup, returns
 an empty array.
 
 ```sh

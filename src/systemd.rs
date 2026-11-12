@@ -1,6 +1,6 @@
 //! Install a systemd user unit and a D-Bus session service file.
 
-use klemmbrett::HISTORY_BUS_NAME;
+use crate::HISTORY_BUS_NAME;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,10 +13,12 @@ const IMPORT_VARS: &[&str] = &[
     "XDG_CURRENT_DESKTOP",
 ];
 
-pub fn install(config: Option<&Path>) -> Result<(), String> {
-    let exec = std::env::current_exe()
-        .and_then(|path| path.canonicalize())
-        .map_err(|err| format!("failed to resolve this executable: {err}"))?;
+/// `exec` is the command that starts klemmbrett, such as the console
+/// script path or `python -m klemmbrett`.
+pub fn install(exec: &[String], config: Option<&Path>) -> Result<(), String> {
+    if exec.is_empty() {
+        return Err("no command to start klemmbrett with".into());
+    }
     let config = config
         .map(|path| {
             path.canonicalize()
@@ -25,11 +27,11 @@ pub fn install(config: Option<&Path>) -> Result<(), String> {
         .transpose()?;
     let config = config.as_deref();
 
-    write_file(&systemd_user_dir(), UNIT_NAME, &unit_file(&exec, config)?)?;
+    write_file(&systemd_user_dir(), UNIT_NAME, &unit_file(exec, config)?)?;
     write_file(
         &dbus_service_dir(),
         &format!("{HISTORY_BUS_NAME}.service"),
-        &dbus_service_file(&exec, config)?,
+        &dbus_service_file(exec, config)?,
     )?;
 
     import_session_environment();
@@ -88,7 +90,7 @@ fn xdg_dir(xdg: Option<&OsStr>, home: Option<&OsStr>, home_fallback: &str) -> Pa
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-pub fn unit_file(exec: &Path, config: Option<&Path>) -> Result<String, String> {
+pub fn unit_file(exec: &[String], config: Option<&Path>) -> Result<String, String> {
     let exec_start = exec_start(exec, config)?;
     Ok(format!(
         "[Unit]\n\
@@ -110,7 +112,7 @@ pub fn unit_file(exec: &Path, config: Option<&Path>) -> Result<String, String> {
     ))
 }
 
-pub fn dbus_service_file(exec: &Path, config: Option<&Path>) -> Result<String, String> {
+pub fn dbus_service_file(exec: &[String], config: Option<&Path>) -> Result<String, String> {
     let exec_start = exec_start(exec, config)?;
     Ok(format!(
         "[D-BUS Service]\n\
@@ -120,29 +122,32 @@ pub fn dbus_service_file(exec: &Path, config: Option<&Path>) -> Result<String, S
     ))
 }
 
-fn exec_start(exec: &Path, config: Option<&Path>) -> Result<String, String> {
-    let mut command = format_exec_arg(exec)?;
+fn exec_start(exec: &[String], config: Option<&Path>) -> Result<String, String> {
+    let mut parts = exec
+        .iter()
+        .map(|part| format_exec_arg(part))
+        .collect::<Vec<_>>();
     if let Some(config) = config {
-        command.push_str(" --config ");
-        command.push_str(&format_exec_arg(config)?);
+        let text = config
+            .to_str()
+            .ok_or_else(|| format!("path {} is not valid UTF-8", config.display()))?;
+        parts.push("--config".into());
+        parts.push(format_exec_arg(text));
     }
-    Ok(command)
+    Ok(parts.join(" "))
 }
 
-fn format_exec_arg(path: &Path) -> Result<String, String> {
-    let text = path
-        .to_str()
-        .ok_or_else(|| format!("path {} is not valid UTF-8", path.display()))?;
+fn format_exec_arg(text: &str) -> String {
     if text
         .chars()
         .any(|ch| ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '\\' | '$' | '%'))
     {
-        Ok(format!(
+        format!(
             "\"{}\"",
             text.replace('\\', "\\\\").replace('"', "\\\"")
-        ))
+        )
     } else {
-        Ok(text.to_owned())
+        text.to_owned()
     }
 }
 
@@ -212,6 +217,20 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
 
+    fn exec(path: &str) -> Vec<String> {
+        vec![path.to_owned()]
+    }
+
+    #[test]
+    fn module_invocations_keep_every_argument() {
+        let unit = unit_file(
+            &["/usr/bin/python3".into(), "-m".into(), "klemmbrett".into()],
+            None,
+        )
+        .unwrap();
+        assert!(unit.contains("ExecStart=/usr/bin/python3 -m klemmbrett\n"));
+    }
+
     #[test]
     fn user_unit_dir_follows_xdg_then_home() {
         assert_eq!(
@@ -238,7 +257,7 @@ mod tests {
 
     #[test]
     fn unit_is_bound_to_the_graphical_session() {
-        let unit = unit_file(Path::new("/usr/bin/klemmbrett"), None).unwrap();
+        let unit = unit_file(&exec("/usr/bin/klemmbrett"), None).unwrap();
         assert!(unit.contains("PartOf=graphical-session.target"));
         assert!(unit.contains("After=graphical-session-pre.target"));
         assert!(unit.contains("WantedBy=graphical-session.target"));
@@ -251,7 +270,7 @@ mod tests {
 
     #[test]
     fn dbus_service_asks_systemd_to_own_the_bus_name() {
-        let service = dbus_service_file(Path::new("/usr/bin/klemmbrett"), None).unwrap();
+        let service = dbus_service_file(&exec("/usr/bin/klemmbrett"), None).unwrap();
         assert!(service.contains(&format!("Name={HISTORY_BUS_NAME}\n")));
         assert!(service.contains("Exec=/usr/bin/klemmbrett\n"));
         assert!(service.contains(&format!("SystemdService={UNIT_NAME}\n")));
@@ -260,22 +279,22 @@ mod tests {
     #[test]
     fn unit_can_pin_a_config_file() {
         let unit = unit_file(
-            Path::new("/usr/bin/klemmbrett"),
-            Some(Path::new("/etc/klemmbrett.hcl")),
+            &exec("/usr/bin/klemmbrett"),
+            Some(Path::new("/etc/klemmbrett.py")),
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.hcl\n"));
+        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
         let service = dbus_service_file(
-            Path::new("/usr/bin/klemmbrett"),
-            Some(Path::new("/etc/klemmbrett.hcl")),
+            &exec("/usr/bin/klemmbrett"),
+            Some(Path::new("/etc/klemmbrett.py")),
         )
         .unwrap();
-        assert!(service.contains("Exec=/usr/bin/klemmbrett --config /etc/klemmbrett.hcl\n"));
+        assert!(service.contains("Exec=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
     }
 
     #[test]
     fn exec_paths_with_spaces_are_quoted() {
-        let unit = unit_file(Path::new("/opt/my apps/klemmbrett"), None).unwrap();
+        let unit = unit_file(&exec("/opt/my apps/klemmbrett"), None).unwrap();
         assert!(unit.contains("ExecStart=\"/opt/my apps/klemmbrett\"\n"));
     }
 }

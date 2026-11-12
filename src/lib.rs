@@ -190,16 +190,20 @@ impl<B: Backend> ClipboardSync<B> {
 }
 
 mod activate_api;
+pub mod cli;
 mod clipboard_history;
-mod config;
+pub mod config;
+mod dbus;
 mod executables;
 mod history;
+pub mod layout;
 mod launch;
 mod outputs;
 mod popup;
-mod theme;
-mod transform;
-mod widget;
+pub mod systemd;
+pub mod theme;
+pub mod ui;
+pub mod widget;
 mod windows;
 
 pub use activate_api::{
@@ -208,15 +212,15 @@ pub use activate_api::{
 };
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
-    config_path_from_env, default_config_path, load_config, parse_config, Config, FileFormat,
-    KeySpec, Miss, MultiSelect, PopupConfig, SelectAction, ThemeSwitch, Transform, WidgetConfig,
-    DEFAULT_THEME_NAME,
+    config_path_from_env, default_config_path, resolve_config_path, AppConfig, KeySpec,
+    MultiSelect,
 };
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
     DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, DEFAULT_SKIP_WHITESPACE_ONLY,
 };
 pub use launch::{running_as_systemd_unit, spawn_detached, Launch, ResolvedLaunch};
+pub use layout::{Layout, LayoutBuilder, LayoutContext, LayoutSpec, Node, NodeKind};
 pub use outputs::{focused_display_index, logical_output_positions, output_layout, OutputLayout};
 pub use popup::{
     accelerator_for, activation_records, filter_records, index_for_accelerator, menu_item_spec,
@@ -224,11 +228,15 @@ pub use popup::{
     MenuItemSpec, OutputGeom,
 };
 pub use theme::{
-    parse_document, parse_theme, shipped_theme_names, Edges, HclDocument, HclValue, Location,
-    Orientation, Presentation, RawWidget, Rgba, Style, Theme, Widget,
+    cmyk, hsl, hwb, named_color, parse_color, Edges, Location, Orientation, Props, Rgba, State,
+    Style, Theme, ThemeSpec, Widget,
 };
-pub use transform::{run_transform, run_waited_command};
-pub use widget::{parse_records, validate_records, Record, Widgets};
+pub use ui::Runtime;
+pub use widget::{
+    parse_records, validate_records, ClipboardHistorySource, ExecutablesSource, FileFormat,
+    FileSource, Handlers, NoHandlers, Record, RecordSource, StaticSource, WaylandWindowsSource,
+    WidgetDef, Widgets,
+};
 
 #[cfg(target_os = "linux")]
 pub use arboard_backend::ArboardBackend;

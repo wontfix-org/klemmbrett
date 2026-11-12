@@ -1,17 +1,16 @@
-//! Named widgets that provide records for popups.
+//! Named widgets: a record source, a layout, a theme, and behavior.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use crate::config::{
-    Config, FileFormat, MultiSelect, SelectAction, ThemeSwitch, Transform, WidgetConfig,
-    DEFAULT_THEME_NAME,
-};
+use crate::config::MultiSelect;
 use crate::executables::executables_on_path;
-use crate::theme::{shipped_theme_names, Presentation};
+use crate::layout::LayoutSpec;
+use crate::theme::{Location, Theme, ThemeSpec};
 use crate::windows::WindowList;
-use crate::{default_db_path, HistoryStore, Theme};
+use crate::HistoryStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
@@ -57,247 +56,126 @@ impl From<SerializedRecord> for Record {
     }
 }
 
-pub struct Widgets {
-    entries: Vec<NamedWidget>,
-    windows: Option<WindowList>,
-    themes: ThemeSwitch,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFormat {
+    Text,
+    Json,
+    Yaml,
 }
 
-struct NamedWidget {
-    name: String,
-    /// `None` for a widget that only accepts records passed to `Show` or `Prompt`.
-    provider: Option<Provider>,
-    presentation: Presentation,
-    actions: Vec<SelectAction>,
-    highlight: Vec<SelectAction>,
-    transforms: Vec<Transform>,
-    multi: Option<MultiSelect>,
+impl FileFormat {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            "yaml" => Ok(Self::Yaml),
+            other => Err(format!(
+                "unknown format {other}; expected text, json, or yaml"
+            )),
+        }
+    }
+
+    /// `.json` and `.yaml`/`.yml` by extension, otherwise text.
+    pub fn for_path(path: &Path) -> Self {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("json") => Self::Json,
+            Some("yaml" | "yml") => Self::Yaml,
+            _ => Self::Text,
+        }
+    }
 }
 
-enum Provider {
-    ClipboardHistory(HistoryStore),
-    File(FileSource),
-    Executables,
-    WaylandWindows,
-    Themes,
+/// Where a widget's rows come from.
+///
+/// `records` may block: it runs off the UI thread each time the widget opens.
+pub trait RecordSource: Send + Sync {
+    fn records(&self) -> Result<Vec<Record>, String>;
+
+    /// Called with every new clipboard text.
+    fn record_clipboard(&self, _text: &str) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Called once when the daemon starts, before any `records`.
+    fn start(&self) {}
 }
 
-struct FileSource {
+pub struct ClipboardHistorySource {
+    store: Mutex<HistoryStore>,
+}
+
+impl ClipboardHistorySource {
+    pub fn open(
+        path: &Path,
+        limit: usize,
+        coalesce_growing: bool,
+        skip_whitespace_only: bool,
+    ) -> Result<Self, String> {
+        if limit == 0 {
+            return Err("history limit must be greater than zero".into());
+        }
+        let store = HistoryStore::open(path, limit)
+            .map_err(|err| {
+                format!(
+                    "failed to open history database {}: {err}",
+                    path.display()
+                )
+            })?
+            .with_coalesce_growing(coalesce_growing)
+            .with_skip_whitespace_only(skip_whitespace_only);
+        Ok(Self {
+            store: Mutex::new(store),
+        })
+    }
+
+    fn store(&self) -> Result<std::sync::MutexGuard<'_, HistoryStore>, String> {
+        self.store
+            .lock()
+            .map_err(|_| "history lock was poisoned".to_string())
+    }
+}
+
+impl RecordSource for ClipboardHistorySource {
+    /// `key` is the SQLite row id, so the same text can appear twice.
+    fn records(&self) -> Result<Vec<Record>, String> {
+        let rows = self
+            .store()?
+            .rows()
+            .map_err(|err| format!("failed to read history: {err}"))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Record {
+                key: row.id.to_string(),
+                label: row.text.clone(),
+                value: row.text,
+            })
+            .collect())
+    }
+
+    fn record_clipboard(&self, text: &str) -> Result<(), String> {
+        self.store()?
+            .record(text)
+            .map_err(|err| format!("failed to record history: {err}"))
+    }
+}
+
+/// Reloaded every time the widget opens, so edits need no restart.
+pub struct FileSource {
     path: PathBuf,
     format: FileFormat,
 }
 
-impl Widgets {
-    pub fn from_config(config: &Config) -> Result<Self, String> {
-        let windows = config
-            .widgets
-            .iter()
-            .any(|widget| matches!(widget, WidgetConfig::WaylandWindows { .. }))
-            .then(WindowList::start);
-        let mut entries = Vec::with_capacity(config.widgets.len());
-        for widget in &config.widgets {
-            let name = widget.name().to_owned();
-            let presentation = widget.presentation().clone();
-            let actions = widget.actions().to_vec();
-            let highlight = widget.highlight().to_vec();
-            let transforms = widget.transforms().to_vec();
-            let multi = widget.multi().cloned();
-            let provider = match widget {
-                WidgetConfig::ClipboardHistory {
-                    db,
-                    history_limit,
-                    coalesce_growing,
-                    skip_whitespace_only,
-                    ..
-                } => {
-                    let path = db.clone().unwrap_or_else(default_db_path);
-                    let store = HistoryStore::open(&path, *history_limit)
-                        .map_err(|err| {
-                            format!(
-                                "widget {name:?}: failed to open history database {}: {err}",
-                                path.display()
-                            )
-                        })?
-                        .with_coalesce_growing(*coalesce_growing)
-                        .with_skip_whitespace_only(*skip_whitespace_only);
-                    Some(Provider::ClipboardHistory(store))
-                }
-                WidgetConfig::File { path, format, .. } => Some(Provider::File(FileSource {
-                    path: path.clone(),
-                    format: *format,
-                })),
-                WidgetConfig::Executables { .. } => Some(Provider::Executables),
-                WidgetConfig::WaylandWindows { .. } => Some(Provider::WaylandWindows),
-                WidgetConfig::Themes { .. } => Some(Provider::Themes),
-                WidgetConfig::OnDemand { .. } => None,
-            };
-            entries.push(NamedWidget {
-                name,
-                provider,
-                presentation,
-                actions,
-                highlight,
-                transforms,
-                multi,
-            });
-        }
-
-        let widgets = Self {
-            entries,
-            windows,
-            themes: config.themes.clone(),
-        };
-        // Validate file readability, format, and keys at startup. Files are
-        // still reloaded when opened so changes do not require a restart.
-        for entry in &widgets.entries {
-            if matches!(entry.provider, Some(Provider::File(_))) {
-                widgets.records(&entry.name)?;
-            }
-        }
-        Ok(widgets)
-    }
-
-    pub fn names(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .map(|entry| entry.name.clone())
-            .collect()
-    }
-
-    /// Widgets the tray can open. On-demand widgets need records from the caller.
-    pub fn names_with_provider(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.provider.is_some())
-            .map(|entry| entry.name.clone())
-            .collect()
-    }
-
-    pub fn names_without_provider(&self) -> Vec<String> {
-        self.entries
-            .iter()
-            .filter(|entry| entry.provider.is_none())
-            .map(|entry| entry.name.clone())
-            .collect()
-    }
-
-    pub fn requires_records(&self, name: &str) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.name == name && entry.provider.is_none())
-    }
-
-    pub fn presentation(&self, name: &str) -> Option<&Presentation> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .map(|entry| &entry.presentation)
-    }
-
-    pub fn actions(&self, name: &str) -> Option<&[SelectAction]> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .map(|entry| entry.actions.as_slice())
-    }
-
-    pub fn highlight_actions(&self, name: &str) -> Option<&[SelectAction]> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .map(|entry| entry.highlight.as_slice())
-    }
-
-    /// Rebuilds every widget presentation with `palette` as the file-wide
-    /// theme and returns the new popup theme. Nothing changes on error.
-    pub fn set_theme(&mut self, palette: &str) -> Result<Theme, String> {
-        let (theme, presentations) = self.themes.apply(palette)?;
-        for (name, presentation) in presentations {
-            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.name == name) {
-                entry.presentation = presentation;
-            }
-        }
-        Ok(theme)
-    }
-
-    pub fn transforms(&self, name: &str) -> Option<&[Transform]> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .map(|entry| entry.transforms.as_slice())
-    }
-
-    pub fn multi(&self, name: &str) -> Option<&MultiSelect> {
-        self.entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .and_then(|entry| entry.multi.as_ref())
-    }
-
-    pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {
-        let entry = self
-            .entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .ok_or_else(|| format!("unknown widget {name:?}"))?;
-        let Some(provider) = &entry.provider else {
-            return Err(format!("widget {name:?} has no provider; pass records"));
-        };
-        let records = match provider {
-            Provider::ClipboardHistory(store) => store
-                .rows()
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(|row| Record {
-                            key: row.id.to_string(),
-                            label: row.text.clone(),
-                            value: row.text,
-                        })
-                        .collect()
-                })
-                .map_err(|err| format!("failed to read history: {err}"))?,
-            Provider::File(file) => file.records()?,
-            Provider::Executables => {
-                executables_on_path(&std::env::var("PATH").unwrap_or_default())
-            }
-            Provider::WaylandWindows => self
-                .windows
-                .as_ref()
-                .ok_or_else(|| "wayland window list is not running".to_string())?
-                .records()?,
-            Provider::Themes => theme_records(),
-        };
-        validate_records(name, &records)?;
-        Ok(records)
-    }
-
-    pub fn activate_window(&self, key: &str) -> Result<(), String> {
-        self.windows
-            .as_ref()
-            .ok_or_else(|| "no wayland-windows widget is configured".to_string())?
-            .activate(key)
-    }
-
-    pub fn record_history(&mut self, text: &str) -> Result<(), String> {
-        for entry in &mut self.entries {
-            if let Some(Provider::ClipboardHistory(store)) = &mut entry.provider {
-                store.record(text).map_err(|err| {
-                    format!("widget {:?}: failed to record history: {err}", entry.name)
-                })?;
-            }
-        }
-        Ok(())
-    }
-}
-
-fn theme_records() -> Vec<Record> {
-    std::iter::once(DEFAULT_THEME_NAME)
-        .chain(shipped_theme_names())
-        .map(Record::new)
-        .collect()
-}
-
 impl FileSource {
+    /// Reads the file once so a missing or malformed file fails at startup.
+    pub fn open(path: PathBuf, format: FileFormat) -> Result<Self, String> {
+        let source = Self { path, format };
+        let records = source.records()?;
+        validate_records(&source.path.display().to_string(), &records)?;
+        Ok(source)
+    }
+}
+
+impl RecordSource for FileSource {
     fn records(&self) -> Result<Vec<Record>, String> {
         let text = std::fs::read_to_string(&self.path)
             .map_err(|err| format!("failed to read {}: {err}", self.path.display()))?;
@@ -305,7 +183,237 @@ impl FileSource {
     }
 }
 
-/// Decodes text, JSON, or YAML the way a `file` widget does.
+/// Executables on `PATH`; the first basename wins.
+pub struct ExecutablesSource;
+
+impl RecordSource for ExecutablesSource {
+    fn records(&self) -> Result<Vec<Record>, String> {
+        Ok(executables_on_path(
+            &std::env::var("PATH").unwrap_or_default(),
+        ))
+    }
+}
+
+/// Open toplevels via `zwlr_foreign_toplevel_manager_v1`. `value` is the key
+/// that `activate_window` accepts.
+pub struct WaylandWindowsSource;
+
+impl RecordSource for WaylandWindowsSource {
+    fn records(&self) -> Result<Vec<Record>, String> {
+        WindowList::shared().records()
+    }
+
+    fn start(&self) {
+        WindowList::shared();
+    }
+}
+
+/// Fixed records, mostly for tests and on-the-fly widgets.
+pub struct StaticSource(pub Vec<Record>);
+
+impl RecordSource for StaticSource {
+    fn records(&self) -> Result<Vec<Record>, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// What a widget does with rows. Calls come from the UI thread and must not block.
+pub trait Handlers: Send + Sync {
+    /// The rows a user picked, in the order they were marked.
+    fn select(&self, widget: &str, records: Vec<Record>);
+    /// The keyboard selection moved to a different row.
+    fn highlight(&self, widget: &str, record: Record);
+    /// New clipboard text, for sources that are not native.
+    fn clipboard(&self, _text: &str) {}
+}
+
+/// Drops every event. Used when nothing is configured.
+pub struct NoHandlers;
+
+impl Handlers for NoHandlers {
+    fn select(&self, _widget: &str, _records: Vec<Record>) {}
+    fn highlight(&self, _widget: &str, _record: Record) {}
+}
+
+#[derive(Clone)]
+pub struct WidgetDef {
+    pub name: String,
+    /// `None` for a widget that only accepts records passed to `Show` or `Prompt`.
+    pub source: Option<Arc<dyn RecordSource>>,
+    pub layout: LayoutSpec,
+    /// Replaces the file-wide palette for this widget only.
+    pub theme: Option<ThemeSpec>,
+    pub location: Option<Location>,
+    pub multi: Option<MultiSelect>,
+    /// Whether highlight events are worth sending to the handlers.
+    pub highlight: bool,
+}
+
+impl WidgetDef {
+    pub fn new(name: impl Into<String>, source: Option<Arc<dyn RecordSource>>) -> Self {
+        Self {
+            name: name.into(),
+            source,
+            layout: LayoutSpec::Default,
+            theme: None,
+            location: None,
+            multi: None,
+            highlight: false,
+        }
+    }
+}
+
+pub struct Widgets {
+    defs: Vec<WidgetDef>,
+    themes: Vec<Theme>,
+    palette: ThemeSpec,
+    overrides: ThemeSpec,
+    default_theme: Theme,
+}
+
+impl Widgets {
+    /// `palette` is the file-wide theme, `overrides` is applied over every
+    /// widget's palette and survives `set_palette`.
+    pub fn new(
+        defs: Vec<WidgetDef>,
+        palette: ThemeSpec,
+        overrides: ThemeSpec,
+    ) -> Result<Self, String> {
+        let mut names = HashSet::new();
+        for def in &defs {
+            if def.name.trim().is_empty() {
+                return Err("widget name must not be empty".into());
+            }
+            if !names.insert(def.name.as_str()) {
+                return Err(format!(
+                    "widget name {:?} is configured more than once",
+                    def.name
+                ));
+            }
+        }
+        let mut widgets = Self {
+            defs,
+            themes: Vec::new(),
+            palette,
+            overrides,
+            default_theme: Theme::default(),
+        };
+        widgets.restyle();
+        Ok(widgets)
+    }
+
+    pub fn empty() -> Self {
+        Self::new(Vec::new(), ThemeSpec::default(), ThemeSpec::default()).expect("no widgets")
+    }
+
+    fn restyle(&mut self) {
+        self.default_theme = Theme::resolve(&[&self.palette, &self.overrides]);
+        self.themes = self
+            .defs
+            .iter()
+            .map(|def| match &def.theme {
+                Some(own) => Theme::resolve(&[own, &self.overrides]),
+                None => self.default_theme.clone(),
+            })
+            .collect();
+    }
+
+    /// Replaces the file-wide palette. Widgets with their own theme keep it.
+    pub fn set_palette(&mut self, palette: ThemeSpec) -> &Theme {
+        self.palette = palette;
+        self.restyle();
+        &self.default_theme
+    }
+
+    pub fn default_theme(&self) -> &Theme {
+        &self.default_theme
+    }
+
+    pub fn get(&self, name: &str) -> Option<&WidgetDef> {
+        self.defs.iter().find(|def| def.name == name)
+    }
+
+    pub fn theme(&self, name: &str) -> Option<&Theme> {
+        self.defs
+            .iter()
+            .position(|def| def.name == name)
+            .map(|index| &self.themes[index])
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.defs.iter().map(|def| def.name.clone()).collect()
+    }
+
+    /// Widgets the tray can open. On-demand widgets need records from the caller.
+    pub fn names_with_provider(&self) -> Vec<String> {
+        self.defs
+            .iter()
+            .filter(|def| def.source.is_some())
+            .map(|def| def.name.clone())
+            .collect()
+    }
+
+    pub fn names_without_provider(&self) -> Vec<String> {
+        self.defs
+            .iter()
+            .filter(|def| def.source.is_none())
+            .map(|def| def.name.clone())
+            .collect()
+    }
+
+    pub fn requires_records(&self, name: &str) -> bool {
+        self.get(name).is_some_and(|def| def.source.is_none())
+    }
+
+    pub fn multi(&self, name: &str) -> Option<&MultiSelect> {
+        self.get(name).and_then(|def| def.multi.as_ref())
+    }
+
+    pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {
+        let def = self
+            .get(name)
+            .ok_or_else(|| format!("unknown widget {name:?}"))?;
+        fetch_records(def)
+    }
+
+    /// Starts every source once, even when several widgets share it.
+    pub fn start(&self) {
+        for source in self.unique_sources() {
+            source.start();
+        }
+    }
+
+    /// Records clipboard text in every source once, even when several widgets share it.
+    pub fn record_history(&self, text: &str) -> Result<(), String> {
+        for source in self.unique_sources() {
+            source.record_clipboard(text)?;
+        }
+        Ok(())
+    }
+
+    fn unique_sources(&self) -> Vec<&Arc<dyn RecordSource>> {
+        let mut seen = HashSet::new();
+        self.defs
+            .iter()
+            .filter_map(|def| def.source.as_ref())
+            .filter(|source| seen.insert(Arc::as_ptr(source) as *const () as usize))
+            .collect()
+    }
+}
+
+/// Loads and validates a widget's rows. Errors name the widget.
+pub fn fetch_records(def: &WidgetDef) -> Result<Vec<Record>, String> {
+    let Some(source) = &def.source else {
+        return Err(format!("widget {:?} has no provider; pass records", def.name));
+    };
+    let records = source
+        .records()
+        .map_err(|err| format!("widget {:?}: {err}", def.name))?;
+    validate_records(&def.name, &records)?;
+    Ok(records)
+}
+
+/// Decodes text, JSON, or YAML the way a `File` provider does.
 ///
 /// JSON and YAML are an array of strings or objects. A string is the value.
 /// An object requires `value`; omitted `key` and `label` become that value.
@@ -319,14 +427,14 @@ pub fn parse_records(text: &str, format: FileFormat) -> Result<Vec<Record>, Stri
             .map(Record::new)
             .collect()),
         FileFormat::Json => {
-            let records =
+            let records: Vec<SerializedRecord> =
                 serde_json::from_str(text).map_err(|err| format!("invalid JSON: {err}"))?;
-            Ok(deserialize_records(records))
+            Ok(records.into_iter().map(Record::from).collect())
         }
         FileFormat::Yaml => {
-            let records =
+            let records: Vec<SerializedRecord> =
                 serde_yaml::from_str(text).map_err(|err| format!("invalid YAML: {err}"))?;
-            Ok(deserialize_records(records))
+            Ok(records.into_iter().map(Record::from).collect())
         }
     }
 }
@@ -361,10 +469,6 @@ pub(crate) fn records_from_maps(
     Ok(Some(records))
 }
 
-fn deserialize_records(records: Vec<SerializedRecord>) -> Vec<Record> {
-    records.into_iter().map(Record::from).collect()
-}
-
 pub fn validate_records(widget_name: &str, records: &[Record]) -> Result<(), String> {
     let mut keys = HashSet::new();
     for (index, record) in records.iter().enumerate() {
@@ -387,30 +491,25 @@ pub fn validate_records(widget_name: &str, records: &[Record]) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::parse_config;
+    use crate::theme::{Props, Rgba};
 
-    fn file_source(format: &str, contents: &str) -> (tempfile::TempDir, Widgets) {
+    fn file_widget(format: FileFormat, contents: &str) -> (tempfile::TempDir, Widgets) {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("records"), contents).unwrap();
-        let config = parse_config(
-            &format!(
-                r#"
-                    widget "items" "file" {{
-                        path   = "records"
-                        format = "{format}"
-                    }}
-                "#
-            ),
-            dir.path(),
+        let path = dir.path().join("records");
+        std::fs::write(&path, contents).unwrap();
+        let source = FileSource::open(path, format).unwrap();
+        let widgets = Widgets::new(
+            vec![WidgetDef::new("items", Some(Arc::new(source)))],
+            ThemeSpec::default(),
+            ThemeSpec::default(),
         )
         .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
         (dir, widgets)
     }
 
     #[test]
     fn text_files_are_one_value_per_nonempty_line() {
-        let (_dir, widgets) = file_source("text", "one\n\ntwo\n");
+        let (_dir, widgets) = file_widget(FileFormat::Text, "one\n\ntwo\n");
         assert_eq!(
             widgets.records("items").unwrap(),
             vec![Record::new("one"), Record::new("two")]
@@ -418,80 +517,70 @@ mod tests {
     }
 
     #[test]
-    fn json_supports_strings_and_full_records() {
-        let (_dir, widgets) = file_source(
-            "json",
-            r#"["plain", {"key":"id", "label":"Readable", "value":"copied"}]"#,
-        );
-        assert_eq!(
-            widgets.records("items").unwrap(),
-            vec![
-                Record::new("plain"),
-                Record {
-                    key: "id".into(),
-                    label: "Readable".into(),
-                    value: "copied".into(),
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn yaml_defaults_key_and_label_to_value() {
-        let (_dir, widgets) = file_source("yaml", "- value: copied\n");
-        assert_eq!(
-            widgets.records("items").unwrap(),
-            vec![Record::new("copied")]
-        );
-    }
-
-    #[test]
-    fn duplicate_keys_are_rejected_with_widget_context() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("records"),
-            r#"[{"key":"same","value":"one"},{"key":"same","value":"two"}]"#,
-        )
-        .unwrap();
-        let config = parse_config(
-            r#"
-                widget "items" "file" {
-                    path   = "records"
-                    format = "json"
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        let error = Widgets::from_config(&config).err().unwrap();
-        assert!(error.contains("widget \"items\""));
-        assert!(error.contains("duplicate record key"));
-    }
-
-    #[test]
     fn file_widgets_are_reloaded() {
-        let (dir, widgets) = file_source("text", "old\n");
+        let (dir, widgets) = file_widget(FileFormat::Text, "old\n");
         std::fs::write(dir.path().join("records"), "new\n").unwrap();
         assert_eq!(widgets.records("items").unwrap(), vec![Record::new("new")]);
     }
 
     #[test]
-    fn whitespace_history_respects_widget_config() {
+    fn a_broken_file_fails_when_opened() {
         let dir = tempfile::tempdir().unwrap();
-        let config = parse_config(
-            r#"
-                widget "history" "clipboard-history" {
-                    db                   = "history.sqlite"
-                    skip_whitespace_only = false
-                }
-            "#,
-            dir.path(),
+        let path = dir.path().join("records.json");
+        std::fs::write(&path, r#"[{"key":"same","value":"one"},{"key":"same","value":"two"}]"#)
+            .unwrap();
+        let error = FileSource::open(path.clone(), FileFormat::Json)
+            .err()
+            .unwrap();
+        assert!(error.contains("duplicate record key"), "{error}");
+        let error = FileSource::open(dir.path().join("missing"), FileFormat::Text)
+            .err()
+            .unwrap();
+        assert!(error.contains("failed to read"), "{error}");
+    }
+
+    #[test]
+    fn format_follows_the_extension() {
+        assert_eq!(FileFormat::for_path(Path::new("a.json")), FileFormat::Json);
+        assert_eq!(FileFormat::for_path(Path::new("a.yml")), FileFormat::Yaml);
+        assert_eq!(FileFormat::for_path(Path::new("a.yaml")), FileFormat::Yaml);
+        assert_eq!(FileFormat::for_path(Path::new("a.txt")), FileFormat::Text);
+    }
+
+    #[test]
+    fn history_records_once_per_shared_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let source: Arc<dyn RecordSource> = Arc::new(
+            ClipboardHistorySource::open(&dir.path().join("h.sqlite"), 10, true, true).unwrap(),
+        );
+        let widgets = Widgets::new(
+            vec![
+                WidgetDef::new("a", Some(source.clone())),
+                WidgetDef::new("b", Some(source)),
+            ],
+            ThemeSpec::default(),
+            ThemeSpec::default(),
         )
         .unwrap();
-        let mut widgets = Widgets::from_config(&config).unwrap();
-        widgets.record_history("   \n").unwrap();
+        widgets.record_history("one").unwrap();
+        widgets.record_history("two").unwrap();
+        let keys: Vec<_> = widgets
+            .records("a")
+            .unwrap()
+            .into_iter()
+            .map(|record| record.value)
+            .collect();
+        assert_eq!(keys, vec!["two", "one"]);
+    }
+
+    #[test]
+    fn whitespace_history_respects_the_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let source =
+            ClipboardHistorySource::open(&dir.path().join("h.sqlite"), 10, true, false).unwrap();
+        source.record_clipboard("   \n").unwrap();
         assert_eq!(
-            widgets.records("history").unwrap(),
+            source.records().unwrap(),
             vec![Record {
                 key: "1".into(),
                 label: "   \n".into(),
@@ -501,330 +590,76 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_history_text_uses_distinct_row_ids() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("history.sqlite");
-        {
-            let conn = rusqlite::Connection::open(&db).unwrap();
-            conn.execute(
-                "CREATE TABLE history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    text TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                )",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO history (text, created_at) VALUES ('same', 1)",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO history (text, created_at) VALUES ('same', 2)",
-                [],
-            )
-            .unwrap();
-        }
-        let config = parse_config(
-            r#"
-                widget "history" "clipboard-history" {
-                    db = "history.sqlite"
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(
-            widgets.records("history").unwrap(),
+    fn widgets_without_a_source_need_records() {
+        let widgets = Widgets::new(
             vec![
-                Record {
-                    key: "2".into(),
-                    label: "same".into(),
-                    value: "same".into(),
-                },
-                Record {
-                    key: "1".into(),
-                    label: "same".into(),
-                    value: "same".into(),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn executables_widget_uses_the_process_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("kb-path-test-bin");
-        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let config = parse_config(r#"widget "run" "executables" {}"#, dir.path()).unwrap();
-        let previous = std::env::var_os("PATH");
-        std::env::set_var("PATH", dir.path());
-        let widgets = Widgets::from_config(&config).unwrap();
-        let records = widgets.records("run").unwrap();
-        match previous {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
-        assert_eq!(
-            widgets.actions("run"),
-            Some(
-                [SelectAction::Launch {
-                    command: vec!["${value}".into()],
-                    args: Default::default(),
-                }]
-                .as_slice()
-            )
-        );
-        assert!(
-            records
-                .iter()
-                .any(|record| record.key == "kb-path-test-bin"),
-            "{records:?}"
-        );
-    }
-
-    #[test]
-    fn configured_transforms_are_available_by_widget_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = parse_config(
-            r#"
-                transform "jq" "exec" {
-                    args {
-                        expr = ".title"
-                    }
-                    command = ["jq", "-r", "${expr}"]
-                }
-                widget "items" "clipboard-history" {
-                    db       = "history.sqlite"
-                    transform "jq" {
-                        expr = ".data"
-                    }
-                }
-            "#,
-            dir.path(),
+                WidgetDef::new("pick", None),
+                WidgetDef::new("items", Some(Arc::new(StaticSource(vec![Record::new("x")])))),
+            ],
+            ThemeSpec::default(),
+            ThemeSpec::default(),
         )
         .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(
-            widgets.transforms("items"),
-            Some(
-                [Transform::Exec {
-                    command: vec!["jq".into(), "-r".into(), "${expr}".into()],
-                    stdin: "${value}".into(),
-                    args: std::collections::BTreeMap::from([("expr".into(), ".data".into())]),
-                }]
-                .as_slice()
-            )
-        );
-    }
-
-    #[test]
-    fn configured_action_args_are_available_by_widget_name() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("records"), "one\n").unwrap();
-        let config = parse_config(
-            r#"
-                action "notify" "exec" {
-                    args {
-                        title = "klemmbrett"
-                    }
-                    command = ["notify-send", "${title}", "${value}"]
-                }
-                widget "items" "file" {
-                    path     = "records"
-                    format   = "text"
-                    action "notify" {
-                        title = "${label}"
-                    }
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(
-            widgets
-                .actions("items")
-                .and_then(|actions| actions.first()?.argv("one", "Readable", "payload")),
-            Some(vec![
-                "notify-send".into(),
-                "Readable".into(),
-                "payload".into()
-            ])
-        );
-    }
-
-    #[test]
-    fn configured_action_is_available_by_widget_name() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("records"), "one\n").unwrap();
-        let config = parse_config(
-            r#"
-                widget "items" "file" {
-                    path   = "records"
-                    format = "text"
-                    action = "copy-to-clipboard"
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(
-            widgets.actions("items"),
-            Some([SelectAction::CopyToClipboard].as_slice())
-        );
-    }
-
-    #[test]
-    fn xdg_open_action_is_available_by_widget_name() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("records"), "https://example.com\n").unwrap();
-        let config = parse_config(
-            r#"
-                widget "links" "file" {
-                    path   = "records"
-                    format = "text"
-                    action = "xdg-open"
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(
-            widgets.actions("links"),
-            Some(
-                [SelectAction::Launch {
-                    command: vec!["xdg-open".into(), "${value}".into()],
-                    args: Default::default(),
-                }]
-                .as_slice()
-            )
-        );
-    }
-
-    #[test]
-    fn widget_without_a_provider_rejects_its_own_records() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = parse_config(
-            r#"
-                widget "pick" {
-                    action = "xdg-open"
-                }
-                widget "items" "file" {
-                    path   = "records"
-                    format = "text"
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("records"), "one\n").unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
         assert_eq!(widgets.names_without_provider(), vec!["pick".to_string()]);
         assert_eq!(widgets.names_with_provider(), vec!["items".to_string()]);
         assert!(widgets.requires_records("pick"));
         assert!(!widgets.requires_records("items"));
         let error = widgets.records("pick").unwrap_err();
         assert!(error.contains("has no provider"), "{error}");
-        assert!(error.contains("pass records"), "{error}");
-        assert_eq!(
-            widgets.actions("pick"),
-            Some(
-                [SelectAction::Launch {
-                    command: vec!["xdg-open".into(), "${value}".into()],
-                    args: Default::default(),
-                }]
-                .as_slice()
-            )
-        );
     }
 
     #[test]
-    fn highlight_actions_are_available_by_widget_name() {
-        let config = parse_config(
-            r#"
-                widget "pick" {
-                    highlight_action = "copy-to-clipboard"
-                }
-            "#,
-            std::path::Path::new("/config"),
+    fn duplicate_and_empty_names_are_rejected() {
+        let error = Widgets::new(
+            vec![WidgetDef::new("same", None), WidgetDef::new("same", None)],
+            ThemeSpec::default(),
+            ThemeSpec::default(),
         )
+        .err()
         .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        assert_eq!(
-            widgets.highlight_actions("pick"),
-            Some([SelectAction::CopyToClipboard].as_slice())
-        );
+        assert!(error.contains("more than once"), "{error}");
+        let error = Widgets::new(
+            vec![WidgetDef::new(" ", None)],
+            ThemeSpec::default(),
+            ThemeSpec::default(),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("must not be empty"), "{error}");
     }
 
     #[test]
-    fn set_theme_restyles_every_widget_or_nothing() {
-        let config = parse_config(
-            r#"
-                widget "pick" {
-                    layout = "filter"
-                }
-            "#,
-            std::path::Path::new("/config"),
+    fn set_palette_keeps_widget_themes_and_overrides() {
+        let palette = |rgb| ThemeSpec {
+            global: Props {
+                background: Some(Rgba::hex(rgb)),
+                ..Props::default()
+            },
+            ..ThemeSpec::default()
+        };
+        let overrides = ThemeSpec {
+            global: Props {
+                text_color: Some(Rgba::hex(0x010101)),
+                ..Props::default()
+            },
+            ..ThemeSpec::default()
+        };
+        let mut pinned = WidgetDef::new("pinned", None);
+        pinned.theme = Some(palette(0x282a36));
+        let mut widgets = Widgets::new(
+            vec![WidgetDef::new("pick", None), pinned],
+            palette(0x2e3440),
+            overrides,
         )
         .unwrap();
-        let mut widgets = Widgets::from_config(&config).unwrap();
-        let before = widgets.presentation("pick").unwrap().clone();
-        let theme = widgets.set_theme("nord").unwrap();
-        let after = widgets.presentation("pick").unwrap().clone();
-        assert_ne!(before.theme, after.theme);
-        assert_eq!(after.theme.window().background, theme.window().background);
-        assert!(after.theme.has_inputbar());
-        assert!(widgets.set_theme("missing").is_err());
-        assert_eq!(widgets.presentation("pick").unwrap(), &after);
-    }
-
-    #[test]
-    fn themes_widget_lists_default_then_shipped_palettes() {
-        let config = parse_config(
-            r#"widget "themes" "themes" {}"#,
-            std::path::Path::new("/config"),
-        )
-        .unwrap();
-        let widgets = Widgets::from_config(&config).unwrap();
-        let keys: Vec<_> = widgets
-            .records("themes")
-            .unwrap()
-            .into_iter()
-            .map(|record| record.key)
-            .collect();
-        assert_eq!(keys.first().map(String::as_str), Some("default"));
-        assert!(keys.iter().any(|key| key == "nord"), "{keys:?}");
-        assert_eq!(keys.len(), 1 + shipped_theme_names().count());
-        assert_eq!(
-            widgets.actions("themes"),
-            Some([SelectAction::SetTheme].as_slice())
-        );
-    }
-
-    #[test]
-    fn history_is_not_created_without_a_history_widget() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("records"), "one\n").unwrap();
-        let config = parse_config(
-            r#"
-                widget "items" "file" {
-                    path   = "records"
-                    format = "text"
-                }
-            "#,
-            dir.path(),
-        )
-        .unwrap();
-        let mut widgets = Widgets::from_config(&config).unwrap();
-        widgets.record_history("ignored").unwrap();
-        assert!(!dir.path().join("history.sqlite").exists());
+        let theme = widgets.set_palette(palette(0x282828)).clone();
+        assert_eq!(theme.window().background, Rgba::hex(0x282828));
+        let pick = widgets.theme("pick").unwrap();
+        assert_eq!(pick.window().background, Rgba::hex(0x282828));
+        assert_eq!(pick.window().text_color, Rgba::hex(0x010101));
+        let pinned = widgets.theme("pinned").unwrap();
+        assert_eq!(pinned.window().background, Rgba::hex(0x282a36));
+        assert_eq!(pinned.window().text_color, Rgba::hex(0x010101));
     }
 
     #[test]

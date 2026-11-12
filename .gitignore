@@ -1,1 +1,6 @@
 /target
+/.venv
+__pycache__/
+/python/klemmbrett/_core*.so
+/.pytest_cache
+/dist

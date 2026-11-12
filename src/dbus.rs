@@ -1,24 +1,13 @@
-use klemmbrett::{BusInterface, Record, ShowRequest, HISTORY_BUS_NAME, OBJECT_PATH};
-use std::collections::HashSet;
-use std::sync::mpsc;
+//! Serves the session-bus object for the running daemon.
 
-/// A request that must run on the GPUI thread.
-#[derive(Debug)]
-pub enum UiCmd {
-    Show {
-        widget: String,
-        pointer: Option<(i32, i32)>,
-        records: Option<Vec<Record>>,
-        reply: Option<mpsc::Sender<Result<Vec<String>, String>>>,
-    },
-    RecordHistory(String),
-    Quit,
-}
+use crate::ui::UiCmd;
+use crate::{BusInterface, ShowRequest, HISTORY_BUS_NAME, OBJECT_PATH};
+use std::collections::HashSet;
 
 /// Serves `Show` and `Prompt` and forwards valid requests to GPUI.
 ///
 /// `Prompt` blocks in the bus method until `reply` receives the selection.
-pub fn spawn(
+pub(crate) fn spawn(
     widget_names: HashSet<String>,
     on_demand: HashSet<String>,
     tx: async_channel::Sender<UiCmd>,

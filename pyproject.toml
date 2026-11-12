@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "klemmbrett"
+description = "Keep Wayland selections in sync and pick values from popup widgets configured in Python"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Environment :: X11 Applications",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Desktop Environment",
+]
+dynamic = ["version"]
+
+[project.scripts]
+klemmbrett = "klemmbrett.__main__:main"
+
+[tool.maturin]
+manifest-path = "crates/klemmbrett-py/Cargo.toml"
+python-source = "python"
+module-name = "klemmbrett._core"
+features = ["extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

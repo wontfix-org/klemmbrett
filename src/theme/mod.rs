@@ -1,26 +1,13 @@
-//! HCL themes and layout recipes for the popup.
+//! Popup styles for the catalog elements.
 //!
-//! A user theme is merged over the embedded default so omitted keys keep
-//! today's look.
+//! A [`ThemeSpec`] is a sparse set of properties per element and state. Specs
+//! are merged over the built-in default, so omitted keys keep today's look.
+//! Which elements appear, and where, is decided by a [`crate::Layout`].
 
 mod color;
-mod parse;
-mod units;
 
-use parse::{parse_spec, State, ThemeSpec};
-use std::path::{Path, PathBuf};
-
-pub use parse::{
-    parse_document, parse_document_at, parse_layout_recipe, HclDocument, HclValue, RawAction,
-    RawActionInvocation, RawTransform, RawTransformInvocation, RawWidget,
-};
-
-const DEFAULT_HCL: &str = include_str!("default.hcl");
-const BASE_FONT_SIZE: f32 = 14.0;
-const BASE_CHAR_WIDTH: f32 = 9.0;
-const WIDTH_SLACK: f32 = 14.0;
-const MIN_CARD_WIDTH: f32 = 200.0;
-const MAX_CARD_WIDTH: f32 = 520.0;
+pub use color::{cmyk, hsl, hwb, named_color, parse_color};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Widget {
@@ -37,6 +24,19 @@ pub enum Widget {
 }
 
 impl Widget {
+    pub const ALL: [Widget; 10] = [
+        Self::Overlay,
+        Self::Window,
+        Self::ListView,
+        Self::Element,
+        Self::ElementIndex,
+        Self::ElementText,
+        Self::ElementMarker,
+        Self::InputBar,
+        Self::Prompt,
+        Self::Entry,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Overlay => "overlay",
@@ -51,10 +51,24 @@ impl Widget {
             Self::Entry => "entry",
         }
     }
+
+    /// Accepts `element-index` and `element_index`.
+    pub fn parse(name: &str) -> Option<Self> {
+        let name = name.replace('_', "-");
+        Self::ALL.into_iter().find(|widget| widget.as_str() == name)
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum State {
+    Normal,
+    Selected,
+    Hover,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Location {
+    #[default]
     Pointer,
     Center,
     North,
@@ -67,27 +81,27 @@ pub enum Location {
     NorthWest,
 }
 
-impl Default for Location {
-    fn default() -> Self {
-        Self::Pointer
-    }
-}
-
 impl Location {
     pub fn parse(name: &str) -> Option<Self> {
-        Some(match name.to_ascii_lowercase().replace('-', " ").as_str() {
-            "pointer" => Self::Pointer,
-            "center" => Self::Center,
-            "north" => Self::North,
-            "north east" | "northeast" => Self::NorthEast,
-            "east" => Self::East,
-            "south east" | "southeast" => Self::SouthEast,
-            "south" => Self::South,
-            "south west" | "southwest" => Self::SouthWest,
-            "west" => Self::West,
-            "north west" | "northwest" => Self::NorthWest,
-            _ => return None,
-        })
+        Some(
+            match name
+                .to_ascii_lowercase()
+                .replace(['-', '_'], " ")
+                .as_str()
+            {
+                "pointer" => Self::Pointer,
+                "center" => Self::Center,
+                "north" => Self::North,
+                "north east" | "northeast" => Self::NorthEast,
+                "east" => Self::East,
+                "south east" | "southeast" => Self::SouthEast,
+                "south" => Self::South,
+                "south west" | "southwest" => Self::SouthWest,
+                "west" => Self::West,
+                "north west" | "northwest" => Self::NorthWest,
+                _ => return None,
+            },
+        )
     }
 
     pub fn as_str(self) -> &'static str {
@@ -112,6 +126,16 @@ pub enum Orientation {
     Vertical,
 }
 
+impl Orientation {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "horizontal" => Some(Self::Horizontal),
+            "vertical" => Some(Self::Vertical),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgba {
     pub r: u8,
@@ -121,12 +145,15 @@ pub struct Rgba {
 }
 
 impl Rgba {
-    pub const TRANSPARENT: Self = Self {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0,
-    };
+    pub const TRANSPARENT: Self = Self::rgba(0, 0, 0, 0);
+
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    pub const fn hex(rgb: u32) -> Self {
+        Self::rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255)
+    }
 
     pub fn to_u32(self) -> u32 {
         (u32::from(self.r) << 24)
@@ -163,6 +190,27 @@ impl Edges {
         }
     }
 
+    /// CSS shorthand: 1 to 4 values.
+    pub fn from_shorthand(values: &[f32]) -> Option<Self> {
+        Some(match *values {
+            [all] => Self::all(all),
+            [v, h] => Self::vh(v, h),
+            [top, h, bottom] => Self {
+                top,
+                right: h,
+                bottom,
+                left: h,
+            },
+            [top, right, bottom, left] => Self {
+                top,
+                right,
+                bottom,
+                left,
+            },
+            _ => return None,
+        })
+    }
+
     pub fn horizontal(self) -> f32 {
         self.left + self.right
     }
@@ -172,9 +220,9 @@ impl Edges {
     }
 }
 
+/// The resolved look of one catalog element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Style {
-    pub enabled: bool,
     pub padding: Edges,
     pub margin: Edges,
     pub border: Edges,
@@ -184,7 +232,6 @@ pub struct Style {
     pub text_color: Rgba,
     pub spacing: f32,
     pub orientation: Orientation,
-    pub children: Vec<Widget>,
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub max_height: Option<f32>,
@@ -194,27 +241,163 @@ pub struct Style {
 }
 
 impl Style {
-    pub fn packed_children(&self, theme: &Theme) -> Vec<Widget> {
-        self.children
-            .iter()
-            .copied()
-            .filter(|widget| theme.style(*widget).enabled)
-            .collect()
+    /// A box that paints nothing and keeps `parent`'s text look, for layout
+    /// primitives that have no catalog entry of their own.
+    pub fn plain(parent: &Style, orientation: Orientation) -> Self {
+        Self {
+            padding: Edges::all(0.0),
+            margin: Edges::all(0.0),
+            border: Edges::all(0.0),
+            border_radius: 0.0,
+            background: Rgba::TRANSPARENT,
+            border_color: parent.border_color,
+            text_color: parent.text_color,
+            spacing: parent.spacing,
+            orientation,
+            width: None,
+            height: None,
+            max_height: None,
+            font_size: parent.font_size,
+            location: None,
+            text: None,
+        }
+    }
+
+    /// Applies inline overrides. `inherit` is not meaningful here and is ignored.
+    pub fn with(&self, props: &Props) -> Self {
+        let mut style = self.clone();
+        set(&mut style.padding, props.padding);
+        set(&mut style.margin, props.margin);
+        set(&mut style.border, props.border);
+        set(&mut style.border_radius, props.border_radius);
+        set(&mut style.background, props.background);
+        set(&mut style.border_color, props.border_color);
+        set(&mut style.text_color, props.text_color);
+        set(&mut style.spacing, props.spacing);
+        set(&mut style.orientation, props.orientation);
+        style.width = props.width.or(style.width);
+        style.height = props.height.or(style.height);
+        style.max_height = props.max_height.or(style.max_height);
+        style.font_size = props.font_size.or(style.font_size);
+        style.location = props.location.or(style.location);
+        if props.text.is_some() {
+            style.text = props.text.clone();
+        }
+        style
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Presentation {
-    pub theme: Theme,
-    pub location: Location,
+fn set<T: Copy>(slot: &mut T, value: Option<T>) {
+    if let Some(value) = value {
+        *slot = value;
+    }
 }
 
-impl Default for Presentation {
-    fn default() -> Self {
-        Self {
-            theme: Theme::default(),
-            location: Location::Pointer,
+/// Sparse style properties. `inherit` names the properties that take the
+/// parent element's resolved value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Props {
+    pub padding: Option<Edges>,
+    pub margin: Option<Edges>,
+    pub border: Option<Edges>,
+    pub border_radius: Option<f32>,
+    pub background: Option<Rgba>,
+    pub border_color: Option<Rgba>,
+    pub text_color: Option<Rgba>,
+    pub spacing: Option<f32>,
+    pub orientation: Option<Orientation>,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub max_height: Option<f32>,
+    pub font_size: Option<f32>,
+    pub location: Option<Location>,
+    pub text: Option<String>,
+    pub inherit: Vec<String>,
+}
+
+impl Props {
+    pub const NAMES: [&'static str; 15] = [
+        "padding",
+        "margin",
+        "border",
+        "border_radius",
+        "background_color",
+        "border_color",
+        "text_color",
+        "spacing",
+        "orientation",
+        "width",
+        "height",
+        "max_height",
+        "font_size",
+        "location",
+        "text",
+    ];
+
+    pub fn merge(&mut self, other: &Self) {
+        overlay(&mut self.padding, other.padding);
+        overlay(&mut self.margin, other.margin);
+        overlay(&mut self.border, other.border);
+        overlay(&mut self.border_radius, other.border_radius);
+        overlay(&mut self.background, other.background);
+        overlay(&mut self.border_color, other.border_color);
+        overlay(&mut self.text_color, other.text_color);
+        overlay(&mut self.spacing, other.spacing);
+        overlay(&mut self.orientation, other.orientation);
+        overlay(&mut self.width, other.width);
+        overlay(&mut self.height, other.height);
+        overlay(&mut self.max_height, other.max_height);
+        overlay(&mut self.font_size, other.font_size);
+        overlay(&mut self.location, other.location);
+        if other.text.is_some() {
+            self.text = other.text.clone();
         }
+        for name in &other.inherit {
+            if !self.inherit.contains(name) {
+                self.inherit.push(name.clone());
+            }
+        }
+    }
+}
+
+fn overlay<T: Copy>(slot: &mut Option<T>, value: Option<T>) {
+    if let Some(value) = value {
+        *slot = Some(value);
+    }
+}
+
+/// One layer of a theme: `global` is the `defaults` fallback for every
+/// element, then per-element and per-state properties.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ThemeSpec {
+    pub global: Props,
+    pub widgets: HashMap<(Widget, State), Props>,
+}
+
+impl ThemeSpec {
+    pub fn merge(&mut self, other: &Self) {
+        self.global.merge(&other.global);
+        for (key, props) in &other.widgets {
+            self.widgets.entry(*key).or_default().merge(props);
+        }
+    }
+
+    pub fn set(&mut self, widget: Widget, state: State, props: Props) {
+        self.widgets.insert((widget, state), props);
+    }
+
+    fn props(&self, widget: Widget, state: State) -> Props {
+        let mut props = Props::default();
+        props.merge(&self.global);
+        if let Some(base) = self.widgets.get(&(widget, State::Normal)) {
+            props.merge(base);
+        }
+        if state != State::Normal {
+            if let Some(over) = self.widgets.get(&(widget, state)) {
+                props.merge(over);
+            }
+        }
+        props
     }
 }
 
@@ -236,12 +419,38 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        parse_theme_from_spec(parse_spec(DEFAULT_HCL).expect("embedded default.hcl"))
-            .expect("embedded default.hcl")
+        Self::resolve(&[])
     }
 }
 
 impl Theme {
+    /// Merges `layers` in order over the built-in default and resolves every element.
+    pub fn resolve(layers: &[&ThemeSpec]) -> Self {
+        let mut spec = default_spec();
+        for layer in layers {
+            spec.merge(layer);
+        }
+        let overlay = resolve(&spec, Widget::Overlay, State::Normal, None);
+        let window = resolve(&spec, Widget::Window, State::Normal, Some(&overlay));
+        let listview = resolve(&spec, Widget::ListView, State::Normal, Some(&window));
+        let inputbar = resolve(&spec, Widget::InputBar, State::Normal, Some(&window));
+        let element = resolve(&spec, Widget::Element, State::Normal, Some(&listview));
+        Self {
+            overlay,
+            window,
+            listview,
+            element_selected: resolve(&spec, Widget::Element, State::Selected, Some(&element)),
+            element_hover: resolve(&spec, Widget::Element, State::Hover, Some(&element)),
+            element_index: resolve(&spec, Widget::ElementIndex, State::Normal, Some(&element)),
+            element_text: resolve(&spec, Widget::ElementText, State::Normal, Some(&element)),
+            element_marker: resolve(&spec, Widget::ElementMarker, State::Normal, Some(&element)),
+            element,
+            prompt: resolve(&spec, Widget::Prompt, State::Normal, Some(&inputbar)),
+            entry: resolve(&spec, Widget::Entry, State::Normal, Some(&inputbar)),
+            inputbar,
+        }
+    }
+
     pub fn overlay(&self) -> &Style {
         &self.overlay
     }
@@ -290,20 +499,6 @@ impl Theme {
         &self.entry
     }
 
-    pub fn has_inputbar(&self) -> bool {
-        self.window()
-            .packed_children(self)
-            .contains(&Widget::InputBar)
-            && self.inputbar.enabled
-    }
-
-    pub fn has_listview(&self) -> bool {
-        self.window()
-            .packed_children(self)
-            .contains(&Widget::ListView)
-            && self.listview.enabled
-    }
-
     pub fn style(&self, widget: Widget) -> &Style {
         match widget {
             Widget::Overlay => &self.overlay,
@@ -326,407 +521,144 @@ impl Theme {
             &self.element
         }
     }
-
-    pub fn row_extent(&self) -> f32 {
-        self.element.height.unwrap_or(28.0) + self.listview.spacing
-    }
-
-    pub fn card_size(&self, rows: usize, label_max: usize) -> (f32, f32) {
-        let width = self.window.width.unwrap_or_else(|| {
-            (label_max as f32 * self.char_width() + self.width_chrome())
-                .clamp(MIN_CARD_WIDTH, MAX_CARD_WIDTH)
-        });
-        let height = if self.has_listview() {
-            (rows.max(1) as f32 * self.row_extent() + self.height_chrome())
-                .min(self.window.max_height.unwrap_or(600.0))
-        } else {
-            self.height_chrome()
-        };
-        (width, height)
-    }
-
-    fn char_width(&self) -> f32 {
-        let font = self
-            .element_text
-            .font_size
-            .or(self.window.font_size)
-            .unwrap_or(BASE_FONT_SIZE);
-        BASE_CHAR_WIDTH * (font / BASE_FONT_SIZE)
-    }
-
-    fn width_chrome(&self) -> f32 {
-        let mut chrome = self.element.padding.horizontal()
-            + self.window.padding.horizontal()
-            + self.window.border.horizontal();
-        let children = self.element.packed_children(self);
-        if children.len() > 1 {
-            chrome += self.element.spacing * (children.len() - 1) as f32;
-        }
-        if children.contains(&Widget::ElementMarker) {
-            chrome += self.element_marker.width.unwrap_or(16.0);
-        }
-        if children.contains(&Widget::ElementIndex) {
-            chrome += self.element_index.width.unwrap_or(16.0);
-        }
-        chrome + WIDTH_SLACK
-    }
-
-    fn height_chrome(&self) -> f32 {
-        let mut chrome = self.window.padding.vertical() + self.window.border.vertical();
-        if self.has_inputbar() {
-            chrome += self.inputbar_extent();
-            if self.window.packed_children(self).len() > 1 {
-                chrome += self.window.spacing;
-            }
-        }
-        chrome
-    }
-
-    fn inputbar_extent(&self) -> f32 {
-        self.inputbar.height.unwrap_or_else(|| {
-            self.inputbar.padding.vertical() + self.char_width().max(BASE_FONT_SIZE)
-        })
-    }
 }
 
-/// Parses a user theme and merges it over the embedded default.
-pub fn parse_theme(text: &str) -> Result<Theme, String> {
-    theme_from_specs([parse_spec(text)?])
-}
-
-fn theme_from_specs(specs: impl IntoIterator<Item = ThemeSpec>) -> Result<Theme, String> {
-    let mut spec = parse_spec(DEFAULT_HCL).expect("embedded default.hcl");
-    for extra in specs {
-        spec.merge(extra);
-    }
-    parse_theme_from_spec(spec)
-}
-
-pub fn theme_from_document(doc: &HclDocument, base_dir: &Path) -> Result<Theme, String> {
-    presentation_for_widget(doc, None, None, None, None, None, false, base_dir)
-        .map(|presentation| presentation.theme)
-}
-
-pub fn presentation_for_widget(
-    doc: &HclDocument,
-    widget_theme: Option<&str>,
-    widget_layout: Option<&str>,
-    widget_location: Option<Location>,
-    widget_name: Option<&str>,
-    widget_provider: Option<&str>,
-    widget_multi: bool,
-    base_dir: &Path,
-) -> Result<Presentation, String> {
-    let mut specs = Vec::new();
-    if let Some(name) = widget_theme {
-        specs.push(load_theme_spec(name, base_dir)?);
-    } else {
-        for name in &doc.theme_refs {
-            specs.push(load_theme_spec(name, base_dir)?);
-        }
-    }
-    specs.push(doc.theme.clone());
-    let mut recipe_location = None;
-    if let Some(name) = widget_layout {
-        let recipe = resolve_layout_recipe(name, &doc.named_layouts, base_dir)?
-            .evaluate_for_widget(widget_name, widget_provider, widget_multi)?;
-        recipe_location = recipe.location;
-        specs.push(recipe.spec);
-    }
-    let mut theme = theme_from_specs(specs)?;
-    if widget_name.is_some() {
-        theme.apply_multi_select(widget_multi);
-    }
-    let location = widget_location
-        .or(recipe_location)
-        .or(theme.window().location)
-        .unwrap_or(Location::Pointer);
-    Ok(Presentation { theme, location })
-}
-
-fn resolve_layout_recipe(
-    name: &str,
-    named: &std::collections::BTreeMap<String, parse::LayoutRecipe>,
-    base_dir: &Path,
-) -> Result<parse::LayoutRecipe, String> {
-    if let Some(recipe) = named.get(name) {
-        return Ok(recipe.clone());
-    }
-    load_layout_recipe(name, base_dir)
-}
-
-fn load_layout_recipe(name: &str, base_dir: &Path) -> Result<parse::LayoutRecipe, String> {
-    if let Some(text) = shipped_layout(name) {
-        return parse_layout_recipe(text);
-    }
-    let mut path = PathBuf::from(name);
-    if path.is_relative() {
-        path = base_dir.join(&path);
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|err| format!("failed to read layout {}: {err}", path.display()))?;
-    parse_layout_recipe(&text).map_err(|err| format!("invalid layout {}: {err}", path.display()))
-}
-
-fn shipped_layout(name: &str) -> Option<&'static str> {
-    match name.trim_end_matches(".hcl") {
-        "menu" => Some(include_str!("../../layouts/menu.hcl")),
-        "filter" => Some(include_str!("../../layouts/filter.hcl")),
-        "prompt" => Some(include_str!("../../layouts/prompt.hcl")),
-        _ => None,
-    }
-}
-
-fn load_theme_spec(name: &str, base_dir: &Path) -> Result<ThemeSpec, String> {
-    if let Some(text) = shipped_theme(name) {
-        return parse_spec(text);
-    }
-    let mut path = PathBuf::from(name);
-    if path.is_relative() {
-        path = base_dir.join(&path);
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|err| format!("failed to read theme {}: {err}", path.display()))?;
-    parse::parse_spec_at(&text, path.parent().unwrap_or(base_dir))
-        .map_err(|err| format!("invalid theme {}: {err}", path.display()))
-}
-
-const SHIPPED_THEMES: &[(&str, &str)] = &[
-    (
-        "solarized-dark",
-        include_str!("../../themes/solarized-dark.hcl"),
-    ),
-    (
-        "solarized-light",
-        include_str!("../../themes/solarized-light.hcl"),
-    ),
-    ("nord", include_str!("../../themes/nord.hcl")),
-    (
-        "gruvbox-dark",
-        include_str!("../../themes/gruvbox-dark.hcl"),
-    ),
-    (
-        "catppuccin-mocha",
-        include_str!("../../themes/catppuccin-mocha.hcl"),
-    ),
-    ("dracula", include_str!("../../themes/dracula.hcl")),
-    ("tokyo-night", include_str!("../../themes/tokyo-night.hcl")),
-    ("rose-pine", include_str!("../../themes/rose-pine.hcl")),
-    ("everforest", include_str!("../../themes/everforest.hcl")),
-    ("kanagawa", include_str!("../../themes/kanagawa.hcl")),
-    ("mbra", include_str!("../../themes/mbra.hcl")),
-];
-
-/// Names `theme "name" {}`, `theme = "name"`, and `set-theme` accept without a path.
-pub fn shipped_theme_names() -> impl Iterator<Item = &'static str> {
-    SHIPPED_THEMES.iter().map(|(name, _)| *name)
-}
-
-fn shipped_theme(name: &str) -> Option<&'static str> {
-    let name = name.trim_end_matches(".hcl");
-    SHIPPED_THEMES
-        .iter()
-        .find(|(shipped, _)| *shipped == name)
-        .map(|(_, text)| *text)
-}
-
-fn parse_theme_from_spec(spec: ThemeSpec) -> Result<Theme, String> {
-    let overlay = resolve(&spec, Widget::Overlay, State::Normal, None)?;
-    let window = resolve(&spec, Widget::Window, State::Normal, Some(&overlay))?;
-    let listview = resolve(&spec, Widget::ListView, State::Normal, Some(&window))?;
-    let inputbar = resolve(&spec, Widget::InputBar, State::Normal, Some(&window))?;
-    let element = resolve(&spec, Widget::Element, State::Normal, Some(&listview))?;
-    let theme = Theme {
-        overlay,
-        window,
-        listview,
-        element: element.clone(),
-        element_selected: resolve(&spec, Widget::Element, State::Selected, Some(&element))?,
-        element_hover: resolve(&spec, Widget::Element, State::Hover, Some(&element))?,
-        element_index: resolve(&spec, Widget::ElementIndex, State::Normal, Some(&element))?,
-        element_text: resolve(&spec, Widget::ElementText, State::Normal, Some(&element))?,
-        element_marker: resolve(&spec, Widget::ElementMarker, State::Normal, Some(&element))?,
-        inputbar: inputbar.clone(),
-        prompt: resolve(&spec, Widget::Prompt, State::Normal, Some(&inputbar))?,
-        entry: resolve(&spec, Widget::Entry, State::Normal, Some(&inputbar))?,
+/// The embedded look every theme is merged over.
+fn default_spec() -> ThemeSpec {
+    let mut spec = ThemeSpec {
+        global: Props {
+            background: Some(Rgba::hex(0x2b2b2b)),
+            text_color: Some(Rgba::hex(0xe8e8e8)),
+            border_color: Some(Rgba::hex(0x555555)),
+            ..Props::default()
+        },
+        widgets: HashMap::new(),
     };
-    validate_children(Widget::Window, &theme.window.children)?;
-    validate_children(Widget::InputBar, &theme.inputbar.children)?;
-    validate_children(Widget::Element, &theme.element.children)?;
-    validate_children(Widget::Element, &theme.element_selected.children)?;
-    validate_children(Widget::Element, &theme.element_hover.children)?;
-    Ok(theme)
+    let transparent = || Props {
+        background: Some(Rgba::TRANSPARENT),
+        ..Props::default()
+    };
+    spec.set(Widget::Overlay, State::Normal, transparent());
+    spec.set(
+        Widget::Window,
+        State::Normal,
+        Props {
+            border: Some(Edges::all(1.0)),
+            border_radius: Some(0.0),
+            padding: Some(Edges::all(0.0)),
+            font_size: Some(14.0),
+            max_height: Some(600.0),
+            orientation: Some(Orientation::Vertical),
+            ..Props::default()
+        },
+    );
+    spec.set(
+        Widget::ListView,
+        State::Normal,
+        Props {
+            spacing: Some(0.0),
+            ..Props::default()
+        },
+    );
+    spec.set(
+        Widget::Element,
+        State::Normal,
+        Props {
+            orientation: Some(Orientation::Horizontal),
+            padding: Some(Edges::vh(0.0, 8.0)),
+            spacing: Some(8.0),
+            height: Some(28.0),
+            background: Some(Rgba::TRANSPARENT),
+            ..Props::default()
+        },
+    );
+    for state in [State::Selected, State::Hover] {
+        spec.set(
+            Widget::Element,
+            state,
+            Props {
+                background: Some(Rgba::hex(0x3d5a80)),
+                ..Props::default()
+            },
+        );
+    }
+    for widget in [Widget::ElementIndex, Widget::ElementMarker] {
+        spec.set(
+            widget,
+            State::Normal,
+            Props {
+                text_color: Some(Rgba::hex(0x888888)),
+                width: Some(16.0),
+                background: Some(Rgba::TRANSPARENT),
+                ..Props::default()
+            },
+        );
+    }
+    spec.set(Widget::ElementText, State::Normal, transparent());
+    spec
 }
 
-fn resolve(
-    spec: &ThemeSpec,
-    widget: Widget,
-    state: State,
-    parent: Option<&Style>,
-) -> Result<Style, String> {
+fn resolve(spec: &ThemeSpec, widget: Widget, state: State, parent: Option<&Style>) -> Style {
     let mut props = fallback(widget);
     props.merge(&spec.props(widget, state));
-    Ok(Style {
-        enabled: props.enabled.unwrap_or(true),
-        padding: inherited(
-            &props,
-            "padding",
-            parent,
-            |p| Some(p.padding),
-            props.padding,
-        )
-        .unwrap_or(Edges::all(0.0)),
-        margin: inherited(&props, "margin", parent, |p| Some(p.margin), props.margin)
+    let inherit = |name: &str| props.inherit.iter().any(|item| item == name);
+    macro_rules! pick {
+        ($name:literal, $field:ident, $parent:expr) => {
+            if inherit($name) {
+                parent.and_then($parent).or(props.$field)
+            } else {
+                props.$field
+            }
+        };
+    }
+    Style {
+        padding: pick!("padding", padding, |p: &Style| Some(p.padding))
             .unwrap_or(Edges::all(0.0)),
-        border: inherited(&props, "border", parent, |p| Some(p.border), props.border)
-            .unwrap_or(Edges::all(0.0)),
-        border_radius: inherited(
-            &props,
-            "border_radius",
-            parent,
-            |p| Some(p.border_radius),
-            props.border_radius,
-        )
+        margin: pick!("margin", margin, |p: &Style| Some(p.margin)).unwrap_or(Edges::all(0.0)),
+        border: pick!("border", border, |p: &Style| Some(p.border)).unwrap_or(Edges::all(0.0)),
+        border_radius: pick!("border_radius", border_radius, |p: &Style| Some(
+            p.border_radius
+        ))
         .unwrap_or(0.0),
-        background: inherited(
-            &props,
-            "background_color",
-            parent,
-            |p| Some(p.background),
-            props.background,
-        )
-        .unwrap_or(Rgba {
-            r: 0x2b,
-            g: 0x2b,
-            b: 0x2b,
-            a: 255,
-        }),
-        border_color: inherited(
-            &props,
-            "border_color",
-            parent,
-            |p| Some(p.border_color),
-            props.border_color,
-        )
-        .unwrap_or(Rgba {
-            r: 0x55,
-            g: 0x55,
-            b: 0x55,
-            a: 255,
-        }),
-        text_color: inherited(
-            &props,
-            "text_color",
-            parent,
-            |p| Some(p.text_color),
-            props.text_color,
-        )
-        .unwrap_or(Rgba {
-            r: 0xe8,
-            g: 0xe8,
-            b: 0xe8,
-            a: 255,
-        }),
-        spacing: inherited(
-            &props,
-            "spacing",
-            parent,
-            |p| Some(p.spacing),
-            props.spacing,
-        )
-        .unwrap_or(0.0),
+        background: pick!("background_color", background, |p: &Style| Some(
+            p.background
+        ))
+        .unwrap_or(Rgba::hex(0x2b2b2b)),
+        border_color: pick!("border_color", border_color, |p: &Style| Some(
+            p.border_color
+        ))
+        .unwrap_or(Rgba::hex(0x555555)),
+        text_color: pick!("text_color", text_color, |p: &Style| Some(p.text_color))
+            .unwrap_or(Rgba::hex(0xe8e8e8)),
+        spacing: pick!("spacing", spacing, |p: &Style| Some(p.spacing)).unwrap_or(0.0),
         orientation: props.orientation.unwrap_or(match widget {
             Widget::Element => Orientation::Horizontal,
             _ => Orientation::Vertical,
         }),
-        children: props
-            .children
-            .clone()
-            .unwrap_or_else(|| default_children(widget)),
-        width: inherited(&props, "width", parent, |p| p.width, props.width),
-        height: inherited(&props, "height", parent, |p| p.height, props.height),
-        max_height: inherited(
-            &props,
-            "max_height",
-            parent,
-            |p| p.max_height,
-            props.max_height,
-        ),
-        font_size: inherited(
-            &props,
-            "font_size",
-            parent,
-            |p| p.font_size,
-            props.font_size,
-        ),
-        location: inherited(&props, "location", parent, |p| p.location, props.location),
-        text: inherited_owned(
-            &props,
-            "text",
-            parent,
-            |p| p.text.clone(),
-            props.text.clone(),
-        ),
-    })
-}
-
-impl Theme {
-    fn apply_multi_select(&mut self, multi: bool) {
-        if !multi {
-            self.element_marker.enabled = false;
-            return;
-        }
-        if !self.element_marker.enabled {
-            return;
-        }
-        for style in [
-            &mut self.element,
-            &mut self.element_selected,
-            &mut self.element_hover,
-        ] {
-            if !style.children.contains(&Widget::ElementMarker) {
-                style.children.insert(0, Widget::ElementMarker);
-            }
-        }
+        width: pick!("width", width, |p: &Style| p.width),
+        height: pick!("height", height, |p: &Style| p.height),
+        max_height: pick!("max_height", max_height, |p: &Style| p.max_height),
+        font_size: pick!("font_size", font_size, |p: &Style| p.font_size),
+        location: pick!("location", location, |p: &Style| p.location),
+        text: if inherit("text") {
+            parent
+                .and_then(|p| p.text.clone())
+                .or_else(|| props.text.clone())
+        } else {
+            props.text.clone()
+        },
     }
 }
 
-fn inherited<T: Copy>(
-    props: &parse::Props,
-    name: &str,
-    parent: Option<&Style>,
-    from_parent: impl Fn(&Style) -> Option<T>,
-    value: Option<T>,
-) -> Option<T> {
-    inherited_owned(props, name, parent, from_parent, value)
-}
-
-fn inherited_owned<T>(
-    props: &parse::Props,
-    name: &str,
-    parent: Option<&Style>,
-    from_parent: impl Fn(&Style) -> Option<T>,
-    value: Option<T>,
-) -> Option<T> {
-    if props.inherit.iter().any(|item| item == name) {
-        parent.and_then(from_parent).or(value)
-    } else {
-        value
-    }
-}
-
-fn fallback(widget: Widget) -> parse::Props {
-    let mut props = parse::Props {
-        children: Some(default_children(widget)),
-        ..parse::Props::default()
-    };
+fn fallback(widget: Widget) -> Props {
+    let mut props = Props::default();
     match widget {
         Widget::Overlay => {
             props.background = Some(Rgba::TRANSPARENT);
         }
         Widget::Window => {
             props.border = Some(Edges::all(1.0));
-            props.font_size = Some(BASE_FONT_SIZE);
+            props.font_size = Some(14.0);
             props.max_height = Some(600.0);
         }
         Widget::Element => {
@@ -736,27 +668,12 @@ fn fallback(widget: Widget) -> parse::Props {
             props.orientation = Some(Orientation::Horizontal);
             props.background = Some(Rgba::TRANSPARENT);
         }
-        Widget::ElementIndex => {
-            props.text_color = Some(Rgba {
-                r: 0x88,
-                g: 0x88,
-                b: 0x88,
-                a: 255,
-            });
+        Widget::ElementIndex | Widget::ElementMarker => {
+            props.text_color = Some(Rgba::hex(0x888888));
             props.width = Some(16.0);
             props.background = Some(Rgba::TRANSPARENT);
         }
-        Widget::ElementText => {
-            props.background = Some(Rgba::TRANSPARENT);
-        }
-        Widget::ElementMarker => {
-            props.text_color = Some(Rgba {
-                r: 0x88,
-                g: 0x88,
-                b: 0x88,
-                a: 255,
-            });
-            props.width = Some(16.0);
+        Widget::ElementText | Widget::Prompt | Widget::Entry => {
             props.background = Some(Rgba::TRANSPARENT);
         }
         Widget::InputBar => {
@@ -766,467 +683,142 @@ fn fallback(widget: Widget) -> parse::Props {
             props.orientation = Some(Orientation::Horizontal);
             props.background = Some(Rgba::TRANSPARENT);
         }
-        Widget::Prompt | Widget::Entry => {
-            props.background = Some(Rgba::TRANSPARENT);
-        }
         Widget::ListView => {}
     }
     props
-}
-
-fn default_children(widget: Widget) -> Vec<Widget> {
-    match widget {
-        Widget::Window => vec![Widget::ListView],
-        Widget::InputBar => vec![Widget::Prompt, Widget::Entry],
-        Widget::Element => vec![Widget::ElementIndex, Widget::ElementText],
-        _ => Vec::new(),
-    }
-}
-
-fn validate_children(parent: Widget, children: &[Widget]) -> Result<(), String> {
-    let allowed = match parent {
-        Widget::Window => &[Widget::InputBar, Widget::ListView][..],
-        Widget::InputBar => &[Widget::Prompt, Widget::Entry][..],
-        Widget::Element => &[
-            Widget::ElementMarker,
-            Widget::ElementIndex,
-            Widget::ElementText,
-        ][..],
-        _ => &[][..],
-    };
-    for child in children {
-        if !allowed.contains(child) {
-            return Err(format!(
-                "{} cannot contain {}; allowed children: {}",
-                parent.as_str(),
-                child.as_str(),
-                allowed
-                    .iter()
-                    .map(|widget| widget.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn default_theme_matches_hardcoded_card_size() {
-        let theme = Theme::default();
-        assert_eq!(theme.card_size(1, 16), (200.0, 30.0));
-        assert_eq!(theme.card_size(1, 20), (236.0, 30.0));
-        assert_eq!(theme.card_size(10, 64), (520.0, 282.0));
-        assert_eq!(theme.card_size(100, 64), (520.0, 600.0));
+    fn layer(entries: &[(Widget, State, Props)]) -> ThemeSpec {
+        let mut spec = ThemeSpec::default();
+        for (widget, state, props) in entries {
+            spec.set(*widget, *state, props.clone());
+        }
+        spec
     }
 
     #[test]
     fn default_theme_uses_today_s_colors() {
         let theme = Theme::default();
         assert_eq!(theme.overlay().background, Rgba::TRANSPARENT);
-        assert_eq!(
-            theme.window().background,
-            Rgba {
-                r: 0x2b,
-                g: 0x2b,
-                b: 0x2b,
-                a: 255
-            }
-        );
-        assert_eq!(
-            theme.element_selected().background,
-            Rgba {
-                r: 0x3d,
-                g: 0x5a,
-                b: 0x80,
-                a: 255
-            }
-        );
-        assert_eq!(
-            theme.element().children,
-            vec![Widget::ElementIndex, Widget::ElementText]
-        );
+        assert_eq!(theme.window().background, Rgba::hex(0x2b2b2b));
+        assert_eq!(theme.element_selected().background, Rgba::hex(0x3d5a80));
         assert_eq!(theme.element().background, Rgba::TRANSPARENT);
         assert_eq!(theme.element_index().background, Rgba::TRANSPARENT);
-    }
-
-    #[test]
-    fn user_theme_overrides_merge_over_default() {
-        let theme = parse_theme(
-            r#"
-                element "selected" { background_color = hex("ff0000") }
-                element { children = ["element-text", "element-index"] }
-            "#,
-        )
-        .unwrap();
-        assert_eq!(
-            theme.element_selected().background,
-            Rgba {
-                r: 255,
-                g: 0,
-                b: 0,
-                a: 255
-            }
-        );
-        assert_eq!(theme.element_selected().height, Some(28.0));
-        assert_eq!(
-            theme.element().children,
-            vec![Widget::ElementText, Widget::ElementIndex]
-        );
         assert_eq!(theme.window().border, Edges::all(1.0));
     }
 
     #[test]
-    fn hiding_the_accelerator_shrinks_chrome() {
-        let with_index = Theme::default().card_size(1, 20).0;
-        let without = parse_theme("element-index { enabled = false }")
-            .unwrap()
-            .card_size(1, 20)
-            .0;
-        assert!(without < with_index, "{without} < {with_index}");
+    fn layers_merge_over_the_default_in_order() {
+        let palette = ThemeSpec {
+            global: Props {
+                background: Some(Rgba::hex(0x2e3440)),
+                ..Props::default()
+            },
+            widgets: HashMap::new(),
+        };
+        let overrides = layer(&[(
+            Widget::Element,
+            State::Selected,
+            Props {
+                background: Some(Rgba::hex(0xff0000)),
+                ..Props::default()
+            },
+        )]);
+        let theme = Theme::resolve(&[&palette, &overrides]);
+        assert_eq!(theme.window().background, Rgba::hex(0x2e3440));
+        assert_eq!(theme.element_selected().background, Rgba::hex(0xff0000));
+        assert_eq!(theme.element_selected().height, Some(28.0));
+        // A per-element default still beats the palette's global fallback.
+        assert_eq!(theme.element().background, Rgba::TRANSPARENT);
     }
 
     #[test]
-    fn invalid_window_child_is_rejected() {
-        let error = parse_theme(r#"window { children = ["element"] }"#).unwrap_err();
-        assert!(error.contains("window cannot contain element"), "{error}");
-    }
-
-    #[test]
-    fn window_location_and_inherit_are_applied() {
-        let theme = parse_theme(
-            r#"
-                window {
-                    location = "north east"
-                    background_color = hex("112233")
-                }
-                listview { background_color = inherit() }
-            "#,
-        )
-        .unwrap();
+    fn inherit_takes_the_parent_value() {
+        let theme = Theme::resolve(&[&layer(&[
+            (
+                Widget::Window,
+                State::Normal,
+                Props {
+                    background: Some(Rgba::hex(0x112233)),
+                    location: Some(Location::NorthEast),
+                    ..Props::default()
+                },
+            ),
+            (
+                Widget::ListView,
+                State::Normal,
+                Props {
+                    inherit: vec!["background_color".into()],
+                    ..Props::default()
+                },
+            ),
+            (
+                Widget::Element,
+                State::Normal,
+                Props {
+                    text: Some("*".into()),
+                    ..Props::default()
+                },
+            ),
+            (
+                Widget::ElementMarker,
+                State::Normal,
+                Props {
+                    inherit: vec!["text".into()],
+                    ..Props::default()
+                },
+            ),
+        ])]);
         assert_eq!(theme.window().location, Some(Location::NorthEast));
         assert_eq!(theme.listview().background, theme.window().background);
-    }
-
-    #[test]
-    fn element_marker_text_defaults_to_none() {
-        assert_eq!(Theme::default().element_marker().text, None);
-    }
-
-    #[test]
-    fn element_marker_can_set_text() {
-        let theme = parse_theme(r#"element-marker { text = "✓" }"#).unwrap();
-        assert_eq!(theme.element_marker().text.as_deref(), Some("✓"));
-    }
-
-    #[test]
-    fn element_marker_text_can_be_empty() {
-        let theme = parse_theme(r#"element-marker { text = "" }"#).unwrap();
-        assert_eq!(theme.element_marker().text.as_deref(), Some(""));
-    }
-
-    #[test]
-    fn element_marker_text_can_inherit() {
-        let theme = parse_theme(
-            r#"
-                element { text = "*" }
-                element-marker { text = inherit() }
-            "#,
-        )
-        .unwrap();
         assert_eq!(theme.element_marker().text.as_deref(), Some("*"));
     }
 
     #[test]
-    fn element_may_pack_a_marker() {
-        let theme =
-            parse_theme(r#"element { children = ["element-marker", "element-text"] }"#).unwrap();
+    fn inline_overrides_replace_only_the_given_fields() {
+        let base = Theme::default().element_text().clone();
+        let style = base.with(&Props {
+            text_color: Some(Rgba::hex(0x010203)),
+            width: Some(40.0),
+            ..Props::default()
+        });
+        assert_eq!(style.text_color, Rgba::hex(0x010203));
+        assert_eq!(style.width, Some(40.0));
+        assert_eq!(style.background, base.background);
+    }
+
+    #[test]
+    fn widget_names_accept_dashes_and_underscores() {
+        assert_eq!(Widget::parse("element-index"), Some(Widget::ElementIndex));
+        assert_eq!(Widget::parse("element_marker"), Some(Widget::ElementMarker));
+        assert_eq!(Widget::parse("sidebar"), None);
+    }
+
+    #[test]
+    fn edges_follow_css_shorthand() {
+        assert_eq!(Edges::from_shorthand(&[8.0]), Some(Edges::all(8.0)));
+        assert_eq!(Edges::from_shorthand(&[0.0, 8.0]), Some(Edges::vh(0.0, 8.0)));
         assert_eq!(
-            theme.element().children,
-            vec![Widget::ElementMarker, Widget::ElementText]
+            Edges::from_shorthand(&[1.0, 2.0, 3.0]),
+            Some(Edges {
+                top: 1.0,
+                right: 2.0,
+                bottom: 3.0,
+                left: 2.0
+            })
         );
+        assert_eq!(Edges::from_shorthand(&[]), None);
     }
 
     #[test]
-    fn window_may_pack_an_inputbar() {
-        let theme = parse_theme(r#"window { children = ["inputbar", "listview"] }"#).unwrap();
-        assert_eq!(
-            theme.window().children,
-            vec![Widget::InputBar, Widget::ListView]
-        );
-        assert!(theme.has_inputbar());
-        let (width, height) = theme.card_size(1, 16);
-        assert_eq!(width, 200.0);
-        assert!(height > Theme::default().card_size(1, 16).1);
-    }
-
-    #[test]
-    fn shipped_filter_layout_centers_and_adds_inputbar() {
-        let presentation = presentation_for_widget(
-            &parse_document("").unwrap(),
-            None,
-            Some("filter"),
-            None,
-            None,
-            None,
-            false,
-            Path::new("."),
-        )
-        .unwrap();
-        assert_eq!(presentation.location, Location::Center);
-        assert!(presentation.theme.has_inputbar());
-        assert!(presentation.theme.has_listview());
-        assert_eq!(
-            presentation.theme.inputbar().children,
-            vec![Widget::Prompt, Widget::Entry]
-        );
-    }
-
-    #[test]
-    fn shipped_prompt_layout_is_inputbar_only() {
-        let presentation = presentation_for_widget(
-            &parse_document("").unwrap(),
-            None,
-            Some("prompt"),
-            None,
-            None,
-            None,
-            false,
-            Path::new("."),
-        )
-        .unwrap();
-        assert_eq!(presentation.location, Location::Center);
-        assert!(presentation.theme.has_inputbar());
-        assert!(!presentation.theme.has_listview());
-        assert_eq!(presentation.theme.window().children, vec![Widget::InputBar]);
-        assert_eq!(
-            presentation.theme.inputbar().children,
-            vec![Widget::Prompt, Widget::Entry]
-        );
-        let (_, short) = presentation.theme.card_size(0, 16);
-        let (_, tall) = presentation.theme.card_size(50, 16);
-        assert_eq!(short, tall);
-        assert!(short > 0.0);
-        assert!(short < Theme::default().card_size(10, 16).1);
-    }
-
-    #[test]
-    fn multi_select_packs_the_marker() {
-        let with = presentation_for_widget(
-            &parse_document("").unwrap(),
-            None,
-            Some("filter"),
-            None,
-            None,
-            None,
-            true,
-            Path::new("."),
-        )
-        .unwrap();
-        let without = presentation_for_widget(
-            &parse_document("").unwrap(),
-            None,
-            Some("filter"),
-            None,
-            None,
-            None,
-            false,
-            Path::new("."),
-        )
-        .unwrap();
-        assert!(with.theme.element_marker().enabled);
-        assert!(with
-            .theme
-            .element()
-            .packed_children(&with.theme)
-            .contains(&Widget::ElementMarker));
-        assert!(!without.theme.element_marker().enabled);
-        assert!(!without
-            .theme
-            .element()
-            .packed_children(&without.theme)
-            .contains(&Widget::ElementMarker));
-        assert!(
-            with.theme.card_size(1, 16).0 > without.theme.card_size(1, 16).0,
-            "marker column should widen the card"
-        );
-    }
-
-    #[test]
-    fn window_may_omit_listview() {
-        let theme = parse_theme(r#"window { children = ["inputbar"] }"#).unwrap();
-        assert_eq!(theme.window().children, vec![Widget::InputBar]);
-        assert!(theme.has_inputbar());
-        assert!(!theme.has_listview());
-    }
-
-    #[test]
-    fn empty_user_theme_is_the_default() {
-        assert_eq!(parse_theme("").unwrap(), Theme::default());
-    }
-
-    #[test]
-    fn shipped_themes_parse_and_keep_default_layout() {
-        let themes = [
-            (
-                "solarized-dark",
-                include_str!("../../themes/solarized-dark.hcl"),
-                Rgba {
-                    r: 0x00,
-                    g: 0x2b,
-                    b: 0x36,
-                    a: 255,
-                },
-            ),
-            (
-                "solarized-light",
-                include_str!("../../themes/solarized-light.hcl"),
-                Rgba {
-                    r: 0xfd,
-                    g: 0xf6,
-                    b: 0xe3,
-                    a: 255,
-                },
-            ),
-            (
-                "nord",
-                include_str!("../../themes/nord.hcl"),
-                Rgba {
-                    r: 0x2e,
-                    g: 0x34,
-                    b: 0x40,
-                    a: 255,
-                },
-            ),
-            (
-                "gruvbox-dark",
-                include_str!("../../themes/gruvbox-dark.hcl"),
-                Rgba {
-                    r: 0x28,
-                    g: 0x28,
-                    b: 0x28,
-                    a: 255,
-                },
-            ),
-            (
-                "catppuccin-mocha",
-                include_str!("../../themes/catppuccin-mocha.hcl"),
-                Rgba {
-                    r: 0x1e,
-                    g: 0x1e,
-                    b: 0x2e,
-                    a: 255,
-                },
-            ),
-            (
-                "dracula",
-                include_str!("../../themes/dracula.hcl"),
-                Rgba {
-                    r: 0x28,
-                    g: 0x2a,
-                    b: 0x36,
-                    a: 255,
-                },
-            ),
-            (
-                "tokyo-night",
-                include_str!("../../themes/tokyo-night.hcl"),
-                Rgba {
-                    r: 0x1a,
-                    g: 0x1b,
-                    b: 0x26,
-                    a: 255,
-                },
-            ),
-            (
-                "rose-pine",
-                include_str!("../../themes/rose-pine.hcl"),
-                Rgba {
-                    r: 0x19,
-                    g: 0x17,
-                    b: 0x24,
-                    a: 255,
-                },
-            ),
-            (
-                "everforest",
-                include_str!("../../themes/everforest.hcl"),
-                Rgba {
-                    r: 0x2d,
-                    g: 0x35,
-                    b: 0x3b,
-                    a: 255,
-                },
-            ),
-            (
-                "kanagawa",
-                include_str!("../../themes/kanagawa.hcl"),
-                Rgba {
-                    r: 0x1f,
-                    g: 0x1f,
-                    b: 0x28,
-                    a: 255,
-                },
-            ),
-            (
-                "mbra",
-                include_str!("../../themes/mbra.hcl"),
-                Rgba {
-                    r: 0x00,
-                    g: 0x00,
-                    b: 0x00,
-                    a: 255,
-                },
-            ),
-        ];
-        for (name, source, background) in themes {
-            let theme = parse_theme(source).unwrap_or_else(|err| panic!("{name}: {err}"));
-            assert_eq!(theme.window().background, background, "{name}");
-            assert_eq!(
-                theme.element().children,
-                vec![Widget::ElementIndex, Widget::ElementText],
-                "{name}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_listed_theme_name_resolves() {
-        let names: Vec<_> = shipped_theme_names().collect();
-        assert_eq!(names.len(), 11);
-        for name in names {
-            assert!(shipped_theme(name).is_some(), "{name}");
-        }
-    }
-
-    #[test]
-    fn stylish_themes_round_the_card_and_rows() {
-        for name in ["tokyo-night", "rose-pine", "everforest", "kanagawa", "mbra"] {
-            let theme = parse_theme(shipped_theme(name).unwrap())
-                .unwrap_or_else(|err| panic!("{name}: {err}"));
-            assert!(
-                theme.window().border_radius >= 12.0,
-                "{name} window radius {}",
-                theme.window().border_radius
-            );
-            assert!(
-                theme.element().border_radius >= 8.0,
-                "{name} row radius {}",
-                theme.element().border_radius
-            );
-            assert!(
-                theme.inputbar().border_radius >= 8.0,
-                "{name} inputbar radius {}",
-                theme.inputbar().border_radius
-            );
-            assert!(
-                theme.window().padding.horizontal() > 0.0,
-                "{name} should inset the list"
-            );
-        }
+    fn location_names_accept_spaces_dashes_and_underscores() {
+        assert_eq!(Location::parse("north east"), Some(Location::NorthEast));
+        assert_eq!(Location::parse("south-west"), Some(Location::SouthWest));
+        assert_eq!(Location::parse("north_west"), Some(Location::NorthWest));
+        assert_eq!(Location::parse("middle"), None);
     }
 }
