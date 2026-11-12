@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime, providers
+from . import _core, _runtime, notifications, providers
 from ._record import Record, from_wire, to_record
 from .layouts import LayoutContext
 from .style import Theme
@@ -104,9 +104,14 @@ class Widget:
         deselect: str | None,
         on_select: Handler | None,
         on_highlight: Handler | None,
+        search: Sequence[str] | None = None,
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("widget name must be a non-empty string")
+        if isinstance(search, str):
+            search = [search]
+        if search is not None and not all(isinstance(path, str) and path for path in search):
+            raise TypeError(f"widget {name!r}: search must be a list of paths such as 'sender.name'")
         if layout is not None and not (isinstance(layout, Window) or callable(layout)):
             raise TypeError(
                 f"widget {name!r}: layout must be a ui.Window or a function returning one"
@@ -123,8 +128,10 @@ class Widget:
         self.theme = theme
         self.location = location
         self.multi = multi_keys
+        self.search = list(search or ())
         self._on_select = _handler(on_select, "on_select")
         self._on_highlight = _handler(on_highlight, "on_highlight")
+        self._shown: dict[str, Record] = {}
 
     def __call__(self, function: Handler) -> Widget:
         return self.on_select(function)
@@ -155,7 +162,25 @@ class Widget:
 
     def show(self, records: Iterable[Any] | None = None, *, pointer: tuple[int, int] | None = None) -> None:
         """Opens this widget in the running daemon."""
+        if records is not None:
+            records = [to_record(record) for record in records]
+            self._remember(records)
         _runtime.show(self.name, records, pointer=pointer)
+
+    def changed(self) -> None:
+        """Reloads this widget if it is open."""
+        _runtime.refresh([self.name])
+
+    def _remember(self, records: list[Record]) -> None:
+        self._shown = {record.key: record for record in records}
+
+    def _original(self, wire: tuple[str, str, str, Any]) -> Record:
+        """The record as Python gave it, data and all, if it is still known."""
+        record = from_wire(wire)
+        known = self._shown.get(record.key)
+        if known is not None and known.value == record.value and known.label == record.label:
+            return known
+        return record
 
     def __repr__(self) -> str:
         return f"<Widget {self.name!r} provider={self.provider!r}>"
@@ -163,12 +188,13 @@ class Widget:
     def _wire(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "source": _source(self.provider),
+            "source": _source(self.provider, self),
             "layout": _layout(self.layout),
             "theme": None if self.theme is None else _runtime.theme_wire(self.theme),
             "location": self.location,
             "multi": self.multi,
             "highlight": self._on_highlight is not None,
+            "search": self.search,
         }
 
 
@@ -190,6 +216,7 @@ def widget(
     deselect: str | None = None,
     on_select: Handler | None = None,
     on_highlight: Handler | None = None,
+    search: Sequence[str] | None = None,
 ) -> Widget:
     """Declares a popup widget.
 
@@ -200,6 +227,8 @@ def widget(
     - `location`: where the popup opens, overriding the layout's choice.
     - `multi`: mark rows with Tab / Shift-Tab (or `select` / `deselect` keys).
     - `on_select`, `on_highlight`: functions of a `Record`.
+    - `search`: what typing filters on, as paths such as `"label"` or
+      `"sender.name"`. Defaults to the label.
     """
     if name in registry.widgets:
         raise ValueError(f"widget {name!r} is configured more than once")
@@ -214,21 +243,52 @@ def widget(
         deselect=deselect,
         on_select=on_select,
         on_highlight=on_highlight,
+        search=search,
     )
     registry.widgets[name] = created
     return created
 
 
-def _source(provider: Any) -> Any:
+def _source(provider: Any, widget: Widget) -> Any:
     if provider is None:
         return None
-    if isinstance(provider, providers._Native):
+    if isinstance(provider, providers._Native) and provider.schema is None:
         return provider.native()
 
-    def fetch() -> list[tuple[str, str, str]]:
-        return [to_record(record)._wire() for record in provider.records()]
+    def fetch() -> list[tuple[str, str, str, Any]]:
+        records = [to_record(record) for record in provider.records()]
+        widget._remember(records)
+        return [record._wire() for record in records]
 
     return fetch
+
+
+def _tree(provider: Any) -> list[Any]:
+    """`provider` and every provider it is made of."""
+    found: list[Any] = []
+    pending = [provider]
+    while pending:
+        current = pending.pop()
+        if current is None or any(current is seen for seen in found):
+            continue
+        found.append(current)
+        sources = getattr(current, "_sources", None)
+        if callable(sources):
+            pending.extend(sources())
+    return found
+
+
+def _changed_hook(widgets: dict[str, Widget]) -> Callable[[Any], None]:
+    def changed(provider: Any) -> None:
+        names = [
+            name
+            for name, widget in widgets.items()
+            if any(part is provider for part in _tree(widget.provider))
+        ]
+        if names:
+            _runtime.refresh(names)
+
+    return changed
 
 
 def _layout(layout: Layout | None) -> Any:
@@ -251,18 +311,28 @@ class Dispatcher:
         self.widgets = widgets
         self.hooks = hooks
 
-    def select(self, name: str, records: list[tuple[str, str, str]]) -> None:
+    def select(self, name: str, records: list[tuple[str, str, str, Any]]) -> None:
         widget = self.widgets[name]
         for record in records:
-            _guard(f"widget {name!r}: on_select", widget.select, from_wire(record))
+            _guard(f"widget {name!r}: on_select", widget.select, widget._original(record))
 
-    def highlight(self, name: str, record: tuple[str, str, str]) -> None:
+    def highlight(self, name: str, record: tuple[str, str, str, Any]) -> None:
         widget = self.widgets[name]
-        _guard(f"widget {name!r}: on_highlight", widget.highlight, from_wire(record))
+        _guard(f"widget {name!r}: on_highlight", widget.highlight, widget._original(record))
 
     def clipboard(self, text: str) -> None:
         for hook in self.hooks:
             _guard(f"{hook!r}", hook, text)
+
+    def notification(self, wire: dict[str, Any]) -> None:
+        _guard("notification routing", notifications._dispatch, wire)
+
+    def call(self, method: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return notifications._call(method, parameters or {})
+        except Exception as err:
+            traceback.print_exc()
+            return {"error": "Failed", "parameters": {"message": f"{type(err).__name__}: {err}"}}
 
 
 def _guard(what: str, function: Callable[..., Any], *args: Any) -> None:
@@ -275,13 +345,13 @@ def _guard(what: str, function: Callable[..., Any], *args: Any) -> None:
 
 def _clipboard_hooks(widgets: Iterable[Widget]) -> list[Callable[[str], Any]]:
     hooks = []
-    seen: set[int] = set()
+    seen: list[Any] = []
     for widget in widgets:
-        provider = widget.provider
-        hook = getattr(provider, "on_clipboard", None)
-        if callable(hook) and id(provider) not in seen:
-            seen.add(id(provider))
-            hooks.append(hook)
+        for provider in _tree(widget.provider):
+            hook = getattr(provider, "on_clipboard", None)
+            if callable(hook) and not any(provider is other for other in seen):
+                seen.append(provider)
+                hooks.append(hook)
     return hooks
 
 
@@ -289,6 +359,8 @@ def reset() -> None:
     global registry
     registry = Registry()
     providers._config_dir = None
+    providers._on_changed = None
+    notifications._reset()
 
 
 def run_config(path: str | os.PathLike[str]) -> None:
@@ -309,6 +381,7 @@ def wire() -> dict[str, Any]:
     settings = registry.settings
     widgets = dict(registry.widgets)
     hooks = _clipboard_hooks(widgets.values())
+    providers._on_changed = _changed_hook(widgets)
     return {
         "label_max": settings.label_max,
         "launch": settings.launch,
@@ -317,6 +390,8 @@ def wire() -> dict[str, Any]:
         "widgets": [widget._wire() for widget in widgets.values()],
         "dispatcher": Dispatcher(widgets, hooks),
         "clipboard": bool(hooks),
+        "notifications": notifications._wire(),
+        "route_notifications": notifications._routed(),
     }
 
 

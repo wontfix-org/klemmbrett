@@ -17,7 +17,7 @@ def links(record):
 ```
 
 `kb.widget(name, provider=None, *, layout, theme, location, multi, select,
-deselect, on_select, on_highlight)` returns a `Widget`. Calling the `Widget`
+deselect, on_select, on_highlight, search)` returns a `Widget`. Calling the `Widget`
 with a function sets `on_select`, which is what makes the decorator form
 work. `Widget.on_highlight` is a decorator too, and both can also be passed
 as keyword arguments. Widget names must be unique. Relative paths given to
@@ -26,14 +26,63 @@ directory is importable, so helpers can live next to the config.
 
 ## Records
 
-`kb.Record(value, label=None, key=None)` is a frozen dataclass. `key` and
-`label` default to `value`. The popup shows the label, keys must be unique
-within a widget, and `dataclasses.replace(record, value=...)` derives a
-changed record.
+`kb.Record(value, label=None, key=None, data=None)` is a frozen dataclass.
+`key` and `label` default to `value`. The popup shows the label, keys must
+be unique within a widget, and `dataclasses.replace(record, value=...)`
+derives a changed record.
 
 Wherever records are returned or passed (providers, `kb.show`), a string
-stands for `Record(string)` and a dict needs `value`, with optional `key`
-and `label`.
+stands for `Record(string)` and a dict needs `value`, with optional `key`,
+`label`, and `data`. Any other keys of a dict become its data, so
+`{"value": "v", "unread": 3}` has the data `{"unread": 3}`; a dict with both
+`data` and other keys is rejected.
+
+### Data
+
+`data` is anything JSON-like: `None`, booleans, numbers, strings, lists, and
+dicts with string keys, nested as deep as needed. Dataclass and NamedTuple
+instances count as dicts of their fields. Handlers get the record back with
+the data exactly as the provider returned it, dataclass and all.
+
+Layouts and filters reach into the data with paths. `sender.name` walks
+dicts, `tags[0]` indexes a list, and `tags[*]` takes every element. `key`,
+`label`, and `value` on their own are the record's own strings.
+
+```python
+from klemmbrett import ui
+
+row = ui.Element(ui.Index(), ui.Text("{label}"), ui.Spacer(), ui.Field("sender.name", fallback="?"))
+kb.widget("mail", mail_provider, layout=layouts.filter, search=["label", "sender.name", "tags[*]"])
+```
+
+`ui.Text("{sender.name}: {subject}")` expands paths inside a row template.
+`ui.Field(path)` shows every value the path reaches, joined by commas;
+strings show as they are and other values as compact JSON. `search=` sets
+what typing into the filter matches; it defaults to the label.
+
+### Schemas
+
+A schema checks data where it enters: give a dataclass or NamedTuple as
+`schema=` to `kb.provider`, `providers.File`, or `providers.Store`. Each
+record's data must then be a dict with exactly the schema's fields (or an
+instance of it) and becomes an instance. Annotations are checked, and
+nothing is converted: `"3"` is not an `int`, and `True` is not a number.
+`list[T]`, `tuple[T, ...]`, `dict[str, T]`, `Optional`, unions, `Literal`,
+enums, and nested schemas are understood. A mismatch raises
+`kb.SchemaError` naming the record and the path:
+
+```python
+from typing import NamedTuple
+
+class Bookmark(NamedTuple):
+    url: str
+    tags: list[str] = []
+
+@kb.provider(schema=Bookmark)
+def bookmarks():
+    return [{"value": "https://x", "url": "https://x", "tags": ["docs"]}]
+# a bad entry: SchemaError: <provider bookmarks>: record 'https://x': data.tags[0]: expected str, got int 3
+```
 
 ## What picking a row does
 
@@ -46,11 +95,15 @@ The first of these that applies runs:
 | Provider | Default on pick | Records |
 | --- | --- | --- |
 | `ClipboardHistory()` | copy | Recent clips, newest first, in SQLite |
-| `File(path, format=None)` | copy | Reloaded each time the popup opens |
+| `File(path, format=None, schema=None)` | copy | Reloaded each time the popup opens |
 | `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
-| `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1` |
+| `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
 | `Themes()` | `kb.set_theme(value)` | `default`, then every shipped palette |
 | `Static(records)` | copy | A fixed list |
+| `Store(records=(), schema=None, limit=None)` | copy | Kept in memory, changed at any time |
+| `provider.view(...)` | the source's | Another provider filtered, sorted, mapped |
+| `Merge(*providers, prefix_keys=False)` | the source's | Several providers, one after another |
+| `notifications.Stash()` | mark read | Stashed notifications ([docs](notifications.md)) |
 | none | copy | No records of its own; each open must pass them |
 
 An exception in a handler is printed with its traceback (to the journal
@@ -58,7 +111,7 @@ under systemd) and ends that handler; the daemon keeps running. Handlers
 run one at a time on a dedicated thread, in the order the events
 happened, so a slow handler never freezes the popup.
 
-`klemmbrett prompt` and the D-Bus `Prompt` method return the selected
+`klemmbrett prompt` and the Varlink `Prompt` method return the selected
 values and do not call any handlers.
 
 ### Operations
@@ -146,11 +199,68 @@ objects:
 A broken file is reported when the configuration loads, and again (in the
 log) when a later edit breaks it.
 
+Objects may carry data in a `data` field, or as any keys besides `key`,
+`label`, and `value`:
+
+```yaml
+- value: https://example.com
+  label: Project website
+  tags: [docs, work]
+```
+
 `klemmbrett show` and `klemmbrett prompt` read the same formats from a
-positional path, and `-` reads stdin. On D-Bus each record is a dict:
-`value` is required, and a missing `key` or `label` defaults to the value.
-An empty record array keeps the widget's own provider, and a widget with no
-provider rejects it.
+positional path, and `-` reads stdin. Over Varlink each record is an object
+with `value`, optional `key` and `label`, and optional `data`. An empty
+record list keeps the widget's own provider, and a widget with no provider
+rejects it.
+
+### Store
+
+A `Store` keeps records in memory for handlers, threads, and timers to
+change. Every change reloads open popups that show it, keeping the query,
+the highlighted row, and the marks.
+
+```python
+pinned = providers.Store(limit=20)
+
+@kb.widget("history", providers.ClipboardHistory(), layout=layouts.filter)
+def history(record):
+    pinned.add(record, first=True)      # replaces a record with the same key
+
+kb.widget("pinned", pinned, on_select=lambda record: kb.copy(record.value))
+```
+
+`add(record, first=False)` replaces a record with the same key where it is,
+or adds it last (or first). Past `limit`, records fall off the other end.
+`extend(records)` adds several with one reload. `update(key, label=...,
+value=..., data=...)`, `remove(key)`, `clear()`, `get(key)`, `len(store)`,
+and iteration do what they say. `store.subscribe(callback)` calls
+`callback(store)` after each change and returns a function that
+unsubscribes.
+
+### Views and merging
+
+`provider.view(filter=None, sort=None, reverse=False, map=None, limit=None)`
+shows another provider's records filtered, sorted (by a key function),
+mapped, and cut to `limit`, in that order. Picking a row hands it to the
+source's `select`.
+
+```python
+recent_urls = history_store.view(filter=lambda r: r.value.startswith("http"), limit=10)
+```
+
+`providers.Merge(a, b, prefix_keys=False)` lists several providers one after
+another. Keys must not repeat across them, unless `prefix_keys=True` makes
+them `0:key`, `1:key`, and so on. Picking a row hands the original record to
+the provider it came from. Views and merges reload when a provider under
+them changes.
+
+### Changes
+
+Any provider can call `self.changed()` when its records change; popups
+showing it, directly or through views and merges, reload, and
+`klemmbrett watch` prints a `changed` event. `widget.changed()` reloads one
+widget. Outside the daemon both do nothing.
 
 ### Your own
 
@@ -182,9 +292,10 @@ kb.widget("marks", bookmarks, on_select=lambda record: kb.launch(["xdg-open", re
 kb.widget("todo", Todo())
 ```
 
-`records()` runs on a background thread each time the popup opens, so it may
-block briefly (reading files, calling a command), but slow providers delay
-the popup.
+`records()` runs on a background thread each time the popup opens, and again
+when the provider reports a change, so it may block briefly (reading files,
+calling a command), but slow providers delay the popup. `Todo` above could
+call `self.changed()` after inserting, so an open popup shows the new item.
 
 ## Recipes
 

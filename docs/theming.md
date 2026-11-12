@@ -69,6 +69,10 @@ overlay
             ├── element_marker
             ├── element_index
             └── element_text
+
+toast
+├── toast_summary
+└── toast_body
 ```
 
 `element_selected` is the keyboard/current row and uses the full box style.
@@ -111,6 +115,16 @@ marker draws its `text` (default `>`) when the row is marked.
 
 The filter bar (default height 36, horizontal), the prompt (the widget name,
 or its `text`), and the query with a block cursor.
+
+### toast, toast_summary, toast_body
+
+A notification toast, its summary line, and its body (see
+[notifications](notifications.md)). Unless the theme styles `toast`
+itself, a toast looks like the `window`: same colors, border, radius, and
+font, but never its size or location. `width` is the toast width (default
+360). The summary is 20 px and the body 36 px high by default, both with a
+transparent background. Action buttons use the `element_selected` style.
+Toasts follow the configured theme (and `kb.set_theme`), not a widget's.
 
 ## Properties
 
@@ -177,20 +191,23 @@ for reuse in your own layouts.
 | `ui.Window(*children, location=None)` | at most one `InputBar` and one `ListView`, plus primitives |
 | `ui.InputBar(*children)` | `Prompt`, `Entry`, primitives |
 | `ui.ListView(element)` | exactly one `Element`, the template for every row |
-| `ui.Element(*children)` | `Marker`, `Index`, primitives |
+| `ui.Element(*children)` | `Marker`, `Index`, `Field`, primitives |
 | `ui.Row(*children)`, `ui.Column(*children)` | primitives (and whatever their parent area allows) |
 | `ui.Text(template)`, `ui.Spacer()` | nothing |
-| `ui.Prompt()`, `ui.Entry()`, `ui.Marker()`, `ui.Index()` | nothing |
+| `ui.Prompt()`, `ui.Entry()`, `ui.Marker()`, `ui.Index()`, `ui.Field(path, fallback="")` | nothing |
 
 `InputBar` and `ListView` must be direct children of the window. A window
 with an `InputBar` filters as you type, and accelerators are off. A window
 without a `ListView` is a prompt: Enter submits the typed text as `key`,
 `label`, and `value`.
 
-`Text` templates expand `{label}`, `{key}`, and `{value}` inside an element,
-and `{widget}`, `{query}`, and `{count}` elsewhere. `{{` and `}}` are literal
-braces, and unknown names are kept as written. Labels are shortened to
-`label_max`; so are keys and values in templates.
+`Text` templates expand `{label}`, `{key}`, `{value}`, and paths into the
+record's data (`{sender.name}`, `{tags[0]}`) inside an element, and
+`{widget}`, `{query}`, and `{count}` elsewhere. `{{` and `}}` are literal
+braces, and names that reach nothing are kept as written. Everything
+expanded in a row is shortened to `label_max`. `ui.Field(path)` shows all
+values a path reaches (`tags[*]`), joined by commas, or `fallback` when it
+reaches nothing. Paths are described in [widgets](widgets.md#data).
 
 `Spacer` takes the remaining space, which pushes later children to the far
 end of a row.

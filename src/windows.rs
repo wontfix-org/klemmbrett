@@ -115,6 +115,7 @@ pub fn window_record(key: &str, title: &str, app_id: &str) -> Record {
         key: key.to_owned(),
         label: label.to_owned(),
         value: key.to_owned(),
+        data: serde_json::json!({ "title": title, "app_id": app_id }),
     }
 }
 

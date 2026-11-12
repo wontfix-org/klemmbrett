@@ -189,38 +189,37 @@ impl<B: Backend> ClipboardSync<B> {
     }
 }
 
-mod activate_api;
 pub mod cli;
 mod clipboard_history;
 pub mod config;
-mod dbus;
+pub mod data;
+mod events;
 mod executables;
 mod history;
-pub mod layout;
 mod launch;
+pub mod layout;
+pub mod notifications;
 mod outputs;
 mod popup;
 pub mod systemd;
 pub mod theme;
 pub mod ui;
+pub mod varlink;
 pub mod widget;
 mod windows;
 
-pub use activate_api::{
-    pointer_from_pairs, request_prompt, request_prompt_on, request_show, request_show_on,
-    BusInterface, ShowRequest, HISTORY_BUS_NAME, INTERFACE, OBJECT_PATH,
-};
 pub use clipboard_history::{history_candidate, ClipboardHistory};
 pub use config::{
-    config_path_from_env, default_config_path, resolve_config_path, AppConfig, KeySpec,
-    MultiSelect,
+    config_path_from_env, default_config_path, resolve_config_path, AppConfig, KeySpec, MultiSelect,
 };
+pub use data::DataPath;
 pub use history::{
     db_path_from_env, default_db_path, shorten_label, HistoryStore, DEFAULT_COALESCE_GROWING,
     DEFAULT_HISTORY_LIMIT, DEFAULT_LABEL_MAX, DEFAULT_SKIP_WHITESPACE_ONLY,
 };
 pub use launch::{running_as_systemd_unit, spawn_detached, Launch, ResolvedLaunch};
 pub use layout::{Layout, LayoutBuilder, LayoutContext, LayoutSpec, Node, NodeKind};
+pub use notifications::{CloseReason, Notification, NotificationConfig};
 pub use outputs::{focused_display_index, logical_output_positions, output_layout, OutputLayout};
 pub use popup::{
     accelerator_for, activation_records, filter_records, index_for_accelerator, menu_item_spec,
@@ -232,10 +231,11 @@ pub use theme::{
     Style, Theme, ThemeSpec, Widget,
 };
 pub use ui::Runtime;
+pub use varlink::{socket_path, Client, ClientError, ShowRequest};
 pub use widget::{
-    parse_records, validate_records, ClipboardHistorySource, ExecutablesSource, FileFormat,
-    FileSource, Handlers, NoHandlers, Record, RecordSource, StaticSource, WaylandWindowsSource,
-    WidgetDef, Widgets,
+    parse_records, records_from_json, validate_records, CallError, ClipboardHistorySource,
+    ExecutablesSource, FileFormat, FileSource, Handlers, NoHandlers, Record, RecordSource,
+    StaticSource, WaylandWindowsSource, WidgetDef, Widgets,
 };
 
 #[cfg(target_os = "linux")]

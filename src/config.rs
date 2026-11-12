@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::launch::Launch;
+use crate::notifications::NotificationConfig;
 use crate::widget::{Handlers, NoHandlers, Widgets};
 use crate::DEFAULT_LABEL_MAX;
 
@@ -14,6 +15,10 @@ pub struct AppConfig {
     pub launch: Launch,
     pub widgets: Widgets,
     pub handlers: Arc<dyn Handlers>,
+    /// `Some` when the configuration serves notifications.
+    pub notifications: Option<NotificationConfig>,
+    /// The Varlink socket; `None` uses [`crate::socket_path`]'s default.
+    pub socket: Option<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -24,6 +29,8 @@ impl Default for AppConfig {
             launch: Launch::Auto,
             widgets: Widgets::empty(),
             handlers: Arc::new(NoHandlers),
+            notifications: None,
+            socket: None,
         }
     }
 }

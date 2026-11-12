@@ -68,6 +68,9 @@ ELEMENTS = (
     "inputbar",
     "prompt",
     "entry",
+    "toast",
+    "toast_summary",
+    "toast_body",
 )
 
 _COLORS = {"background_color", "border_color", "text_color"}

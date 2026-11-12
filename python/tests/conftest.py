@@ -28,6 +28,15 @@ class FakeBackend:
     def show(self, widget: str, records: Any, pointer: Any) -> None:
         self.calls.append(("show", (widget, records, pointer)))
 
+    def refresh(self, widgets: list[str]) -> None:
+        self.calls.append(("refresh", widgets))
+
+    def notification_show(self, id: int) -> None:  # noqa: A002
+        self.calls.append(("notification_show", id))
+
+    def notification_close(self, id: int, reason: int) -> None:  # noqa: A002
+        self.calls.append(("notification_close", (id, reason)))
+
     def quit(self) -> None:
         self.calls.append(("quit", None))
 

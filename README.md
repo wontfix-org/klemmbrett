@@ -12,12 +12,20 @@ label filter; without that, the first 35 items can be chosen with accelerator ke
 (`1`–`9`, then `a`–`z`). `Up`/`Down` and `Enter` also work, and `Escape`
 closes the popup. A StatusNotifierItem tray icon has a Widgets submenu.
 
+Records can carry nested data that layouts and filters reach into, and
+providers can be live: a `Store` changed from a handler, thread, or timer
+reloads the open popup. klemmbrett can also be the desktop notification
+server: a Python function decides whether each notification is shown as a
+toast, dropped, or stashed as unread for a widget to list
+([`docs/notifications.md`](docs/notifications.md)).
+
 The popup takes keyboard focus as soon as it appears, without needing the
 pointer. It is a `wlr-layer-shell` surface that requests exclusive keyboard
 interactivity, which is the only way a Wayland surface opened from something
-other than user input (here, a D-Bus call) can be focused: an `xdg_popup`
-grab — what `GtkMenu` would use — requires the serial of a real input event,
-which a D-Bus trigger does not have. Any compositor implementing
+other than user input (here, a call on the control socket) can be focused: an
+`xdg_popup` grab — what `GtkMenu` would use — requires the serial of a real
+input event, which such a call does not have. Toasts are layer-shell
+surfaces that never take the keyboard. Any compositor implementing
 `wlr-layer-shell` works, including sway, Hyprland, river, niri, wayfire,
 labwc, and qtile's Wayland backend. GNOME does not implement it.
 
@@ -68,19 +76,19 @@ daemon starts with the compositor and stops when the session ends:
 klemmbrett --install-systemd
 ```
 
-That writes `$XDG_CONFIG_HOME/systemd/user/klemmbrett.service` (normally
-`~/.config/systemd/user/klemmbrett.service`) as a `Type=dbus` unit for
-`org.wontfix.klemmbrett`, and a session D-Bus service file at
-`$XDG_DATA_HOME/dbus-1/services/org.wontfix.klemmbrett.service`. The unit is
-pulled in by `graphical-session.target` so history is recorded from
-login. The D-Bus file is a fallback: a `Show` call still starts the
-unit if the bus name is missing. If this process can see
-`WAYLAND_DISPLAY`, that value is imported into the systemd user manager.
-`ExecStart` is the `klemmbrett` script you ran (or `python -m klemmbrett`
-with the same interpreter). Pass `--config` as well to pin that file in
-`ExecStart`.
+That writes `klemmbrett.service` and `klemmbrett.socket` to
+`$XDG_CONFIG_HOME/systemd/user/` (normally `~/.config/systemd/user/`). The
+service is a `Type=notify` unit pulled in by `graphical-session.target`, so
+history is recorded from login. The socket unit holds the control socket,
+`$XDG_RUNTIME_DIR/klemmbrett/varlink.sock`: a call made while the daemon
+restarts waits instead of failing, and the first call starts the daemon if
+it is not running. A D-Bus service file left by an earlier version is
+removed. If this process can see `WAYLAND_DISPLAY`, that value is imported
+into the systemd user manager. `ExecStart` is the `klemmbrett` script you
+ran (or `python -m klemmbrett` with the same interpreter). Pass `--config`
+as well to pin that file in `ExecStart`.
 
-To open a configured widget without spelling out `busctl`:
+To open a configured widget:
 
 ```sh
 klemmbrett show history
@@ -92,9 +100,10 @@ printf '%s\n' one two | klemmbrett prompt snippets -
 
 `-x` and `-y` are compositor global coordinates. Omit both when there is
 no pointer: the popup uses the output of the keyboard-focused window, then
-the primary output, then the first output. The running daemon (or D-Bus
-activation) still serves the request. `show` and `prompt` never read the
-configuration.
+the primary output, then the first output. `show` and `prompt` never read
+the configuration; they ask the running daemon. `--socket PATH` (or
+`$KLEMMBRETT_SOCKET`) picks a different socket for the daemon and every
+command.
 
 A positional path replaces the widget provider. `-` reads that input from
 stdin. `--format text|json|yaml` selects the record format and defaults to
@@ -103,6 +112,17 @@ path uses the widget's provider. A widget configured without a provider has
 no records of its own, so `show` and `prompt` must pass a path or `-`.
 `prompt` uses the same arguments, blocks until the popup closes, and prints
 each selected value on its own line. Cancelling prints nothing and exits 1.
+
+```sh
+klemmbrett watch inbox          # JSON lines: changed, selected, notification
+klemmbrett stash notifications --unread
+klemmbrett stash notifications --mark-read 12 13
+klemmbrett stash notifications --all
+```
+
+`watch` prints an event per line as it happens, optionally only for some
+widgets; notifications are printed when no widgets are named. `stash` lists a
+notification stash as JSON lines or marks entries read.
 
 ## Configuration
 
@@ -143,8 +163,30 @@ the window), and otherwise the value is copied. Handlers are ordinary Python:
 POSIX double fork otherwise. `"posix"`, `"systemd-run"`, or a wrapper list
 such as `["uwsm", "app", "--"]` override it.
 
-Widgets, providers, handlers, and recipes are documented in
-[`docs/widgets.md`](docs/widgets.md).
+Widgets, providers, record data, live stores, handlers, and recipes are
+documented in [`docs/widgets.md`](docs/widgets.md).
+
+## Notifications
+
+```python
+from klemmbrett import notifications as notify
+
+def route(n):
+    if n.app_name == "Spotify":
+        return notify.DROP
+    if n.critical or n.app_name == "Signal":
+        return notify.SHOW
+    return notify.STASH
+
+inbox = notify.serve(route, location="north-east")
+kb.widget("inbox", inbox.unread, layout=layouts.filter, search=["summary", "body", "app_name"])
+```
+
+`serve` makes klemmbrett own `org.freedesktop.Notifications`, so stop mako,
+dunst, or whatever else runs (or pass `replace=True`). Shown notifications
+are toasts that never take the keyboard: left click runs the default action,
+right click dismisses. Stashed ones wait as unread, and picking one in the
+`inbox` widget marks it read. See [`docs/notifications.md`](docs/notifications.md).
 
 ## Popup theme
 
@@ -178,32 +220,13 @@ Shipped palettes (`themes.nord`, `themes.get("tokyo-night")`, or by name):
 | `kanagawa` | [Kanagawa](https://github.com/rebelot/kanagawa.nvim) wave, rounded card |
 | `mbra` | Personal moss-on-black (qtile `#60845b`, Alacritty black) |
 
-## D-Bus
+## Control socket
 
-The process owns `org.wontfix.klemmbrett` on the session bus:
-
-| | |
-| --- | --- |
-| Name | `org.wontfix.klemmbrett` |
-| Object | `/org/wontfix/klemmbrett` |
-| Interface | `org.wontfix.klemmbrett` |
-| Method | `Show(sa(ii)aa{ss})` — widget, zero or one `(x, y)` pair, then records |
-| Method | `Prompt(sa(ii)aa{ss}) -> as` — same arguments; returns the selected values |
-
-`x` and `y` are the pointer location in the compositor's global layout (the
-same space qtile's `get_mouse_position()` and Sway output `rect` values use).
-The popup is placed on the output that contains that point, flipping or
-sliding so it stays on that output. An empty pointer array means no pointer: the focused window's output is
-used, then the primary output, then the first output. A `pointer` location
-is treated as `center`.
-
-An empty record array uses the widget provider. A widget with no provider
-rejects that empty array. A non-empty array replaces the provider rows.
-Each dict needs `value`; omitted `key` and `label` become the value.
-`Show` still runs the widget's `on_select`. `Prompt`
-blocks until the popup closes and returns the selected values. It does not
-run handlers. Cancelling, or opening another popup, returns
-an empty array.
+The daemon answers [Varlink](https://varlink.org) calls on
+`$XDG_RUNTIME_DIR/klemmbrett/varlink.sock`, interface
+`org.wontfix.klemmbrett`: `Show`, `Prompt`, `Widgets`, `Records`,
+`Subscribe`, `StashList`, `StashMarkRead`, and `Notify`. Records are JSON,
+data and all. Only the user running the daemon may connect.
 
 ```sh
 klemmbrett show history -x 120 -y 80
@@ -212,12 +235,13 @@ klemmbrett show history -x 120 -y 80
 That is the same call as:
 
 ```sh
-busctl --user call \
-    org.wontfix.klemmbrett \
-    /org/wontfix/klemmbrett \
-    org.wontfix.klemmbrett \
-    Show sa(ii)aa{ss} history 1 120 80 0
+varlinkctl call $XDG_RUNTIME_DIR/klemmbrett/varlink.sock \
+    org.wontfix.klemmbrett.Show '{"widget": "history", "pointer": {"x": 120, "y": 80}}'
 ```
+
+`varlinkctl introspect` prints the interface, and `klemmbrett.rpc` is a
+client for Python scripts and event loops. Methods, errors, and events are
+described in [`docs/rpc.md`](docs/rpc.md).
 
 ## Sway key binding
 
@@ -287,50 +311,25 @@ bindsym $mod+v exec klemmbrett show history
 ## Qtile key binding
 
 Qtile's Wayland backend exposes the pointer directly. `lazy.spawn` can run
-`klemmbrett show history`, or the example below uses
-[dbus-fast](https://github.com/Bluetooth-Devices/dbus-fast) on Qtile's asyncio
-loop (`libqtile.utils.create_task`) so the binding does not fork a helper.
-Qtile already talks to D-Bus through dbus-fast (notifications, StatusNotifier,
-and related widgets), so this matches the compositor's own stack.
+`klemmbrett show history`, or the example below uses `klemmbrett.rpc` on
+Qtile's asyncio loop (`libqtile.utils.create_task`) so the binding does not
+fork a helper. `klemmbrett.rpc` needs only the standard library, so it works
+from Qtile's interpreter as long as the `klemmbrett` package is importable
+there.
 
 ```python
-from dbus_fast import Message, MessageType
-from dbus_fast.aio import MessageBus
+from klemmbrett import rpc
 from libqtile.config import Key
 from libqtile.lazy import lazy
 from libqtile.log_utils import logger
 from libqtile.utils import create_task
 
-_bus = None
-
-async def _session_bus():
-    global _bus
-    if _bus is None or not _bus.connected:
-        _bus = await MessageBus().connect()
-    return _bus
-
 async def _show_widget(widget, x, y):
-    global _bus
-    message = Message(
-        destination="org.wontfix.klemmbrett",
-        path="/org/wontfix/klemmbrett",
-        interface="org.wontfix.klemmbrett",
-        member="Show",
-        signature="sa(ii)aa{ss}",
-        body=[widget, [(int(x), int(y))], []],
-    )
     try:
-        reply = await (await _session_bus()).call(message)
-    except Exception:
-        # The cached connection can go stale; drop it and try once more.
-        _bus = None
-        reply = await (await _session_bus()).call(message)
-    if reply.message_type == MessageType.ERROR:
-        logger.error(
-            "Klemmbrett Show failed: %s %s",
-            reply.error_name,
-            reply.body,
-        )
+        async with await rpc.AsyncClient.connect() as client:
+            await client.show(widget, pointer=(int(x), int(y)))
+    except (ConnectionError, rpc.VarlinkError) as err:
+        logger.error("klemmbrett Show failed: %s", err)
 
 def show_clip_history(qtile):
     x, y = qtile.core.get_mouse_position()
@@ -341,5 +340,5 @@ keys = [
 ]
 ```
 
-Autostart the daemon from the same config (`klemmbrett` in `spawn`) or from
-your session so the bus name is already claimed when the binding runs.
+Autostart the daemon from the same config (`klemmbrett` in `spawn`) or with
+the systemd units, so the socket is there when the binding runs.

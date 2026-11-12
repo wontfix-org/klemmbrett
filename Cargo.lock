@@ -3246,6 +3246,7 @@ version = "0.1.0"
 dependencies = [
  "klemmbrett",
  "pyo3",
+ "serde_json",
 ]
 
 [[package]]
