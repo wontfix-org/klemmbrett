@@ -3,7 +3,7 @@
 use crate::Record;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{event_created_child, Connection, Dispatch, EventQueue, Proxy, QueueHandle};
@@ -40,6 +40,12 @@ impl WindowList {
             snapshot,
             activate: activate_tx,
         }
+    }
+
+    /// The process-wide list, connected on first use.
+    pub fn shared() -> &'static WindowList {
+        static LIST: OnceLock<WindowList> = OnceLock::new();
+        LIST.get_or_init(Self::start)
     }
 
     pub fn records(&self) -> Result<Vec<Record>, String> {

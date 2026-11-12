@@ -16,6 +16,8 @@
 //! Failed cases leave their screenshot and logs under
 //! `<target>/ui-artifacts/<compositor>/<case>/`.
 
+mod common;
+
 use klemmbrett::{
     place_at_location, request_show_on, Location, OutputGeom, Record, HISTORY_BUS_NAME,
 };
@@ -31,32 +33,22 @@ const CARD_TIMEOUT: Duration = Duration::from_secs(20);
 const OUTPUT_MODE: &str = "1280x800";
 const MARKER: [u8; 3] = [0xff, 0x00, 0xff];
 
-const CONFIG: &str = r#"
-defaults {
-  background_color = hex("ff00ff")
-  text_color       = hex("ff00ff")
-  border_color     = hex("ff00ff")
-}
-window {
-  border        = 0
-  border_radius = 0
-}
-element "selected" {
-  background_color = hex("ff00ff")
-}
-element "hover" {
-  background_color = hex("ff00ff")
-}
-widget "center" {
-  location = "center"
-}
-widget "pointer" {
-  location = "pointer"
-}
-widget "south-east" {
-  location = "south east"
-}
-"#;
+const CONFIG: &str = r##"
+import klemmbrett as kb
+from klemmbrett.style import Style, Theme
+
+kb.configure(
+    theme=Theme(
+        defaults=Style(background_color="#ff00ff", text_color="#ff00ff", border_color="#ff00ff"),
+        window=Style(border=0, border_radius=0),
+        element_selected=Style(background_color="#ff00ff"),
+        element_hover=Style(background_color="#ff00ff"),
+    )
+)
+kb.widget("center", location="center")
+kb.widget("pointer", location="pointer")
+kb.widget("south-east", location="south east")
+"##;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
@@ -375,10 +367,10 @@ impl Session {
     }
 
     fn start_app(&mut self) {
-        let config = self.runtime_dir.join("config.hcl");
+        let config = self.runtime_dir.join("config.py");
         fs::write(&config, CONFIG).expect("write app config");
         let log = fs::File::create(self.runtime_dir.join("app.log")).expect("create app log");
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_klemmbrett"));
+        let mut cmd = common::daemon_command();
         self.isolate(&mut cmd);
         cmd.env("WAYLAND_DISPLAY", &self.client_socket)
             .arg("--config")

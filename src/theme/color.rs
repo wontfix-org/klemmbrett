@@ -154,6 +154,38 @@ pub fn named_color(name: &str) -> Option<Rgba> {
     })
 }
 
+/// Parses `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, or a CSS color name.
+pub fn parse_color(text: &str) -> Result<Rgba, String> {
+    let text = text.trim();
+    let Some(hex) = text.strip_prefix('#') else {
+        return named_color(text).ok_or_else(|| format!("unknown color {text:?}"));
+    };
+    let invalid = || format!("invalid hex color {text:?}");
+    if !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    let digits: Vec<u8> = match hex.len() {
+        3 | 4 => hex
+            .chars()
+            .map(|ch| {
+                let value = ch.to_digit(16).unwrap_or(0) as u8;
+                value * 17
+            })
+            .collect(),
+        6 | 8 => (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or(0))
+            .collect(),
+        _ => return Err(invalid()),
+    };
+    Ok(Rgba {
+        r: digits[0],
+        g: digits[1],
+        b: digits[2],
+        a: digits.get(3).copied().unwrap_or(255),
+    })
+}
+
 pub fn hsl(h: f32, s: f32, l: f32, a: u8) -> Rgba {
     let s = s.clamp(0.0, 1.0);
     let l = l.clamp(0.0, 1.0);

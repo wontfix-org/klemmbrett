@@ -5,6 +5,8 @@
 #   COMPOSITORS="sway qtile" ci/ui/matrix.sh arch
 #   CONTAINER_ENGINE=docker ci/ui/matrix.sh
 #
+# Uses podman if installed, otherwise docker.
+#
 # Each distro gets its own cargo home and target dir under target/ui/<distro>/,
 # so builds are cached between runs. Logs land next to them as
 # <compositor>.log, and failed cases leave screenshots and compositor logs in
@@ -15,7 +17,19 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-engine=${CONTAINER_ENGINE:-podman}
+engine=${CONTAINER_ENGINE:-}
+if [ -z "$engine" ]; then
+    for candidate in podman docker; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            engine=$candidate
+            break
+        fi
+    done
+fi
+if [ -z "$engine" ] || ! command -v "$engine" >/dev/null 2>&1; then
+    echo "matrix.sh: no container engine found; install podman or docker, or set CONTAINER_ENGINE" >&2
+    exit 2
+fi
 compositors=${COMPOSITORS:-sway river qtile cosmic}
 [ "$#" -gt 0 ] || set -- arch fedora ubuntu
 

@@ -1,0 +1,17 @@
+[package]
+name = "klemmbrett-py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+klemmbrett = { path = "../.." }
+pyo3 = { version = "0.30", features = ["abi3-py311"] }
+
+[features]
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]

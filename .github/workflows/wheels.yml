@@ -1,0 +1,80 @@
+name: wheels
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          manylinux: "2_28"
+          before-script-linux: |
+            dnf install -y \
+              libxkbcommon-devel libxkbcommon-x11-devel libxcb-devel \
+              fontconfig-devel freetype-devel wayland-devel vulkan-loader-devel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  test:
+    needs: wheel
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+      - name: Install the wheel
+        run: python -m pip install dist/*.whl pytest
+      - name: The command starts and the extension loads
+        run: |
+          klemmbrett --help
+          python -c "import klemmbrett, klemmbrett._core; print(klemmbrett.themes.names())"
+      - name: Python tests against the installed wheel
+        run: |
+          mv python/klemmbrett python/klemmbrett.src
+          python -m pytest python/tests
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,747 @@
+#!/usr/bin/env python3
+"""Set the project version, commit and tag it, then build PyPI artifacts.
+
+Usage: scripts/release [-d|--dry-run] [--rc | --pre] [VERSION]
+
+VERSION is a dotted release such as 0.2.0 (a leading "v" is accepted and
+stripped). When omitted and stdin is a TTY, the script prints commit
+summaries since the last release and prompts for a version. Hitting
+return accepts the guessed next release. The version lives in the Cargo
+manifests (maturin reads it from crates/klemmbrett-py/Cargo.toml) and is
+written there in SemVer form: 0.3.0rc1 becomes 0.3.0-rc.1 and a .dev0
+pre-release becomes -dev.0, which maturin maps back to PEP 440. The script
+commits the version bump on the current branch, creates an annotated tag
+vVERSION on that commit, and then writes a release sdist plus a
+PyPI-compatible (manylinux) wheel to dist/<version>/. dist/latest points
+at the version just built.
+dist/stable points at the newest tagged final release and is left alone
+for a --rc build.
+
+A release or release candidate is allowed only on a release branch (main or
+master). A final release pushes that branch and the tag to the branch's
+upstream after the build succeeds and before the upload. An --rc build
+does not push.
+
+--pre builds a developmental pre-release from any branch. The version is
+``X.Y.Z.dev0+<shortsha>.<utc-timestamp>.<user>``. It is committed on the
+current branch and tagged before the build, and it is not pushed. pip and
+uv install it only for that exact version or when ``--pre`` is given.
+
+Unless --dry-run is set, the built artifacts are published with
+``uv publish`` (using uv's configured index and credentials) after the
+build and any push.
+
+--rc builds a release candidate of VERSION. A plain VERSION such as 0.3.0
+selects the next free candidate (0.3.0rc1, then 0.3.0rc2, from the local
+tags). An explicit candidate (0.3.0rc2 or 0.3.0-rc.2) is used as given and
+stored in PEP 440 form (0.3.0rcN). pip and uv will not install it unless
+that version is requested or --pre is given. The candidate is committed on
+the release branch and tagged before the build. dist/latest and dist/rc
+point at it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Optional, Sequence
+
+ROOT = Path(__file__).resolve().parent.parent
+# maturin takes the package version from the extension crate; the root
+# crate is kept in step with it.
+VERSION_MANIFEST = ROOT / "crates" / "klemmbrett-py" / "Cargo.toml"
+CARGO_MANIFESTS = (ROOT / "Cargo.toml", VERSION_MANIFEST)
+CARGO_LOCK = ROOT / "Cargo.lock"
+DIST = ROOT / "dist"
+MATURIN = "maturin[patchelf]>=1.7,<2"
+
+# Releases and release candidates are cut only from these branches.
+RELEASE_BRANCHES = ("main", "master")
+
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z.]+)?$")
+PLAIN_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+# Accept ``0.3.0rc1``, ``0.3.0-rc.1``, and ``0.3.0-rc1`` on input; store
+# and tag the PEP 440 spelling ``0.3.0rc1``.
+RC_INPUT_RE = re.compile(
+    r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)(?:-rc\.|-rc|rc)(?P<n>[0-9]+)$"
+)
+RC_PEP440_RE = re.compile(r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)rc(?P<n>[0-9]+)$")
+# Developmental pre-release: ``0.3.0.dev0+abc1234.20261008120000.mvb``.
+PRE_PEP440_RE = re.compile(
+    r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)\.dev0\+"
+    r"(?P<local>[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)$"
+)
+
+
+class ReleaseError(Exception):
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="scripts/release",
+        usage="scripts/release [-d|--dry-run] [--rc | --pre] [VERSION]",
+        description="Commit and tag the project version, then build PyPI artifacts.",
+    )
+    parser.add_argument(
+        "-d",
+        "--dry-run",
+        action="store_true",
+        help="print the plan and stop (skips commit, tag, build, and upload)",
+    )
+    parser.add_argument(
+        "--rc",
+        action="store_true",
+        help=(
+            "commit and tag the next release candidate of VERSION "
+            "(0.3.0 -> 0.3.0rc1)"
+        ),
+    )
+    parser.add_argument(
+        "--pre",
+        action="store_true",
+        help=(
+            "commit and tag a Python pre-release from any branch "
+            "(0.3.0 -> 0.3.0.dev0+<sha>.<timestamp>.<user>, not pushed)"
+        ),
+    )
+    parser.add_argument(
+        "version",
+        metavar="VERSION",
+        nargs="?",
+        help=(
+            "release version, e.g. 0.2.0 (prompted when omitted on a TTY, "
+            "with the guessed next release as the default; "
+            "--pre defaults to the current release, or the next one when "
+            "a newer release is tagged)"
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def run(
+    args: Sequence[str],
+    *,
+    cwd: Optional[Path] = None,
+    env: Optional[dict] = None,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        list(args),
+        cwd=str(cwd or ROOT),
+        env=env,
+        check=check,
+        text=True,
+        stdout=subprocess.PIPE if capture else None,
+    )
+
+
+def git(*args: str, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess:
+    return run(["git", *args], capture=capture, check=check)
+
+
+CARGO_RC_RE = re.compile(r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)-rc\.(?P<n>[0-9]+)$")
+CARGO_DEV_RE = re.compile(
+    r"^(?P<base>[0-9]+\.[0-9]+\.[0-9]+)-dev\.0\+"
+    r"(?P<local>[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)$"
+)
+
+
+def cargo_to_pep440(version: str) -> str:
+    """The PEP 440 spelling maturin publishes for a Cargo version."""
+    match = CARGO_RC_RE.match(version)
+    if match:
+        return f"{match.group('base')}rc{match.group('n')}"
+    match = CARGO_DEV_RE.match(version)
+    if match:
+        return f"{match.group('base')}.dev0+{match.group('local')}"
+    return version
+
+
+def pep440_to_cargo(version: str) -> str:
+    """The SemVer spelling written to Cargo.toml for a PEP 440 version."""
+    match = RC_PEP440_RE.match(version)
+    if match:
+        return f"{match.group('base')}-rc.{match.group('n')}"
+    match = PRE_PEP440_RE.match(version)
+    if match:
+        return f"{match.group('base')}-dev.0+{match.group('local')}"
+    if PLAIN_VERSION_RE.match(version):
+        return version
+    raise ReleaseError(f"no Cargo spelling for version {version}", code=2)
+
+
+def manifest_version(manifest: Path) -> str:
+    in_package = False
+    for line in manifest.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_package = stripped == "[package]"
+            continue
+        if in_package and stripped.startswith("version = "):
+            return stripped.split('"')[1]
+    raise ReleaseError(f"package.version not found in {manifest.relative_to(ROOT)}")
+
+
+def project_version() -> str:
+    return cargo_to_pep440(manifest_version(VERSION_MANIFEST))
+
+
+def rewrite_cargo_manifests(new: str) -> None:
+    """Set the [package] version of every workspace crate to ``new`` (PEP 440)."""
+    new_field = f'version = "{pep440_to_cargo(new)}"'
+    for manifest in CARGO_MANIFESTS:
+        old_field = f'version = "{manifest_version(manifest)}"'
+        out = []
+        in_package = False
+        replaced = False
+        for line in manifest.read_text().splitlines(keepends=True):
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_package = stripped == "[package]"
+            if in_package and not replaced and stripped.startswith("version = "):
+                line = line.replace(old_field, new_field, 1)
+                replaced = new_field in line
+            out.append(line)
+        if not replaced:
+            raise ReleaseError(
+                f"refusing to rewrite {manifest.relative_to(ROOT)} "
+                "(version field not updated)"
+            )
+        manifest.write_text("".join(out))
+
+
+def normalize_version(text: str) -> str:
+    """Normalize a version to the PEP 440 spelling used for tags and dist/.
+
+    ``0.3.0-rc.1`` and ``0.3.0-rc1`` become ``0.3.0rc1``.
+    """
+    match = RC_INPUT_RE.match(text)
+    if match and not RC_PEP440_RE.match(text):
+        return f"{match.group('base')}rc{match.group('n')}"
+    return text
+
+
+def release_base(version: str) -> str:
+    """The ``X.Y.Z`` release inside a project version."""
+    if PLAIN_VERSION_RE.match(version):
+        return version
+    match = RC_PEP440_RE.match(version) or PRE_PEP440_RE.match(version)
+    if match:
+        return match.group("base")
+    head = re.split(r"[-+]", version, maxsplit=1)[0]
+    if PLAIN_VERSION_RE.match(head):
+        return head
+    raise ReleaseError(f"not a release version: {version}", code=2)
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def newest_tagged_release() -> Optional[str]:
+    """The highest final ``X.Y.Z`` among the release tags, if any."""
+    listed = git("tag", "-l", capture=True).stdout.splitlines()
+    found = []
+    for tag in listed:
+        name = release_tag_name(tag.strip())
+        if name is not None and PLAIN_VERSION_RE.match(name):
+            found.append(version_tuple(name))
+    if not found:
+        return None
+    return ".".join(str(part) for part in max(found))
+
+
+def guess_next_release(current: str) -> str:
+    """The next final ``X.Y.Z`` after the project version.
+
+    A final ``4.0.6`` becomes ``4.0.7``. An rc or developmental version of
+    ``4.0.7`` stays ``4.0.7``. A tagged final release newer than the project
+    version (the Cargo manifests started over at 0.1.0) wins over it.
+    """
+    newest = newest_tagged_release()
+    base = release_base(current)
+    if newest is not None and version_tuple(newest) >= version_tuple(base):
+        current = newest
+    if PLAIN_VERSION_RE.match(current):
+        major, minor, patch = current.split(".")
+        return f"{major}.{minor}.{int(patch) + 1}"
+    return release_base(current)
+
+
+def version_user() -> str:
+    """Login name, reduced to the characters a PEP 440 local segment allows."""
+    raw = getpass.getuser()
+    cleaned = re.sub(r"[^0-9A-Za-z]", "", raw).lower()
+    if not cleaned:
+        raise ReleaseError(f"username {raw!r} cannot be used in a version", code=2)
+    return cleaned
+
+
+def pep440_pre_version(base: str) -> str:
+    """PEP 440 spelling of a developmental pre-release of ``base``.
+
+    The local part is the short commit hash, a UTC timestamp, and the
+    username, in that order.
+    """
+    sha = git("rev-parse", "--short", "HEAD", capture=True).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]+", sha):
+        raise ReleaseError(f"refusing commit hash {sha!r}", code=2)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"{base}.dev0+{sha}.{stamp}.{version_user()}"
+
+
+def parse_rc_request(text: str) -> tuple[str, Optional[int]]:
+    """Split an ``--rc`` argument into a release and an optional candidate number.
+
+    A plain release (``0.3.0``) leaves the number unset so the caller can
+    pick the next free one. ``0.3.0rc2`` and ``0.3.0-rc.2`` name one candidate.
+    """
+    if PLAIN_VERSION_RE.match(text):
+        return text, None
+    match = RC_INPUT_RE.match(text)
+    if match is None:
+        raise ReleaseError(
+            f"a release candidate is built from a release such as 0.3.0, not {text}",
+            code=2,
+        )
+    number = int(match.group("n"))
+    if number < 1:
+        raise ReleaseError("release candidate numbers start at 1", code=2)
+    return match.group("base"), number
+
+
+def pep440_rc_version(base: str, number: int) -> str:
+    """PEP 440 spelling of a release candidate."""
+    return f"{base}rc{number}"
+
+
+def next_rc_number(base: str) -> int:
+    """One past the highest local tag for ``base``, or 1 when none exist."""
+    listed = git(
+        "tag", "-l", f"v{base}-rc.*", f"v{base}rc*", capture=True
+    ).stdout.splitlines()
+    pattern = re.compile(rf"^v{re.escape(base)}(?:-rc\.|rc)([0-9]+)$")
+    highest = 0
+    for tag in listed:
+        match = pattern.match(tag.strip())
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def manifest_paths() -> List[str]:
+    paths = [str(manifest.relative_to(ROOT)) for manifest in CARGO_MANIFESTS]
+    if CARGO_LOCK.exists():
+        paths.append(str(CARGO_LOCK.relative_to(ROOT)))
+    return paths
+
+
+def restore_manifests() -> None:
+    git("checkout", "--", *manifest_paths())
+
+
+def commit_version_bump(branch: str, version: str) -> None:
+    """Commit the version bump on ``branch``.
+
+    The annotated tag is created afterwards on this same commit, so the bump
+    is reachable from the branch and not only from the tag.
+    """
+    if current_branch() != branch:
+        raise ReleaseError(
+            f"refusing to commit {version} on {current_branch()}; expected {branch}"
+        )
+    git("add", *manifest_paths())
+    git("commit", "-m", f"Release {version}.")
+
+
+def tag_branch_tip(branch: str, tag: str, version: str) -> None:
+    """Create ``tag`` on the current tip of ``branch``."""
+    if current_branch() != branch:
+        raise ReleaseError(
+            f"refusing to tag {tag} on {current_branch()}; expected {branch}"
+        )
+    git("tag", "-a", tag, "-m", f"klemmbrett {version}")
+
+
+def current_branch() -> str:
+    """The branch HEAD is on, or ``HEAD`` when detached."""
+    return git("rev-parse", "--abbrev-ref", "HEAD", capture=True).stdout.strip()
+
+
+def require_upstream(branch: str) -> None:
+    """Refuse a final release whose branch has no tracking upstream."""
+    result = git(
+        "rev-parse",
+        "--abbrev-ref",
+        "@{upstream}",
+        capture=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        raise ReleaseError(
+            f"{branch} has no upstream; set one before releasing",
+            code=2,
+        )
+
+
+def require_release_branch() -> str:
+    """Refuse a release or release candidate that is not cut from a release branch."""
+    branch = current_branch()
+    if branch not in RELEASE_BRANCHES:
+        allowed = " or ".join(RELEASE_BRANCHES)
+        raise ReleaseError(
+            f"a release can only be created from {allowed}, not {branch}",
+            code=2,
+        )
+    return branch
+
+
+def tag_exists(tag: str) -> bool:
+    result = git("rev-parse", "-q", "--verify", f"refs/tags/{tag}", capture=True, check=False)
+    return result.returncode == 0
+
+
+def release_tag_name(tag: str) -> Optional[str]:
+    """Return the version part of a release tag, or None if it is not one."""
+    name = tag[1:] if tag.startswith("v") else tag
+    if VERSION_RE.match(name) or RC_INPUT_RE.match(name):
+        return name
+    return None
+
+
+def last_release_ref() -> Optional[tuple[str, str]]:
+    """The most recent release boundary as (ref, label).
+
+    Prefer a tag or ``Release X.Y.Z.`` commit for the current project
+    version, so a series that tagged ``v4.0.3`` (or only committed it) is
+    found even when older bare tags still exist. Fall back to the newest
+    version-sorted release tag.
+    """
+    current = project_version()
+    for tag in (f"v{current}", current):
+        if tag_exists(tag):
+            return tag, tag
+
+    result = git(
+        "log",
+        "-1",
+        "--format=%H",
+        f"--grep=^Release {re.escape(current)}\\.$",
+        capture=True,
+        check=False,
+    )
+    commit = result.stdout.strip()
+    if result.returncode == 0 and commit:
+        return commit, f"Release {current}"
+
+    listed = git("tag", "-l", "--sort=-v:refname", capture=True).stdout.splitlines()
+    for tag in listed:
+        if release_tag_name(tag.strip()) is not None:
+            return tag.strip(), tag.strip()
+    return None
+
+
+def commits_since_last_release() -> tuple[Optional[str], List[str]]:
+    """Return (label, subject lines) for commits after the last release."""
+    boundary = last_release_ref()
+    if boundary is None:
+        log = git("log", "--format=%s", capture=True).stdout.splitlines()
+        return None, log
+    ref, label = boundary
+    log = git("log", f"{ref}..HEAD", "--format=%s", capture=True).stdout.splitlines()
+    return label, log
+
+
+def prompt_version(*, candidate: bool) -> str:
+    """Print commits since the last release and ask for a VERSION on a TTY."""
+    if not sys.stdin.isatty():
+        raise ReleaseError("VERSION is required when stdin is not a TTY", code=2)
+
+    label, subjects = commits_since_last_release()
+    current = project_version()
+    print(f"Current project version: {current}")
+    if label is None:
+        print("No previous release tag or commit found.")
+    else:
+        print(f"Commits since {label}:")
+    if not subjects:
+        print("  (none)")
+    else:
+        for subject in subjects:
+            print(f"  {subject}")
+    print()
+    guessed = guess_next_release(current)
+    if candidate:
+        prompt = f"Upcoming release or candidate [{guessed}]: "
+    else:
+        prompt = f"Release version [{guessed}]: "
+    try:
+        given = input(prompt).strip()
+    except EOFError as exc:
+        raise ReleaseError("no version entered", code=2) from exc
+    return given or guessed
+
+
+def version_directory(name: str) -> Path:
+    """``dist/<name>``, refusing names that could escape that directory."""
+    if (
+        not name
+        or name in (".", "..", "latest", "stable", "rc")
+        or "/" in name
+        or "\\" in name
+    ):
+        raise ReleaseError(f"refusing version directory {name!r}")
+    return DIST / name
+
+
+def prepare_version_dir(name: str) -> Path:
+    """Replace ``dist/<name>`` with an empty directory. Other versions stay."""
+    path = version_directory(name)
+    if path.is_symlink():
+        raise ReleaseError(f"{path} is a symlink")
+    DIST.mkdir(exist_ok=True)
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir()
+    return path
+
+
+def retarget(link_name: str, version_name: str) -> None:
+    """Point ``dist/<link_name>`` at ``dist/<version_name>``."""
+    version_directory(version_name)
+    DIST.mkdir(exist_ok=True)
+    link = DIST / link_name
+    if link.is_symlink() or (link.exists() and not link.is_dir()):
+        link.unlink()
+    elif link.is_dir():
+        raise ReleaseError(f"{link} is a directory; not replacing it with a symlink")
+    temporary = DIST / f".{link_name}.tmp"
+    if temporary.is_symlink() or temporary.exists():
+        temporary.unlink()
+    temporary.symlink_to(version_name)
+    temporary.replace(link)
+
+
+def publish(name: str, *, stable: bool = False, candidate: bool = False) -> None:
+    """Point dist/latest at this version.
+
+    A final release also claims dist/stable. A release candidate claims
+    dist/rc and leaves dist/stable on the last final release, so the default
+    upload path does not start serving the candidate.
+    """
+    retarget("latest", name)
+    if stable:
+        retarget("stable", name)
+    if candidate:
+        retarget("rc", name)
+
+
+def build(version_name: str) -> Path:
+    """Build the sdist and a PyPI-compatible wheel into ``dist/<version_name>/``.
+
+    ``--compatibility pypi`` makes maturin graft the non-manylinux system
+    libraries (fontconfig, xkbcommon, ...) into the wheel with patchelf, or
+    fail instead of producing a ``linux_*`` wheel PyPI would reject.
+    """
+    if shutil.which("uv") is None:
+        raise ReleaseError("uv is required to build the release artifacts")
+    out = prepare_version_dir(version_name)
+    print(f"Building sdist and wheel into {out.relative_to(ROOT)}/", flush=True)
+    run(
+        [
+            "uv",
+            "tool",
+            "run",
+            "--from",
+            MATURIN,
+            "maturin",
+            "build",
+            "--release",
+            "--sdist",
+            "--compatibility",
+            "pypi",
+            "--out",
+            str(out),
+        ]
+    )
+    return out
+
+
+def show_artifacts(directory: Path) -> None:
+    print()
+    print(f"Artifacts in {directory.relative_to(ROOT)}/:")
+    for artifact in sorted(directory.iterdir()):
+        print(artifact.name)
+
+
+def upload_artifacts(directory: Path) -> None:
+    """Publish every file in ``directory`` with ``uv publish``."""
+    artifacts = sorted(path for path in directory.iterdir() if path.is_file())
+    if not artifacts:
+        raise ReleaseError(f"no artifacts in {directory}")
+    run(["uv", "publish", *(str(path) for path in artifacts)])
+
+
+def main(argv: Sequence[str]) -> int:
+    args = parse_args(argv)
+
+    if args.rc and args.pre:
+        raise ReleaseError("--rc and --pre cannot be combined", code=2)
+
+    given = args.version
+    if given is None and not args.pre:
+        given = prompt_version(candidate=args.rc)
+    if given is not None:
+        given = given[1:] if given.startswith("v") else given
+
+    current = project_version()
+    candidate = False
+    prerelease = False
+    if args.pre:
+        base = given
+        if base is None:
+            base = release_base(current)
+            newest = newest_tagged_release()
+            if newest is not None and version_tuple(newest) >= version_tuple(base):
+                base = guess_next_release(newest)
+        if not PLAIN_VERSION_RE.match(base):
+            raise ReleaseError(
+                f"a pre-release is built from a release such as 0.3.0, not {base}",
+                code=2,
+            )
+        version = pep440_pre_version(base)
+        prerelease = True
+    elif args.rc:
+        base, number = parse_rc_request(given)
+        if number is None:
+            number = next_rc_number(base)
+        version = pep440_rc_version(base, number)
+        candidate = True
+    else:
+        if not VERSION_RE.match(given) and not RC_INPUT_RE.match(given):
+            raise ReleaseError(f"not a version: {given}", code=2)
+        version = normalize_version(given)
+        candidate = RC_PEP440_RE.match(version) is not None
+    tag = f"v{version}"
+    if prerelease:
+        branch = current_branch()
+    else:
+        branch = require_release_branch()
+        if not candidate:
+            require_upstream(branch)
+
+    if git("status", "--porcelain", capture=True).stdout.strip():
+        if not args.dry_run:
+            raise ReleaseError("working tree is not clean")
+        print("working tree is not clean; a real run would stop here", file=sys.stderr)
+
+    wheels = f"would build an sdist and a manylinux wheel into dist/{version}/"
+
+    need_commit = False
+    need_tag = False
+    if tag_exists(tag):
+        if current != version:
+            raise ReleaseError(
+                f"tag {tag} already exists, but the project version is {current}"
+            )
+    else:
+        need_tag = True
+        need_commit = current != version
+
+    if args.dry_run:
+        if need_commit:
+            print(
+                f"would commit version {current} -> {version} "
+                f"(Cargo {pep440_to_cargo(version)}) on {branch}"
+            )
+        if need_tag:
+            print(f"would tag {tag} on {branch}")
+        else:
+            print(f"tag {tag} already exists")
+        print(wheels)
+        if prerelease:
+            print(f"would point dist/latest at {version}")
+            print("would leave dist/stable and dist/rc unchanged")
+            print(f"would not push {branch} or {tag}")
+            print(
+                f"{version} is a pre-release: pip and uv install it only for "
+                f"klemmbrett=={version} or when --pre is given"
+            )
+        elif candidate:
+            print(f"would point dist/latest and dist/rc at {version}")
+            print("would leave dist/stable unchanged")
+            print(
+                f"{version} is a pre-release: pip and uv install it only for "
+                f"klemmbrett=={version} or when --pre is given"
+            )
+        else:
+            print(f"would point dist/latest and dist/stable at {version}")
+            print(f"would push {branch} and {tag} to its upstream")
+        print(f"would upload dist/{version}/* with uv publish")
+        return 0
+
+    if need_commit:
+        rewrite_cargo_manifests(version)
+        refreshed = run(["cargo", "update", "--workspace"], capture=True, check=False)
+        if refreshed.returncode != 0:
+            restore_manifests()
+            raise ReleaseError(
+                "cargo update rejected the new version; Cargo manifests restored"
+            )
+        commit_version_bump(branch, version)
+        print(f"committed {version} on {branch}")
+    if need_tag:
+        tag_branch_tip(branch, tag, version)
+        print(f"tagged {tag} on {branch}")
+
+    out = build(version)
+    publish(version, stable=not candidate and not prerelease, candidate=candidate)
+
+    show_artifacts(out)
+    print()
+    print(f"dist/latest -> {version}")
+    if prerelease:
+        print("dist/stable and dist/rc are unchanged")
+    elif candidate:
+        print(f"dist/rc -> {version}")
+    else:
+        print(f"dist/stable -> {version}")
+    print()
+    if prerelease:
+        print(f"{branch} and {tag} are not pushed")
+    elif candidate:
+        print("The tag is local. Publish it with:")
+        print("  git push --follow-tags")
+    else:
+        git("push", "--follow-tags")
+        print(f"pushed {branch} and {tag}")
+    print()
+    if prerelease or candidate:
+        print(
+            f"{version} is a pre-release. pip and uv will not install it unless "
+            f"the version is requested (klemmbrett=={version}) or --pre is given."
+        )
+        print()
+    upload_artifacts(out)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except ReleaseError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(exc.code)
+    except subprocess.CalledProcessError as exc:
+        print(f"{exc.cmd[0]} exited with {exc.returncode}", file=sys.stderr)
+        sys.exit(exc.returncode or 1)

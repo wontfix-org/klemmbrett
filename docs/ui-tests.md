@@ -33,6 +33,7 @@ variable also takes a comma-separated list:
 
 ```sh
 KLEMMBRETT_COMPOSITOR=qtile cargo test --test ui_placement -- --nocapture
+just gui-test qtile        # the same; `just gui-test` runs every installed one
 ```
 
 Each compositor prints `ui_placement: run`, then one `pass` or `fail` line
@@ -51,6 +52,7 @@ inside that image and prints a table:
 ci/ui/matrix.sh                         # arch fedora ubuntu, every compositor
 COMPOSITORS="sway cosmic" ci/ui/matrix.sh arch
 CONTAINER_ENGINE=docker ci/ui/matrix.sh fedora
+just gui-matrix arch                    # the same script
 ```
 
 ```

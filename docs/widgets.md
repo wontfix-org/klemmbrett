@@ -1,127 +1,140 @@
-# Widgets, transforms, and actions
+# Widgets, providers, and handlers
 
-A **widget** is a named list of records. Selecting a row runs that widget's
-**transform** pipeline, then its **actions** in order. A widget's optional
-second label is its provider (`widget "history" "clipboard-history"`).
-Omit that label when every open must pass records. Action and transform
-blocks still take a type (`action "notify" "exec"`, `transform "jq" "exec"`).
-Widget names must be unique. Relative `db` and `path` values are resolved
-relative to the configuration file.
+A **widget** is a named popup listing records from a **provider**. Picking a
+row calls the widget's **`on_select`** with that `Record`. Everything that
+happens next is plain Python. There are no actions, transforms, or
+`${...}` placeholders.
 
-```hcl
-widget "history" "clipboard-history" {
-  layout   = "filter"
-  action   = "copy-to-clipboard"
-}
+```python
+import klemmbrett as kb
+from klemmbrett import layouts, providers
+
+kb.widget("history", providers.ClipboardHistory(), layout=layouts.filter)
+
+@kb.widget("links", providers.File("links.yaml"), layout=layouts.filter)
+def links(record):
+    kb.launch(["xdg-open", record.value])
 ```
 
-`action = "name"` keeps the named action's defaults. To pass arguments or
-run more than one action, use `action "name" { }` blocks (not together
-with `action =` on the same widget):
-
-```hcl
-widget "links" "file" {
-  path     = "links.yaml"
-  format   = "yaml"
-  action "copy-to-clipboard" {}
-  action "notify-send" {
-    title = "${label}"
-  }
-}
-```
+`kb.widget(name, provider=None, *, layout, theme, location, multi, select,
+deselect, on_select, on_highlight)` returns a `Widget`. Calling the `Widget`
+with a function sets `on_select`, which is what makes the decorator form
+work. `Widget.on_highlight` is a decorator too, and both can also be passed
+as keyword arguments. Widget names must be unique. Relative paths given to
+providers are resolved against the directory of `config.py`, and that
+directory is importable, so helpers can live next to the config.
 
 ## Records
 
-Every record needs a `value`. `key` and `label` default to the value when
-omitted. Keys must be unique within a widget. The popup shows the label.
+`kb.Record(value, label=None, key=None)` is a frozen dataclass. `key` and
+`label` default to `value`. The popup shows the label, keys must be unique
+within a widget, and `dataclasses.replace(record, value=...)` derives a
+changed record.
 
-`${value}`, `${key}`, and `${label}` in commands, `stdin`, and widget-passed
-action arguments are expanded when the row is selected.
+Wherever records are returned or passed (providers, `kb.show`), a string
+stands for `Record(string)` and a dict needs `value`, with optional `key`
+and `label`.
 
-## Widgets
+## What picking a row does
 
-| Provider | Default action | Notes |
+The first of these that applies runs:
+
+1. the widget's `on_select`
+2. the provider's `select` method
+3. `kb.copy(record.value)`
+
+| Provider | Default on pick | Records |
 | --- | --- | --- |
-| `clipboard-history` | `copy-to-clipboard` | Optional SQLite history |
-| `file` | `copy-to-clipboard` | Reloaded each time the popup opens |
-| `executables` | `launch` | `PATH` entries; first basename wins |
-| `wayland-windows` | `activate-window` | Open toplevels via `zwlr_foreign_toplevel_manager_v1` |
-| `themes` | `set-theme` | `default`, then every shipped palette |
-| omitted | `copy-to-clipboard` | No records of its own; each open must pass them |
+| `ClipboardHistory()` | copy | Recent clips, newest first, in SQLite |
+| `File(path, format=None)` | copy | Reloaded each time the popup opens |
+| `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
+| `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1` |
+| `Themes()` | `kb.set_theme(value)` | `default`, then every shipped palette |
+| `Static(records)` | copy | A fixed list |
+| none | copy | No records of its own; each open must pass them |
 
-`executables` and `wayland-windows` lists are long; use `layout = "filter"`.
-`layout = "prompt"` is inputbar-only: Enter returns the typed text as
-`key`, `label`, and `value`. Provider records are unused.
+An exception in a handler is printed with its traceback (to the journal
+under systemd) and ends that handler; the daemon keeps running. Handlers
+run one at a time on a dedicated thread, in the order the events
+happened, so a slow handler never freezes the popup.
 
-A widget with no provider label has no record source. `show` and `prompt`
-must pass a record file, or `-` to read stdin. `--format` defaults to
-`text`. An empty record array is rejected, including for `layout = "prompt"`.
-The tray menu omits these widgets, because a click cannot supply records.
+`klemmbrett prompt` and the D-Bus `Prompt` method return the selected
+values and do not call any handlers.
 
-```hcl
-widget "pick" {
-  layout = "filter"
-  action = "copy-to-clipboard"
-}
+### Operations
+
+These are the operations handlers can't easily do by themselves. Calling
+them outside the daemon raises `RuntimeError`.
+
+| Function | Effect |
+| --- | --- |
+| `kb.copy(text)` | Sets the clipboard and primary selection, and records history |
+| `kb.launch(argv)` | Starts a detached program the way the `launch` setting says |
+| `kb.activate_window(key)` | Focuses a `WaylandWindows` record's window |
+| `kb.set_theme(theme)` | Switches the palette: a name, `"default"`, or a `Theme` |
+| `kb.show(widget, records=None, pointer=None)` | Opens a widget |
+| `kb.quit()` | Stops the daemon |
+
+`kb.copy` goes through the sync thread, so the copied text is not copied
+back as a new selection. Prefer it over `wl-copy`.
+
+## Multi-select
+
+`multi=True` lets Tab toggle the current row and move down, and Shift-Tab
+toggle and move up (fzf `--multi`). Enter calls `on_select` once per marked
+row, in the order the rows were marked. If nothing is marked, Enter picks
+the current row. Clicks and accelerator keys still pick one row. `select`
+and `deselect` change the keys (`"tab"` and `"shift-tab"` by default;
+`"btab"` is Shift-Tab, and modifiers are written `ctrl-space`).
+
+```python
+kb.widget("links", providers.File("links.yaml"), layout=layouts.filter, multi=True)
 ```
 
-```sh
-printf '%s\n' one two | klemmbrett show pick -
+The mark is drawn by `ui.Marker()` in the layout. The shipped layouts add it
+when the widget is multi-select.
+
+## Highlight
+
+`on_highlight` runs each time the keyboard selection (arrow keys, Tab, or
+typing into the filter) lands on a different row. The row the popup opens
+on does not trigger it, and neither does `prompt`.
+
+```python
+palettes = kb.widget("themes", providers.Themes(), layout=layouts.filter)
+
+@palettes.on_highlight
+def preview(record):
+    kb.set_theme(record.value)
 ```
 
-`multi = true` lets Tab toggle the current row and move down, and
-Shift-Tab toggle and move up (fzf `--multi`). Enter runs transforms and
-actions for each checked row, in the order they were marked. If nothing
-is checked, Enter runs the current row. Click and accelerator keys still
-pick one row. `select` and `deselect` override those keys (`"tab"` and
-`"shift-tab"` by default; `"btab"` is Shift-Tab). The mark is
-`element-marker` in the layout (`text` defaults to `>`).
+The open popup restyles as you move through the list. Enter keeps the
+current row's theme, and Escape keeps whatever was last highlighted.
 
-```hcl
-widget "links" "file" {
-  path     = "links.yaml"
-  format   = "yaml"
-  layout   = "filter"
-  multi    = true
-  select   = "tab"
-  deselect = "shift-tab"
-  action   = "xdg-open"
-}
+## Providers
+
+### ClipboardHistory
+
+```python
+providers.ClipboardHistory(limit=50, path=None, coalesce_growing=True, skip_whitespace_only=True)
 ```
 
-`highlight_action = "name"` runs one action, after the widget's transforms,
-each time the keyboard selection (arrow keys, Tab, or typing into the
-filter) lands on a different row. The row the popup opens on does not
-trigger it, and `prompt` skips it like other actions.
-
-### clipboard-history
-
-```hcl
-widget "history" "clipboard-history" {
-  db                   = "history.sqlite"
-  history_limit        = 50
-  coalesce_growing     = true
-  skip_whitespace_only = true
-}
-```
-
-`db` defaults to `$XDG_DATA_HOME/klemmbrett/history.sqlite`.
-`history_limit` defaults to 50. Coalescing (`true` by default) replaces the
-newest row when a new selection contains it, so growing a selection does
-not create one row per character. Whitespace-only selections are not stored
-unless `skip_whitespace_only` is `false`.
+`path` defaults to `$XDG_DATA_HOME/klemmbrett/history.sqlite`. Coalescing
+replaces the newest row when a new selection contains it, so growing a
+selection does not create one row per character. Whitespace-only selections
+are not stored unless `skip_whitespace_only=False`. Every widget sharing one
+`ClipboardHistory` instance shares its database, and each clip is recorded
+once.
 
 `key` is the SQLite row id. `label` and `value` are the clip text, so the
 same text can appear twice and copying still uses the text.
 
-### file
+### File
 
-`text` is one non-empty line per record. JSON and YAML are an array of
-strings or objects:
-
-```json
-["plain value", {"key": "url", "label": "Project website", "value": "https://example.com"}]
-```
+`format` is `"text"` (one non-empty line per record), `"json"`, or
+`"yaml"`. When omitted, it follows the extension: `.json`, `.yaml` or
+`.yml`, and anything else is text. JSON and YAML are an array of strings or
+objects:
 
 ```yaml
 - plain value
@@ -130,143 +143,100 @@ strings or objects:
   value: https://example.com
 ```
 
-```hcl
-widget "snippets" "file" {
-  path     = "snippets.yaml"
-  format   = "yaml"
-  action   = "xdg-open"
-}
+A broken file is reported when the configuration loads, and again (in the
+log) when a later edit breaks it.
+
+`klemmbrett show` and `klemmbrett prompt` read the same formats from a
+positional path, and `-` reads stdin. On D-Bus each record is a dict:
+`value` is required, and a missing `key` or `label` defaults to the value.
+An empty record array keeps the widget's own provider, and a widget with no
+provider rejects it.
+
+### Your own
+
+A provider is a function returning records, or any object with a
+`records()` method. Subclass `kb.Provider` when it needs state, a default
+`select`, or the clipboard hook:
+
+```python
+@kb.provider
+def bookmarks():
+    with open("/home/me/bookmarks.tsv") as lines:
+        return [kb.Record(url, label=title) for title, url in (line.rstrip("\n").split("\t") for line in lines)]
+
+class Todo(kb.Provider):
+    def __init__(self):
+        self.items = []
+
+    def records(self):
+        return self.items
+
+    def on_clipboard(self, text):   # every new clipboard text
+        if text.startswith("TODO "):
+            self.items.insert(0, text[5:])
+
+    def select(self, record):       # the default on_select for widgets using it
+        self.items.remove(record.value)
+
+kb.widget("marks", bookmarks, on_select=lambda record: kb.launch(["xdg-open", record.value]))
+kb.widget("todo", Todo())
 ```
 
-`klemmbrett show` and `klemmbrett prompt` read those same formats from a
-positional path. `--format text|json|yaml` defaults to `text`. The path `-`
-reads stdin. Omitting the path uses the widget provider. On the bus each
-record is a dict: `value` is required, and a missing `key` or `label`
-defaults to the value. An empty record array keeps the widget's own
-provider. A widget with no provider rejects that empty array.
+`records()` runs on a background thread each time the popup opens, so it may
+block briefly (reading files, calling a command), but slow providers delay
+the popup.
 
-### themes
+## Recipes
 
-Lists `default` (the embedded look, no palette) followed by the shipped
-palettes from the [README](../README.md#popup-theme). With
-`highlight_action = "set-theme"` the open popup restyles as you move
-through the list; Enter keeps the current row, and Escape keeps whatever
-was last highlighted.
+These are the Python equivalents of the removed transforms and actions.
 
-```hcl
-widget "themes" "themes" {
-  layout           = "filter"
-  highlight_action = "set-theme"
-}
+Copy and notify (several actions):
+
+```python
+@kb.widget("links", providers.File("links.yaml"))
+def links(record):
+    kb.copy(record.value)
+    subprocess.run(["notify-send", record.label, record.value])
 ```
 
-## Actions
+Open a URL, or start any detached program (`launch`, `xdg-open`):
 
-Named `action` blocks extend a built-in (`copy-to-clipboard`, `launch`,
-`exec`, `activate-window`, or `set-theme`). Built-in names cannot be redefined.
-`xdg-open` is a shipped `launch` preset (`["xdg-open", "${value}"]`) unless
-the config defines that name. `notify-send` is a shipped `exec` preset
-(`["notify-send", "${title}", "${body}"]`) with `title = "klemmbrett"` and
-`body = "${value}"`.
-
-`launch` and `exec` take an optional `command` (default `["${value}"]`).
-`${value}`, `${key}`, `${label}`, and names declared in `args` are
-substituted in `command` and `stdin`.
-
-| Type | Process | `launch` setting | `stdin` |
-| --- | --- | --- | --- |
-| `copy-to-clipboard` | copies the (possibly rewritten) value | — | — |
-| `launch` | detach, do not wait | yes | — |
-| `exec` | wait; log a failing exit | no | optional, default empty |
-| `activate-window` | focus a `wayland-windows` toplevel | — | — |
-| `set-theme` | use the value as the file-wide palette until the daemon exits | — | — |
-
-`set-theme` takes a shipped palette name, a theme file path (relative to
-the config file), or `default`. It replaces every `theme "name" {}` block;
-a widget's own `theme = "…"` and in-file catalog blocks still win. An
-unknown theme is logged and leaves the current one in place.
-
-`args` gives each extra name a default. A widget may override those names
-on `action "name" { }`. Widget-passed values and defaults may use
-`${value}`, `${key}`, and `${label}`. Extra names on an invocation are
-rejected. `args` is only valid on `launch` and `exec`.
-
-```hcl
-action "private-firefox" "launch" {
-  command = ["firefox", "--private-window", "${value}"]
-}
-
-widget "links" "file" {
-  path     = "links.yaml"
-  format   = "yaml"
-  action "copy-to-clipboard" {}
-  action "notify-send" {
-    title = "${label}"
-    body  = "${key}: ${value}"
-  }
-}
+```python
+@kb.widget("bookmarks", providers.File("bookmarks.yaml"))
+def bookmarks(record):
+    kb.launch(["firefox", "--private-window", record.value])
 ```
 
-`stdin` on `exec` is written to the command after interpolation:
+Extract with a regular expression (`regex` with `on_miss = "fail"`):
 
-```hcl
-action "write" "exec" {
-  command = ["wl-copy"]
-  stdin   = "${value}"
-}
+```python
+TICKET = re.compile(r"https://[^/]+/browse/(?P<ticket>[A-Z]+-\d+)")
+
+@kb.widget("tickets", providers.ClipboardHistory())
+def tickets(record):
+    if match := TICKET.search(record.value):
+        kb.copy(match["ticket"])
 ```
 
-## Transforms
+Pick a JSON field (`jq`):
 
-Named `transform` blocks rewrite the selected value before the action.
-The second label is the type (`exec` or `regex`). A failing transform
-skips the action. A widget lists steps in order:
-
-```hcl
-transform "jq" "exec" {
-  args {
-    expr = ".data"
-  }
-  command = ["jq", "-r", "${expr}"]
-}
-
-transform "ticket" "regex" {
-  pattern = "https://[^/]+/browse/(?P<ticket>[A-Z]+-\\d+)"
-  replace = "${ticket}"
-  on_miss = "fail"
-}
-
-widget "payloads" "file" {
-  path     = "payloads.yaml"
-  format   = "yaml"
-  transform "jq" {
-    expr = ".title"
-  }
-  transform "ticket" {}
-  action = "copy-to-clipboard"
-}
+```python
+@kb.widget("payloads", providers.File("payloads.yaml"))
+def payloads(record):
+    kb.copy(json.loads(record.value)["data"]["title"])
 ```
 
-Omitted widget arguments keep the defaults. An empty
-`transform "ticket" {}` is valid when nothing needs overriding.
+Filter through a command (`exec` with `stdin`):
 
-### exec
+```python
+@kb.widget("decode", providers.ClipboardHistory())
+def decode(record):
+    result = subprocess.run(["base64", "-d"], input=record.value, capture_output=True, text=True, check=True)
+    kb.copy(result.stdout)
+```
 
-Runs a command and replaces the value with stdout (one trailing newline is
-stripped). `stdin` defaults to `${value}`. `${value}`, `${key}`, `${label}`,
-and declared args are substituted in `command` and `stdin`. The command is
-waited for and does not use `launch`.
+Paste-style pickers that print instead of acting are `klemmbrett prompt`:
 
-### regex
-
-Applies `pattern` to the current value and substitutes `replace` for every
-match. `pattern` and `replace` interpolate the same names as `exec`.
-
-`on_miss` is `keep` (default: leave the value unchanged) or `fail` (skip
-the action). An invalid pattern after interpolation always fails.
-
-Named captures use `(?P<name>…)` or `(?<name>…)` and `$name` / `${name}` in
-`replace`. Capture names must not collide with `value`, `key`, `label`, or
-declared args — those are expanded first. Numbered groups (`$1`, `${1}`)
-work as usual. Inline flags such as `(?i)` are allowed; there is no
-separate flags property.
+```sh
+printf '%s\n' one two | klemmbrett prompt pick -
+```
