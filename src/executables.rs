@@ -30,6 +30,7 @@ pub fn executables_on_path(path: &str) -> Vec<Record> {
                 key: name.to_owned(),
                 label: name.to_owned(),
                 value: file.to_string_lossy().into_owned(),
+                data: serde_json::Value::Null,
             });
         }
     }

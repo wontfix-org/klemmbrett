@@ -12,9 +12,10 @@ The daemon reads `$XDG_CONFIG_HOME/klemmbrett/config.py`::
 
 from __future__ import annotations
 
-from . import layouts, providers, themes, ui
+from . import layouts, notifications, providers, rpc, themes, ui
 from ._record import Record
 from ._registry import Widget, configure, widget
+from ._schema import SchemaError
 from ._runtime import activate_window, copy, is_running, launch, quit, set_theme, show
 from .layouts import LayoutContext
 from .providers import Provider, provider
@@ -24,6 +25,7 @@ __all__ = [
     "LayoutContext",
     "Provider",
     "Record",
+    "SchemaError",
     "Style",
     "Theme",
     "Widget",
@@ -40,12 +42,14 @@ __all__ = [
     "launch",
     "layouts",
     "mm",
+    "notifications",
     "pct",
     "provider",
     "providers",
     "px",
     "quit",
     "rgb",
+    "rpc",
     "set_theme",
     "show",
     "themes",

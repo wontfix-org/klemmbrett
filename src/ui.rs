@@ -1,25 +1,30 @@
-//! The popup, the tray icon, and the handle Python uses to drive the daemon.
+//! The popup, notification toasts, the tray icon, and the handle Python uses
+//! to drive the daemon.
 //!
 //! The popup is a layer-shell surface that asks for exclusive keyboard
 //! interactivity, with the rows packed *inside* it. It deliberately does not
 //! use an `xdg_popup`: taking the keyboard grab an `xdg_popup` needs requires
-//! the serial of a real input event. The popup is opened from D-Bus, so no
+//! the serial of a real input event. The popup is opened over Varlink, so no
 //! such serial exists and the grab silently does nothing until the pointer
 //! happens to enter the surface. Layer-shell's keyboard interactivity is the
 //! protocol's supported way to focus a surface that was not opened from user
 //! input, so the rows and their key handling live here instead.
 
 use crate::config::{AppConfig, MultiSelect};
-use crate::dbus;
-use crate::layout::{expand, row_fields, Layout, LayoutContext, Node, NodeKind};
+use crate::data::DataPath;
+use crate::events;
+use crate::history::shorten_label;
 use crate::launch::{spawn_detached, ResolvedLaunch};
+use crate::layout::{expand, expand_record, Layout, LayoutContext, Node, NodeKind};
+use crate::notifications::{self, CloseReason, Notification, NotificationCenter, ToastCmd};
+use crate::varlink::{self, ShowRequest};
 use crate::widget::{fetch_records, Handlers, Widgets};
 use crate::windows::WindowList;
 use crate::{
-    activation_records, filter_records, focused_display_index, history_candidate,
+    accelerator_for, activation_records, filter_records, focused_display_index, history_candidate,
     index_for_accelerator, output_layout, place_at_location, resize_at_location, toggle_record,
-    accelerator_for, ArboardBackend, Backend, ClipboardSync, Edges, Location, Orientation,
-    OutputGeom, Record, Selection, Style, Theme, ThemeSpec, POLL_INTERVAL,
+    ArboardBackend, Backend, ClipboardSync, Edges, Location, Orientation, OutputGeom, Record,
+    Selection, Style, Theme, ThemeSpec, POLL_INTERVAL,
 };
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
@@ -29,7 +34,6 @@ use gpui::{
     WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use ksni::blocking::TrayMethods;
-use std::collections::HashSet;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 
@@ -47,6 +51,9 @@ pub(crate) enum UiCmd {
         records: Option<Vec<Record>>,
         reply: Option<Reply>,
     },
+    /// These widgets' records changed; an open popup showing one reloads.
+    Refresh(Vec<String>),
+    Toast(ToastCmd),
     RecordHistory(String),
     SetTheme(ThemeSpec),
     Quit,
@@ -63,6 +70,7 @@ pub struct Runtime {
     ui: async_channel::Sender<UiCmd>,
     clip: mpsc::Sender<ClipCmd>,
     launch: ResolvedLaunch,
+    notifications: Option<Arc<NotificationCenter>>,
 }
 
 impl Runtime {
@@ -105,6 +113,34 @@ impl Runtime {
         })
     }
 
+    /// Tells open popups and `Subscribe` callers that these widgets changed.
+    pub fn refresh(&self, widgets: Vec<String>) -> Result<(), String> {
+        for widget in &widgets {
+            events::publish(
+                serde_json::json!({ "kind": "changed", "widget": widget }),
+                Some(widget),
+            );
+        }
+        self.send(UiCmd::Refresh(widgets))
+    }
+
+    /// Shows an open notification as a toast.
+    pub fn show_notification(&self, id: u32) -> Result<(), String> {
+        self.center()?.show(id)
+    }
+
+    /// Ends a notification that is not shown (dropped or stashed).
+    pub fn close_notification(&self, id: u32, reason: CloseReason) -> Result<(), String> {
+        self.center()?.closed(id, reason);
+        Ok(())
+    }
+
+    fn center(&self) -> Result<&NotificationCenter, String> {
+        self.notifications
+            .as_deref()
+            .ok_or_else(|| "notifications are not enabled".to_string())
+    }
+
     pub fn quit(&self) -> Result<(), String> {
         self.send(UiCmd::Quit)
     }
@@ -125,28 +161,54 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
         launch,
         widgets,
         handlers,
+        notifications: notification_config,
+        socket,
     } = config;
+    let listener = varlink::bind(&varlink::socket_path(socket.as_deref()))?;
     let backend = ArboardBackend::new()
         .map_err(|err| format!("failed to initialize the Wayland clipboard: {err}"))?;
     let sync = ClipboardSync::new(backend);
     widgets.start();
 
     let (tx, rx) = async_channel::unbounded::<UiCmd>();
-    let widget_names: HashSet<_> = widgets.names().into_iter().collect();
-    let on_demand: HashSet<_> = widgets.names_without_provider().into_iter().collect();
-    dbus::spawn(widget_names, on_demand, tx.clone());
+    let center = notification_config.map(|config| {
+        let toasts = tx.clone();
+        let center = NotificationCenter::new(config, handlers.clone(), move |cmd| {
+            let _ = toasts.send_blocking(UiCmd::Toast(cmd));
+        });
+        notifications::serve(center.clone(), None);
+        center
+    });
+    let show = tx.clone();
+    varlink::Server::new(
+        widgets.defs().to_vec(),
+        handlers.clone(),
+        center.clone(),
+        move |request: ShowRequest| {
+            show.send_blocking(UiCmd::Show {
+                widget: request.widget,
+                pointer: request.pointer,
+                records: request.records,
+                reply: request.reply,
+            })
+            .map_err(|err| format!("failed to request popup: {err}"))
+        },
+    )
+    .serve(listener);
     install_tray(widgets.names_with_provider(), tx.clone());
     let clip = spawn_clipboard(sync, tx.clone());
     on_ready(Runtime {
         ui: tx,
         clip,
         launch: launch.resolve(),
+        notifications: center.clone(),
     });
+    crate::systemd::notify_ready();
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(widgets, handlers, label_max));
+            let app = cx.new(|_cx| Klemmbrett::new(widgets, handlers, label_max, center));
             app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
@@ -159,6 +221,8 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
                             records,
                             reply,
                         } => this.show_widget_menu(widget, pointer, records, reply, cx),
+                        UiCmd::Refresh(widgets) => this.refresh(widgets, cx),
+                        UiCmd::Toast(cmd) => this.toast(cmd, cx),
                         UiCmd::RecordHistory(text) => this.record_history(&text),
                         UiCmd::SetTheme(palette) => this.set_theme(palette, cx),
                         UiCmd::Quit => cx.quit(),
@@ -216,16 +280,28 @@ struct Klemmbrett {
     popup: Option<WindowHandle<PopupView>>,
     /// Bumped by every open request so a slow provider cannot replace a newer popup.
     show_seq: u64,
+    center: Option<Arc<NotificationCenter>>,
+    toasts: Option<WindowHandle<ToastView>>,
+    /// Bumped whenever a toast is shown or updated, so stale timers do nothing.
+    toast_seq: u64,
 }
 
 impl Klemmbrett {
-    fn new(widgets: Widgets, handlers: Arc<dyn Handlers>, label_max: usize) -> Self {
+    fn new(
+        widgets: Widgets,
+        handlers: Arc<dyn Handlers>,
+        label_max: usize,
+        center: Option<Arc<NotificationCenter>>,
+    ) -> Self {
         Self {
             widgets,
             handlers,
             label_max: label_max.max(1),
             popup: None,
             show_seq: 0,
+            center,
+            toasts: None,
+            toast_seq: 0,
         }
     }
 
@@ -237,7 +313,166 @@ impl Klemmbrett {
     }
 
     fn select(&self, widget: &str, records: Vec<Record>) {
+        events::publish(
+            serde_json::json!({
+                "kind": "selected",
+                "widget": widget,
+                "records": varlink::records_json(&records),
+            }),
+            Some(widget),
+        );
         self.handlers.select(widget, records);
+    }
+
+    /// Reloads the open popup when it shows one of `widgets` from its provider.
+    /// The query, the highlighted row, and the marks survive.
+    fn refresh(&mut self, widgets: Vec<String>, cx: &mut Context<Self>) {
+        let Some(handle) = self.popup else {
+            return;
+        };
+        let Ok(Some(name)) = handle.update(cx, |view, _, _| {
+            (view.visible && view.live).then(|| view.widget_name.clone())
+        }) else {
+            return;
+        };
+        if !widgets.contains(&name) {
+            return;
+        }
+        let Some(def) = self.widgets.get(&name).cloned() else {
+            return;
+        };
+        let seq = self.show_seq;
+        let load = cx
+            .background_executor()
+            .spawn(async move { fetch_records(&def) });
+        cx.spawn(async move |this, cx| {
+            let loaded = load.await;
+            let _ = this.update(cx, |this, cx| {
+                if seq != this.show_seq {
+                    return;
+                }
+                let entries = match loaded {
+                    Ok(entries) => entries,
+                    Err(err) => {
+                        eprintln!("Failed to refresh widget {name:?}: {err}");
+                        return;
+                    }
+                };
+                if let Some(handle) = this.popup {
+                    let _ = handle.update(cx, |view, _window, cx| {
+                        if view.visible && view.widget_name == name {
+                            view.replace_entries(entries, cx);
+                        }
+                    });
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn toast(&mut self, cmd: ToastCmd, cx: &mut Context<Self>) {
+        match cmd {
+            ToastCmd::Show(notification) => self.show_toast(*notification, cx),
+            ToastCmd::Close(id) => self.close_toast(id, None, cx),
+        }
+    }
+
+    fn show_toast(&mut self, notification: Notification, cx: &mut Context<Self>) {
+        let Some(center) = self.center.clone() else {
+            return;
+        };
+        self.toast_seq += 1;
+        let seq = self.toast_seq;
+        let id = notification.id;
+        let lifetime = notification.lifetime_ms(center.config().timeout_ms);
+        let toast = Toast { notification, seq };
+        let theme = self.widgets.default_theme().clone();
+        let config = center.config().clone();
+        let updated = self.toasts.and_then(|handle| {
+            handle
+                .update(cx, |view, window, cx| {
+                    view.theme = theme.clone();
+                    view.upsert(toast.clone());
+                    window.resize(view.size());
+                    cx.notify();
+                })
+                .ok()
+        });
+        if updated.is_none() {
+            let app = cx.entity();
+            let view = ToastView {
+                app,
+                toasts: vec![toast],
+                theme,
+                max_visible: config.max_visible.max(1),
+            };
+            let options = toast_options(view.size(), config.location);
+            match cx.open_window(options, move |_window, cx| cx.new(|_cx| view)) {
+                Ok(handle) => self.toasts = Some(handle),
+                Err(err) => {
+                    eprintln!("Failed to show a notification: {err}");
+                    self.toasts = None;
+                }
+            }
+        }
+        if let Some(ms) = lifetime {
+            let timer = cx
+                .background_executor()
+                .timer(std::time::Duration::from_millis(u64::from(ms)));
+            cx.spawn(async move |this, cx| {
+                timer.await;
+                let _ = this.update(cx, |this, cx| this.expire_toast(id, seq, cx));
+            })
+            .detach();
+        }
+    }
+
+    fn expire_toast(&mut self, id: u32, seq: u64, cx: &mut Context<Self>) {
+        let Some(handle) = self.toasts else {
+            return;
+        };
+        let current = handle
+            .update(cx, |view, _, _| {
+                view.toasts
+                    .iter()
+                    .any(|toast| toast.notification.id == id && toast.seq == seq)
+            })
+            .unwrap_or(false);
+        if current {
+            self.close_toast(id, Some(CloseReason::Expired), cx);
+        }
+    }
+
+    /// Removes a toast. `reason` is what the sender hears; `None` when it
+    /// asked for the close itself and already heard.
+    fn close_toast(&mut self, id: u32, reason: Option<CloseReason>, cx: &mut Context<Self>) {
+        if let Some(handle) = self.toasts {
+            let emptied = handle.update(cx, |view, window, cx| {
+                view.toasts.retain(|toast| toast.notification.id != id);
+                if view.toasts.is_empty() {
+                    window.remove_window();
+                    true
+                } else {
+                    window.resize(view.size());
+                    cx.notify();
+                    false
+                }
+            });
+            if !matches!(emptied, Ok(false)) {
+                self.toasts = None;
+            }
+        }
+        if let (Some(reason), Some(center)) = (reason, &self.center) {
+            center.closed(id, reason);
+        }
+    }
+
+    /// A click on a toast: run `action` if given, then close it.
+    fn toast_clicked(&mut self, id: u32, action: Option<String>, cx: &mut Context<Self>) {
+        if let (Some(action), Some(center)) = (action, &self.center) {
+            center.invoke(id, &action);
+        }
+        self.close_toast(id, Some(CloseReason::Dismissed), cx);
     }
 
     fn highlight(&self, widget: &str, record: Record) {
@@ -275,9 +510,15 @@ impl Klemmbrett {
     fn prewarm_popup(&mut self, cx: &mut Context<Self>) {
         let theme = self.widgets.default_theme().clone();
         let layout = Arc::new(Layout::menu(false));
-        let Some(placement) =
-            popup_placement(cx, None, 1, self.label_max, theme, layout, Location::Pointer)
-        else {
+        let Some(placement) = popup_placement(
+            cx,
+            None,
+            1,
+            self.label_max,
+            theme,
+            layout,
+            Location::Pointer,
+        ) else {
             return;
         };
         self.open_popup(Vec::new(), placement, None, cx);
@@ -305,15 +546,17 @@ impl Klemmbrett {
         }
         self.show_seq += 1;
         let seq = self.show_seq;
+        let live = records.is_none();
         let ctx = LayoutContext {
             widget: widget.clone(),
             multi: def.multi.is_some(),
             prompt: reply.is_some(),
         };
         let load = cx.background_executor().spawn(async move {
-            let layout = def.layout.build(&ctx).map_err(|err| {
-                format!("widget {:?}: invalid layout: {err}", def.name)
-            })?;
+            let layout = def
+                .layout
+                .build(&ctx)
+                .map_err(|err| format!("widget {:?}: invalid layout: {err}", def.name))?;
             let entries = if !layout.has_listview() {
                 Vec::new()
             } else if let Some(records) = records {
@@ -326,18 +569,20 @@ impl Klemmbrett {
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
             let _ = this.update(cx, |this, cx| {
-                this.finish_show(seq, widget, pointer, loaded, reply, cx)
+                this.finish_show(seq, widget, pointer, loaded, live, reply, cx)
             });
         })
         .detach();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_show(
         &mut self,
         seq: u64,
         widget: String,
         pointer: Option<(i32, i32)>,
         loaded: Result<(Arc<Layout>, Vec<Record>), String>,
+        live: bool,
         reply: Option<Reply>,
         cx: &mut Context<Self>,
     ) {
@@ -377,6 +622,8 @@ impl Klemmbrett {
         let shown = Shown {
             widget,
             multi: def.and_then(|def| def.multi.clone()),
+            search: def.map(|def| def.search.clone()).unwrap_or_default(),
+            live,
             reply,
         };
         if let Some(shown) = self.reuse_popup(&entries, &placement, shown, cx) {
@@ -403,7 +650,12 @@ impl Klemmbrett {
                 return false;
             }
             window.resize(placement.output_size);
-            view.reload(entries.to_vec(), placement, shown.take().expect("shown"), cx);
+            view.reload(
+                entries.to_vec(),
+                placement,
+                shown.take().expect("shown"),
+                cx,
+            );
             view.reveal(window, cx);
             true
         }) {
@@ -453,6 +705,9 @@ impl Klemmbrett {
 struct Shown {
     widget: String,
     multi: Option<MultiSelect>,
+    search: Vec<DataPath>,
+    /// The rows come from the provider, so a refresh may reload them.
+    live: bool,
     reply: Option<Reply>,
 }
 
@@ -586,6 +841,8 @@ struct PopupView {
     layout: Arc<Layout>,
     widget_name: String,
     multi: Option<MultiSelect>,
+    search: Vec<DataPath>,
+    live: bool,
     query: String,
     display_id: DisplayId,
     card: Bounds<Pixels>,
@@ -613,10 +870,14 @@ impl PopupView {
         let Shown {
             widget,
             multi,
+            search,
+            live,
             reply,
         } = shown.unwrap_or(Shown {
             widget: String::new(),
             multi: None,
+            search: Vec::new(),
+            live: false,
             reply: None,
         });
         Self {
@@ -629,6 +890,8 @@ impl PopupView {
             layout: placement.layout,
             widget_name: widget,
             multi,
+            search,
+            live,
             query: String::new(),
             display_id: placement.display_id,
             card: placement.card,
@@ -662,6 +925,8 @@ impl PopupView {
         self.label_max = placement.label_max;
         self.widget_name = shown.widget;
         self.multi = shown.multi;
+        self.search = shown.search;
+        self.live = shown.live;
         self.query.clear();
         self.selected = 0;
         self.checked.clear();
@@ -671,10 +936,40 @@ impl PopupView {
 
     fn visible_entries(&self) -> Vec<&Record> {
         if self.layout.has_inputbar() {
-            filter_records(&self.entries, &self.query)
+            filter_records(&self.entries, &self.query, &self.search)
         } else {
             self.entries.iter().collect()
         }
+    }
+
+    /// New rows from the provider while the popup is open. The row under the
+    /// cursor stays selected when it still exists, and marks on rows that
+    /// still exist are kept (with their new contents).
+    fn replace_entries(&mut self, entries: Vec<Record>, cx: &mut Context<Self>) {
+        let current = self
+            .visible_entries()
+            .get(self.selected)
+            .map(|record| record.key.clone());
+        self.checked = self
+            .checked
+            .iter()
+            .filter_map(|marked| entries.iter().find(|record| record.key == marked.key))
+            .cloned()
+            .collect();
+        self.entries = entries;
+        if let Some(index) = current.and_then(|key| {
+            self.visible_entries()
+                .iter()
+                .position(|record| record.key == key)
+        }) {
+            self.selected = index;
+        }
+        self.clamp_selection();
+        self.resize_card();
+        self.scroll
+            .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+        self.sync_highlight(cx);
+        cx.notify();
     }
 
     fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -849,9 +1144,16 @@ impl PopupView {
         if theme == self.theme {
             return;
         }
+        self.theme = theme;
+        self.resize_card();
+    }
+
+    /// Fits the card to the theme and row count, anchored where it was opened.
+    fn resize_card(&mut self) {
+        let theme = &self.theme;
         let (width, height) = self
             .layout
-            .card_size(&theme, self.entries.len(), self.label_max);
+            .card_size(theme, self.entries.len(), self.label_max);
         let old = self.card;
         let (x, y) = resize_at_location(
             self.location,
@@ -864,7 +1166,6 @@ impl PopupView {
             ),
         );
         self.card = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
-        self.theme = theme;
     }
 
     fn toggle_and_move(&mut self, delta: i32, cx: &mut Context<Self>) {
@@ -883,15 +1184,7 @@ impl PopupView {
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.layout.has_listview() {
             let text = self.query.clone();
-            self.submit_records(
-                vec![Record {
-                    key: text.clone(),
-                    label: text.clone(),
-                    value: text,
-                }],
-                window,
-                cx,
-            );
+            self.submit_records(vec![Record::new(text)], window, cx);
             return;
         }
         if self.multi.is_some() {
@@ -918,7 +1211,12 @@ impl PopupView {
         self.submit_records(vec![record], window, cx);
     }
 
-    fn submit_records(&mut self, records: Vec<Record>, window: &mut Window, cx: &mut Context<Self>) {
+    fn submit_records(
+        &mut self,
+        records: Vec<Record>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if records.is_empty() {
             return;
         }
@@ -941,6 +1239,7 @@ impl PopupView {
                 key: String::new(),
                 label: "No entries".into(),
                 value: String::new(),
+                data: serde_json::Value::Null,
             };
             (vec![&empty], false)
         } else {
@@ -951,7 +1250,8 @@ impl PopupView {
             .iter()
             .enumerate()
             .map(|(index, record)| RowData {
-                fields: row_fields(record, self.label_max),
+                record: (*record).clone(),
+                label_max: self.label_max,
                 accelerator: show_accelerators.then(|| accelerator_for(index)).flatten(),
                 marked: self.checked.iter().any(|item| item.key == record.key),
             })
@@ -1100,11 +1400,7 @@ impl Chrome<'_> {
             NodeKind::Prompt => {
                 let style = self.theme.prompt().with(&node.style);
                 let text = style.text.clone().unwrap_or_else(|| self.widget.to_owned());
-                apply_box(
-                    div().flex_none().whitespace_nowrap().child(text),
-                    &style,
-                )
-                .into_any()
+                apply_box(div().flex_none().whitespace_nowrap().child(text), &style).into_any()
             }
             NodeKind::Entry => apply_box(
                 div()
@@ -1117,7 +1413,9 @@ impl Chrome<'_> {
             .into_any(),
             NodeKind::Text(template) => {
                 let style = Style::plain(parent, Orientation::Vertical).with(&node.style);
-                text_box(&style).child(expand(template, &self.fields)).into_any()
+                text_box(&style)
+                    .child(expand(template, &self.fields))
+                    .into_any()
             }
             NodeKind::Spacer => spacer(&node.style.width, &node.style.height),
             NodeKind::Row | NodeKind::Column => {
@@ -1136,7 +1434,8 @@ impl Chrome<'_> {
 }
 
 struct RowData {
-    fields: [(&'static str, String); 3],
+    record: Record,
+    label_max: usize,
     accelerator: Option<char>,
     marked: bool,
 }
@@ -1174,26 +1473,15 @@ fn popup_row(
             .hover(move |row| row.bg(paint(hover)))
             .on_mouse_down(MouseButton::Left, on_click);
     }
-    let fields: Vec<(&str, &str)> = data
-        .fields
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect();
     if let Some(element) = layout.element() {
         for child in &element.children {
-            row = row.child(row_node(child, &style, data, &fields, theme));
+            row = row.child(row_node(child, &style, data, theme));
         }
     }
     row
 }
 
-fn row_node(
-    node: &Node,
-    parent: &Style,
-    data: &RowData,
-    fields: &[(&str, &str)],
-    theme: &Theme,
-) -> AnyElement {
+fn row_node(node: &Node, parent: &Style, data: &RowData, theme: &Theme) -> AnyElement {
     match &node.kind {
         NodeKind::Marker => {
             let style = theme.element_marker().with(&node.style);
@@ -1212,14 +1500,25 @@ fn row_node(
         }
         NodeKind::Text(template) => {
             let style = theme.element_text().with(&node.style);
-            text_box(&style).child(expand(template, fields)).into_any()
+            text_box(&style)
+                .child(expand_record(template, &data.record, data.label_max))
+                .into_any()
+        }
+        NodeKind::Field { path, fallback } => {
+            let style = theme.element_text().with(&node.style);
+            let text = data
+                .record
+                .text(path)
+                .map(|text| shorten_label(&text, data.label_max))
+                .unwrap_or_else(|| fallback.clone());
+            text_box(&style).child(text).into_any()
         }
         NodeKind::Spacer => spacer(&node.style.width, &node.style.height),
         NodeKind::Row | NodeKind::Column => {
             let style = container_style(node, parent);
             let mut el = container(&style, parent);
             for child in &node.children {
-                el = el.child(row_node(child, &style, data, fields, theme));
+                el = el.child(row_node(child, &style, data, theme));
             }
             el.into_any()
         }
@@ -1324,6 +1623,210 @@ fn apply_border<E: Styled>(element: E, border: Edges) -> E {
 
 fn paint(color: crate::Rgba) -> gpui::Rgba {
     rgba(color.to_u32())
+}
+
+const TOAST_MARGIN: f32 = 12.0;
+const TOAST_GAP: f32 = 8.0;
+const TOAST_ACTION_HEIGHT: f32 = 24.0;
+
+#[derive(Clone)]
+struct Toast {
+    notification: Notification,
+    seq: u64,
+}
+
+impl Toast {
+    fn actions(&self) -> impl Iterator<Item = &(String, String)> {
+        self.notification
+            .actions
+            .iter()
+            .filter(|(key, _)| key != "default")
+    }
+}
+
+/// The stacked toasts, newest nearest the anchor. Never takes the keyboard.
+struct ToastView {
+    app: Entity<Klemmbrett>,
+    toasts: Vec<Toast>,
+    theme: Theme,
+    max_visible: usize,
+}
+
+impl ToastView {
+    /// An update keeps the toast's place; a new one goes first.
+    fn upsert(&mut self, toast: Toast) {
+        match self
+            .toasts
+            .iter_mut()
+            .find(|shown| shown.notification.id == toast.notification.id)
+        {
+            Some(shown) => *shown = toast,
+            None => self.toasts.insert(0, toast),
+        }
+    }
+
+    fn visible(&self) -> &[Toast] {
+        &self.toasts[..self.toasts.len().min(self.max_visible)]
+    }
+
+    fn card_height(&self, toast: &Toast) -> f32 {
+        let card = self.theme.toast();
+        let mut height = card.padding.vertical()
+            + card.border.vertical()
+            + self.theme.toast_summary().height.unwrap_or(20.0);
+        if !toast.notification.body.is_empty() {
+            height += card.spacing + self.theme.toast_body().height.unwrap_or(36.0);
+        }
+        if toast.actions().next().is_some() {
+            height += card.spacing + TOAST_ACTION_HEIGHT;
+        }
+        height
+    }
+
+    fn size(&self) -> gpui::Size<Pixels> {
+        let visible = self.visible();
+        let cards: f32 = visible.iter().map(|toast| self.card_height(toast)).sum();
+        let gaps = TOAST_GAP * visible.len().saturating_sub(1) as f32;
+        let width = self.theme.toast().width.unwrap_or(360.0);
+        size(px(width), px((cards + gaps).max(1.0)))
+    }
+}
+
+fn toast_options(size: gpui::Size<Pixels>, location: Location) -> WindowOptions {
+    let anchor = match location {
+        Location::NorthWest => Anchor::TOP | Anchor::LEFT,
+        Location::North => Anchor::TOP,
+        Location::SouthEast => Anchor::BOTTOM | Anchor::RIGHT,
+        Location::South => Anchor::BOTTOM,
+        Location::SouthWest => Anchor::BOTTOM | Anchor::LEFT,
+        Location::West => Anchor::LEFT,
+        Location::East => Anchor::RIGHT,
+        Location::NorthEast | Location::Center | Location::Pointer => Anchor::TOP | Anchor::RIGHT,
+    };
+    let margin = px(TOAST_MARGIN);
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            point(px(0.), px(0.)),
+            size,
+        ))),
+        titlebar: None,
+        focus: false,
+        show: true,
+        kind: WindowKind::LayerShell(LayerShellOptions {
+            namespace: "klemmbrett-notifications".into(),
+            layer: Layer::Overlay,
+            anchor,
+            exclusive_zone: Some(px(0.)),
+            exclusive_edge: None,
+            margin: Some((margin, margin, margin, margin)),
+            keyboard_interactivity: KeyboardInteractivity::None,
+        }),
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        app_id: Some("klemmbrett".into()),
+        window_decorations: Some(WindowDecorations::Client),
+        linux_window_background: LinuxWindowBackground::Transparent,
+        ..Default::default()
+    }
+}
+
+impl Render for ToastView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = &self.theme;
+        let card_style = theme.toast();
+        let mut column = div().size_full().flex().flex_col().gap(px(TOAST_GAP));
+        for toast in self.visible() {
+            let id = toast.notification.id;
+            let default = toast
+                .notification
+                .has_default_action()
+                .then(|| "default".to_string());
+            let app = self.app.clone();
+            let dismiss = self.app.clone();
+            let summary_style = theme.toast_summary();
+            let body_style = theme.toast_body();
+            let summary_height = summary_style.height.unwrap_or(20.0);
+            let body_height = body_style.height.unwrap_or(36.0);
+            let mut card = apply_box(
+                div()
+                    .id(("toast", id as usize))
+                    .w_full()
+                    .h(px(self.card_height(toast)))
+                    .flex_none()
+                    .overflow_hidden()
+                    .text_size(px(card_style.font_size.unwrap_or(14.0))),
+                card_style,
+            )
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                let action = default.clone();
+                app.update(cx, |app, cx| app.toast_clicked(id, action, cx));
+            })
+            .on_mouse_down(MouseButton::Right, move |_, _, cx| {
+                dismiss.update(cx, |app, cx| app.toast_clicked(id, None, cx));
+            })
+            .child(
+                apply_box(
+                    div()
+                        .w_full()
+                        .h(px(summary_height))
+                        .line_height(px(summary_height))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .truncate(),
+                    summary_style,
+                )
+                .child(toast.notification.summary.clone()),
+            );
+            if !toast.notification.body.is_empty() {
+                card = card.child(
+                    apply_box(
+                        div()
+                            .w_full()
+                            .h(px(body_height))
+                            .line_height(px(body_height / 2.0))
+                            .overflow_hidden()
+                            .line_clamp(2)
+                            .text_ellipsis(),
+                        body_style,
+                    )
+                    .child(toast.notification.body.clone()),
+                );
+            }
+            if toast.actions().next().is_some() {
+                let mut row = div()
+                    .w_full()
+                    .h(px(TOAST_ACTION_HEIGHT))
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.0));
+                for (key, label) in toast.actions() {
+                    let app = self.app.clone();
+                    let key = key.clone();
+                    let selected = theme.element_selected();
+                    row = row.child(
+                        apply_box(
+                            div()
+                                .id(gpui::SharedString::from(format!("toast-{id}-{key}")))
+                                .h_full()
+                                .px(px(8.0))
+                                .flex_none()
+                                .whitespace_nowrap(),
+                            selected,
+                        )
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let action = Some(key.clone());
+                            app.update(cx, |app, cx| app.toast_clicked(id, action, cx));
+                        })
+                        .child(label.clone()),
+                    );
+                }
+                card = card.child(row);
+            }
+            column = column.child(card);
+        }
+        column
+    }
 }
 
 fn install_tray(widgets: Vec<String>, tx: async_channel::Sender<UiCmd>) {

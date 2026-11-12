@@ -1,11 +1,13 @@
-//! Install a systemd user unit and a D-Bus session service file.
+//! Install systemd user units, and tell systemd when the daemon is ready.
 
-use crate::HISTORY_BUS_NAME;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const UNIT_NAME: &str = "klemmbrett.service";
+const SOCKET_NAME: &str = "klemmbrett.socket";
+/// What earlier versions installed for D-Bus activation.
+const LEGACY_DBUS_SERVICE: &str = "org.wontfix.klemmbrett.service";
 const IMPORT_VARS: &[&str] = &[
     "WAYLAND_DISPLAY",
     "XDG_RUNTIME_DIR",
@@ -27,18 +29,16 @@ pub fn install(exec: &[String], config: Option<&Path>) -> Result<(), String> {
         .transpose()?;
     let config = config.as_deref();
 
-    write_file(&systemd_user_dir(), UNIT_NAME, &unit_file(exec, config)?)?;
-    write_file(
-        &dbus_service_dir(),
-        &format!("{HISTORY_BUS_NAME}.service"),
-        &dbus_service_file(exec, config)?,
-    )?;
+    let units = systemd_user_dir();
+    write_file(&units, UNIT_NAME, &unit_file(exec, config)?)?;
+    write_file(&units, SOCKET_NAME, &socket_file())?;
+    remove_legacy_dbus_service(&dbus_service_dir());
 
     import_session_environment();
     reload_user_units()?;
-    enable_unit()?;
+    enable_units()?;
     if graphical_session_is_active() {
-        start_unit()?;
+        start_units()?;
         println!("Started {UNIT_NAME} for the current graphical session.");
     } else {
         println!(
@@ -56,6 +56,16 @@ fn write_file(dir: &Path, name: &str, contents: &str) -> Result<(), String> {
         .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     println!("Installed {}", path.display());
     Ok(())
+}
+
+/// A leftover D-Bus service file would let old `Show` calls start the unit.
+fn remove_legacy_dbus_service(dir: &Path) {
+    let path = dir.join(LEGACY_DBUS_SERVICE);
+    match std::fs::remove_file(&path) {
+        Ok(()) => println!("Removed {}", path.display()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => eprintln!("Warning: failed to remove {}: {err}", path.display()),
+    }
 }
 
 pub fn systemd_user_dir() -> PathBuf {
@@ -97,29 +107,39 @@ pub fn unit_file(exec: &[String], config: Option<&Path>) -> Result<String, Strin
          Description=Keep Wayland clipboard selections in sync and offer history\n\
          Documentation=https://github.com/wontfix-org/klemmbrett\n\
          PartOf=graphical-session.target\n\
-         After=graphical-session-pre.target\n\
+         After=graphical-session-pre.target {SOCKET_NAME}\n\
+         Requires={SOCKET_NAME}\n\
          \n\
          [Service]\n\
-         Type=dbus\n\
-         BusName={HISTORY_BUS_NAME}\n\
+         Type=notify\n\
          ExecStart={exec_start}\n\
          PassEnvironment=WAYLAND_DISPLAY XDG_SESSION_TYPE\n\
          Restart=on-failure\n\
          RestartSec=2\n\
          \n\
          [Install]\n\
-         WantedBy=graphical-session.target\n"
+         WantedBy=graphical-session.target\n\
+         Also={SOCKET_NAME}\n"
     ))
 }
 
-pub fn dbus_service_file(exec: &[String], config: Option<&Path>) -> Result<String, String> {
-    let exec_start = exec_start(exec, config)?;
-    Ok(format!(
-        "[D-BUS Service]\n\
-         Name={HISTORY_BUS_NAME}\n\
-         Exec={exec_start}\n\
-         SystemdService={UNIT_NAME}\n"
-    ))
+/// The Varlink socket. systemd holds it, so a call made while the daemon
+/// restarts waits instead of failing, and the first call starts the unit.
+pub fn socket_file() -> String {
+    String::from(
+        "[Unit]\n\
+         Description=klemmbrett Varlink socket\n\
+         PartOf=graphical-session.target\n\
+         \n\
+         [Socket]\n\
+         ListenStream=%t/klemmbrett/varlink.sock\n\
+         SocketMode=0600\n\
+         DirectoryMode=0700\n\
+         RemoveOnStop=yes\n\
+         \n\
+         [Install]\n\
+         WantedBy=graphical-session.target\n",
+    )
 }
 
 fn exec_start(exec: &[String], config: Option<&Path>) -> Result<String, String> {
@@ -142,13 +162,36 @@ fn format_exec_arg(text: &str) -> String {
         .chars()
         .any(|ch| ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '\\' | '$' | '%'))
     {
-        format!(
-            "\"{}\"",
-            text.replace('\\', "\\\\").replace('"', "\\\"")
-        )
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
     } else {
         text.to_owned()
     }
+}
+
+/// Sends `READY=1` to `$NOTIFY_SOCKET` when systemd started this process
+/// as a `Type=notify` unit. Does nothing otherwise.
+pub fn notify_ready() {
+    let Some(socket) = std::env::var_os("NOTIFY_SOCKET") else {
+        return;
+    };
+    std::env::remove_var("NOTIFY_SOCKET");
+    if let Err(err) = send_notify(&socket, b"READY=1") {
+        eprintln!("klemmbrett: failed to notify systemd: {err}");
+    }
+}
+
+fn send_notify(socket: &OsStr, message: &[u8]) -> std::io::Result<()> {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+
+    let bytes = socket.as_bytes();
+    let addr = match bytes.strip_prefix(b"@") {
+        Some(name) => SocketAddr::from_abstract_name(name)?,
+        None => SocketAddr::from_pathname(Path::new(socket))?,
+    };
+    UnixDatagram::unbound()?.send_to_addr(message, &addr)?;
+    Ok(())
 }
 
 fn import_session_environment() {
@@ -181,14 +224,17 @@ fn reload_user_units() -> Result<(), String> {
     run_systemctl(&["daemon-reload"], "reload systemd user units")
 }
 
-fn enable_unit() -> Result<(), String> {
-    run_systemctl(&["enable", UNIT_NAME], "enable the user unit")?;
-    println!("Enabled {UNIT_NAME} for graphical-session.target.");
+fn enable_units() -> Result<(), String> {
+    run_systemctl(&["enable", SOCKET_NAME, UNIT_NAME], "enable the user units")?;
+    println!("Enabled {SOCKET_NAME} and {UNIT_NAME} for graphical-session.target.");
     Ok(())
 }
 
-fn start_unit() -> Result<(), String> {
-    run_systemctl(&["restart", UNIT_NAME], "start the user unit")
+fn start_units() -> Result<(), String> {
+    // A daemon from an older install still owns the socket path; stop it first.
+    run_systemctl(&["stop", UNIT_NAME], "stop the user unit")?;
+    run_systemctl(&["restart", SOCKET_NAME], "start the socket unit")?;
+    run_systemctl(&["start", UNIT_NAME], "start the user unit")
 }
 
 fn graphical_session_is_active() -> bool {
@@ -256,24 +302,36 @@ mod tests {
     }
 
     #[test]
-    fn unit_is_bound_to_the_graphical_session() {
+    fn unit_is_a_notify_service_bound_to_the_session_and_its_socket() {
         let unit = unit_file(&exec("/usr/bin/klemmbrett"), None).unwrap();
         assert!(unit.contains("PartOf=graphical-session.target"));
-        assert!(unit.contains("After=graphical-session-pre.target"));
+        assert!(unit.contains("After=graphical-session-pre.target klemmbrett.socket\n"));
+        assert!(unit.contains("Requires=klemmbrett.socket\n"));
         assert!(unit.contains("WantedBy=graphical-session.target"));
-        assert!(unit.contains("Type=dbus\n"));
-        assert!(unit.contains(&format!("BusName={HISTORY_BUS_NAME}\n")));
+        assert!(unit.contains("Also=klemmbrett.socket\n"));
+        assert!(unit.contains("Type=notify\n"));
+        assert!(!unit.contains("dbus"), "{unit}");
         assert!(unit.contains("PassEnvironment=WAYLAND_DISPLAY XDG_SESSION_TYPE\n"));
         assert!(unit.contains("ExecStart=/usr/bin/klemmbrett\n"));
         assert!(!unit.contains("--config"));
     }
 
     #[test]
-    fn dbus_service_asks_systemd_to_own_the_bus_name() {
-        let service = dbus_service_file(&exec("/usr/bin/klemmbrett"), None).unwrap();
-        assert!(service.contains(&format!("Name={HISTORY_BUS_NAME}\n")));
-        assert!(service.contains("Exec=/usr/bin/klemmbrett\n"));
-        assert!(service.contains(&format!("SystemdService={UNIT_NAME}\n")));
+    fn socket_unit_listens_where_the_daemon_looks() {
+        let socket = socket_file();
+        assert!(socket.contains("ListenStream=%t/klemmbrett/varlink.sock\n"));
+        assert!(socket.contains("SocketMode=0600\n"));
+        assert!(socket.contains("WantedBy=graphical-session.target\n"));
+    }
+
+    #[test]
+    fn legacy_dbus_service_files_are_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(LEGACY_DBUS_SERVICE);
+        std::fs::write(&legacy, "[D-BUS Service]\n").unwrap();
+        remove_legacy_dbus_service(dir.path());
+        assert!(!legacy.exists());
+        remove_legacy_dbus_service(dir.path());
     }
 
     #[test]
@@ -284,17 +342,22 @@ mod tests {
         )
         .unwrap();
         assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
-        let service = dbus_service_file(
-            &exec("/usr/bin/klemmbrett"),
-            Some(Path::new("/etc/klemmbrett.py")),
-        )
-        .unwrap();
-        assert!(service.contains("Exec=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
     }
 
     #[test]
     fn exec_paths_with_spaces_are_quoted() {
         let unit = unit_file(&exec("/opt/my apps/klemmbrett"), None).unwrap();
         assert!(unit.contains("ExecStart=\"/opt/my apps/klemmbrett\"\n"));
+    }
+
+    #[test]
+    fn ready_reaches_the_notify_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notify");
+        let receiver = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+        send_notify(path.as_os_str(), b"READY=1").unwrap();
+        let mut buffer = [0u8; 16];
+        let n = receiver.recv(&mut buffer).unwrap();
+        assert_eq!(&buffer[..n], b"READY=1");
     }
 }

@@ -18,9 +18,9 @@
 
 mod common;
 
-use klemmbrett::{
-    place_at_location, request_show_on, Location, OutputGeom, Record, HISTORY_BUS_NAME,
-};
+use klemmbrett::varlink::records_json;
+use klemmbrett::{place_at_location, Client, Location, OutputGeom, Record};
+use serde_json::json;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -48,7 +48,17 @@ kb.configure(
 kb.widget("center", location="center")
 kb.widget("pointer", location="pointer")
 kb.widget("south-east", location="south east")
+
+from klemmbrett import notifications, ui
+inbox = notifications.serve(
+    lambda n: notifications.STASH if n.summary.startswith("stash") else notifications.SHOW,
+    location="south-west",
+)
+kb.widget("inbox", inbox.unread, search=["summary"])
 "##;
+
+/// The toast layer surface keeps this far from the output edges.
+const TOAST_MARGIN: i32 = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
@@ -395,20 +405,23 @@ impl Session {
         }
     }
 
-    /// Waits for the daemon to claim the bus name, then asks for the popup.
+    /// Waits for the daemon's Varlink socket, then asks for the popup.
     fn show(&self, widget: &str, pointer: Option<(i32, i32)>) -> Result<(), String> {
-        let records = ["alpha", "beta", "gamma"].map(Record::new);
+        let records = records_json(&["alpha", "beta", "gamma"].map(Record::new));
+        let pointer = pointer.map(|(x, y)| json!({ "x": x, "y": y }));
+        let socket = self.runtime_dir.join("klemmbrett").join("varlink.sock");
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut last_error = None;
         while Instant::now() < deadline {
-            let attempt = zbus::blocking::connection::Builder::address(self.bus_address.as_str())
-                .and_then(|builder| builder.build())
-                .and_then(|conn| {
-                    request_show_on(&conn, HISTORY_BUS_NAME, widget, pointer, &records)
-                });
+            let attempt = Client::connect(&socket).and_then(|mut client| {
+                client.call(
+                    "Show",
+                    json!({ "widget": widget, "pointer": pointer, "records": records }),
+                )
+            });
             match attempt {
-                Ok(()) => return Ok(()),
-                Err(err) => last_error = Some(err),
+                Ok(_) => return Ok(()),
+                Err(err) => last_error = Some(err.to_string()),
             }
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -464,13 +477,109 @@ impl Session {
         })
     }
 
+    /// A critical notification sent over Varlink stays up as a toast in the
+    /// configured corner.
+    fn check_toast(&mut self) -> Result<capture::Box, String> {
+        let (width, height) = self.output;
+        self.start_app();
+        let socket = self.runtime_dir.join("klemmbrett").join("varlink.sock");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let sent = loop {
+            let attempt = Client::connect(&socket).and_then(|mut client| {
+                client.call(
+                    "Notify",
+                    json!({ "app_name": "ui", "summary": "Toast", "body": "body", "urgency": 2 }),
+                )
+            });
+            match attempt {
+                Ok(_) => break Ok(()),
+                Err(err) if Instant::now() >= deadline => {
+                    break Err((format!("the daemon never answered Notify: {err}"), None))
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(250)),
+            }
+        };
+        let result = sent.and_then(|()| {
+            let (image, toast) = self.wait_for_card()?;
+            self.check_stash(&socket).map_err(|err| (err, None))?;
+            let bottom = toast.y + toast.height;
+            if (toast.x - TOAST_MARGIN).abs() <= 1 && (bottom - (height - TOAST_MARGIN)).abs() <= 1 {
+                Ok(toast)
+            } else {
+                Err((
+                    format!(
+                        "toast at ({}, {}) size {}x{}, expected its bottom-left corner at ({TOAST_MARGIN}, {}) on a {width}x{height} output",
+                        toast.x, toast.y, toast.width, toast.height, height - TOAST_MARGIN
+                    ),
+                    Some(image),
+                ))
+            }
+        });
+        self.stop_app();
+        result.map_err(|(message, image)| {
+            let dir = self.artifact_dir("toast", image.as_ref());
+            format!("{message}\nartifacts: {}", dir.display())
+        })
+    }
+
+    /// The Python route stashes a notification, and the stash and the widget
+    /// on it answer over Varlink.
+    fn check_stash(&self, socket: &Path) -> Result<(), String> {
+        let mut client = Client::connect(socket).map_err(|err| err.to_string())?;
+        let reply = client
+            .call("Notify", json!({ "app_name": "ui", "summary": "stash me" }))
+            .map_err(|err| err.to_string())?;
+        let key = reply["id"].to_string();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let listed = client
+                .call(
+                    "StashList",
+                    json!({ "stash": "notifications", "unread_only": true }),
+                )
+                .map_err(|err| err.to_string())?;
+            if listed["records"]
+                .as_array()
+                .is_some_and(|records| records.iter().any(|record| record["key"] == key.as_str()))
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "the stash never listed notification {key}: {listed}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let records = client
+            .call("Records", json!({ "widget": "inbox" }))
+            .map_err(|err| err.to_string())?;
+        let record = &records["records"][0];
+        if record["data"]["summary"] != "stash me" || record["data"]["read"] != false {
+            return Err(format!("unexpected inbox record {record}"));
+        }
+        let marked = client
+            .call("StashMarkRead", json!({ "stash": "notifications" }))
+            .map_err(|err| err.to_string())?;
+        if marked["marked"] != 1 {
+            return Err(format!(
+                "expected one notification marked read, got {marked}"
+            ));
+        }
+        Ok(())
+    }
+
     fn save_artifacts(&self, case: &Case, image: Option<&capture::Image>) -> PathBuf {
+        self.artifact_dir(case.name, image)
+    }
+
+    fn artifact_dir(&self, name: &str, image: Option<&capture::Image>) -> PathBuf {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .parent()
             .expect("target tmp dir has a parent")
             .join("ui-artifacts")
             .join(self.kind.name())
-            .join(case.name);
+            .join(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create artifact dir");
         if let Some(image) = image {
@@ -545,6 +654,20 @@ fn the_card_lands_where_placement_puts_it() {
                     eprintln!("ui_placement: fail {}/{}", kind.name(), case.name);
                     failures.push(format!("{}/{}: {message}", kind.name(), case.name));
                 }
+            }
+        }
+        match session.check_toast() {
+            Ok(toast) => eprintln!(
+                "ui_placement: pass {}/toast: at ({}, {}) size {}x{}",
+                kind.name(),
+                toast.x,
+                toast.y,
+                toast.width,
+                toast.height
+            ),
+            Err(message) => {
+                eprintln!("ui_placement: fail {}/toast", kind.name());
+                failures.push(format!("{}/toast: {message}", kind.name()));
             }
         }
     }

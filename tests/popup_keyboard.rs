@@ -1,16 +1,15 @@
 //! Proves the history popup reacts to the keyboard without any pointer input.
 //!
-//! This is the case a unit test cannot cover: the popup is opened from D-Bus,
-//! so there is no input event serial, and a Wayland `xdg_popup` grab needs one.
+//! This is the case a unit test cannot cover: the popup is opened over
+//! Varlink, so there is no input event serial, and a Wayland `xdg_popup` grab
+//! needs one.
 //! The surface therefore has to take keyboard focus through layer-shell
 //! interactivity instead. Only a real compositor can show whether that works,
 //! so this drives a private headless sway and types into it.
 
 mod common;
 
-use klemmbrett::{
-    request_show_on, ArboardBackend, Backend, HistoryStore, Selection, HISTORY_BUS_NAME,
-};
+use klemmbrett::{ArboardBackend, Backend, Client, HistoryStore, Selection};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -218,17 +217,21 @@ impl Drop for Session {
     }
 }
 
-/// Waits for the daemon to claim the bus name, then asks for the popup.
+/// Waits for the daemon's Varlink socket, then asks for the popup.
 fn show_popup(session: &Session, widget: &str, x: i32, y: i32) {
+    let socket = session.runtime_dir.join("klemmbrett").join("varlink.sock");
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut last_error = None;
     while Instant::now() < deadline {
-        let attempt = zbus::blocking::connection::Builder::address(session.bus_address.as_str())
-            .and_then(|builder| builder.build())
-            .and_then(|conn| request_show_on(&conn, HISTORY_BUS_NAME, widget, Some((x, y)), &[]));
+        let attempt = Client::connect(&socket).and_then(|mut client| {
+            client.call(
+                "Show",
+                serde_json::json!({ "widget": widget, "pointer": { "x": x, "y": y } }),
+            )
+        });
         match attempt {
             Ok(_) => return,
-            Err(err) => last_error = Some(err),
+            Err(err) => last_error = Some(err.to_string()),
         }
         std::thread::sleep(Duration::from_millis(250));
     }

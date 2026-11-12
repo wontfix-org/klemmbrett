@@ -64,6 +64,12 @@ def show(
     backend.show(widget, wire, pointer)
 
 
+def refresh(widgets: Sequence[str]) -> None:
+    """Reloads these widgets if they are open. Does nothing outside the daemon."""
+    if backend.is_running():
+        backend.refresh(list(widgets))
+
+
 def quit() -> None:  # noqa: A001
     """Stops the daemon."""
     backend.quit()

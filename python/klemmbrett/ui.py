@@ -6,11 +6,13 @@ Where nodes may appear:
   `Spacer`, `Row`, and `Column`.
 - `InputBar` holds `Prompt` and `Entry`, plus the primitives.
 - `ListView` holds exactly one `Element`, the template for every row.
-- `Element` holds `Marker`, `Index`, and the primitives.
+- `Element` holds `Marker`, `Index`, `Field`, and the primitives.
 
-`Text` templates expand `{label}`, `{key}`, and `{value}` inside an element,
-and `{widget}`, `{query}`, and `{count}` elsewhere. `{{` and `}}` are literal
-braces. Style keyword arguments override the theme for that node only::
+`Text` templates expand `{label}`, `{key}`, `{value}`, and paths into the
+record's data such as `{sender.name}` or `{tags[0]}` inside an element, and
+`{widget}`, `{query}`, and `{count}` elsewhere. `{{` and `}}` are literal
+braces. `Field("tags[*]")` shows every value a path reaches, joined by
+commas. Style keyword arguments override the theme for that node only::
 
     ui.Window(
         ui.InputBar(ui.Prompt(), ui.Entry()),
@@ -37,6 +39,7 @@ __all__ = [
     "Marker",
     "Index",
     "Text",
+    "Field",
     "Spacer",
     "Row",
     "Column",
@@ -194,3 +197,29 @@ class Text(Node):
     def __repr__(self) -> str:
         extra = "".join(f", {name}={value!r}" for name, value in self.style.items())
         return f"Text({self.template!r}{extra})"
+
+
+class Field(Node):
+    """A value from the row's record: `key`, `label`, `value`, or a path
+    into its data such as `sender.name`, `tags[0]`, or `tags[*]`. Shows
+    `fallback` when the path reaches nothing."""
+
+    kind = "field"
+    leaf = True
+
+    def __init__(self, path: str, fallback: str = "", **kwargs: Any) -> None:
+        if not isinstance(path, str) or not path:
+            raise TypeError(f"Field: expected a path such as 'sender.name', got {path!r}")
+        if not isinstance(fallback, str):
+            raise TypeError(f"Field: fallback must be a string, got {fallback!r}")
+        super().__init__(**kwargs)
+        self.path = path
+        self.fallback = fallback
+
+    def _wire(self) -> dict[str, Any]:
+        return {**super()._wire(), "text": self.path, "fallback": self.fallback}
+
+    def __repr__(self) -> str:
+        extra = f", fallback={self.fallback!r}" if self.fallback else ""
+        extra += "".join(f", {name}={value!r}" for name, value in self.style.items())
+        return f"Field({self.path!r}{extra})"

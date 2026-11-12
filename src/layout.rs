@@ -4,6 +4,7 @@
 //! decides how each catalog element looks, and a node's own `style` is applied
 //! on top of that.
 
+use crate::data::DataPath;
 use crate::history::shorten_label;
 use crate::theme::{Location, Orientation, Props, Style, Theme};
 use std::sync::Arc;
@@ -28,6 +29,11 @@ pub enum NodeKind {
     Index,
     /// `{name}` fields are expanded when drawn; `{{` and `}}` are literal braces.
     Text(String),
+    /// One value from the row's record, `fallback` when the path reaches nothing.
+    Field {
+        path: DataPath,
+        fallback: String,
+    },
     Spacer,
     Row,
     Column,
@@ -45,6 +51,7 @@ impl NodeKind {
             Self::Marker => "marker",
             Self::Index => "index",
             Self::Text(_) => "text",
+            Self::Field { .. } => "field",
             Self::Spacer => "spacer",
             Self::Row => "row",
             Self::Column => "column",
@@ -100,7 +107,7 @@ impl Area {
             (_, Text(_) | Spacer | Row | Column) => true,
             (Area::Window, InputBar | ListView) => !nested,
             (Area::InputBar, Prompt | Entry) => true,
-            (Area::Element, Marker | Index) => true,
+            (Area::Element, Marker | Index | Field { .. }) => true,
             _ => false,
         }
     }
@@ -109,7 +116,7 @@ impl Area {
         match self {
             Area::Window => "inputbar, listview, text, spacer, row, or column",
             Area::InputBar => "prompt, entry, text, spacer, row, or column",
-            Area::Element => "marker, index, text, spacer, row, or column",
+            Area::Element => "marker, index, field, text, spacer, row, or column",
         }
     }
 }
@@ -119,7 +126,7 @@ impl Area {
 pub struct LayoutContext {
     pub widget: String,
     pub multi: bool,
-    /// `true` for a D-Bus `Prompt`, which returns values instead of running handlers.
+    /// `true` for a `Prompt`, which returns values instead of running handlers.
     pub prompt: bool,
 }
 
@@ -329,7 +336,9 @@ fn fixed_width(node: &Node, theme: &Theme, parent: &Style) -> f32 {
             .with(&node.style)
             .width
             .unwrap_or(INDEX_WIDTH),
-        NodeKind::Text(_) => theme.element_text().with(&node.style).width.unwrap_or(0.0),
+        NodeKind::Text(_) | NodeKind::Field { .. } => {
+            theme.element_text().with(&node.style).width.unwrap_or(0.0)
+        }
         NodeKind::Row | NodeKind::Column => {
             let orientation = if node.kind == NodeKind::Row {
                 Orientation::Horizontal
@@ -362,8 +371,7 @@ fn validate(node: &Node, area: Area, nested: bool) -> Result<(), String> {
             area.name(),
             node.kind.name(),
             if nested {
-                area.expected()
-                    .replace("inputbar, listview, ", "")
+                area.expected().replace("inputbar, listview, ", "")
             } else {
                 area.expected().to_owned()
             }
@@ -404,14 +412,32 @@ fn listview(multi: bool) -> Node {
     }
     row.push(Node::leaf(NodeKind::Index));
     row.push(Node::text("{label}"));
-    Node::new(
-        NodeKind::ListView,
-        vec![Node::new(NodeKind::Element, row)],
-    )
+    Node::new(NodeKind::ListView, vec![Node::new(NodeKind::Element, row)])
 }
 
 /// Expands `{name}` from `fields`. Unknown names stay as written.
 pub fn expand(template: &str, fields: &[(&str, &str)]) -> String {
+    expand_with(template, |name| {
+        fields
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, value)| (*value).to_owned())
+    })
+}
+
+/// Expands `{name}` in a row template: `key`, `label`, `value`, or a path
+/// into the record's data, each shortened like a label. Names that reach
+/// nothing stay as written.
+pub fn expand_record(template: &str, record: &crate::Record, label_max: usize) -> String {
+    expand_with(template, |name| {
+        let path = DataPath::parse(name).ok()?;
+        record
+            .text(&path)
+            .map(|text| shorten_label(&text, label_max))
+    })
+}
+
+fn expand_with(template: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(index) = rest.find(['{', '}']) {
@@ -424,9 +450,8 @@ pub fn expand(template: &str, fields: &[(&str, &str)]) -> String {
         }
         if tail.starts_with('{') {
             if let Some(end) = tail.find('}') {
-                let name = &tail[1..end];
-                if let Some((_, value)) = fields.iter().find(|(field, _)| *field == name) {
-                    out.push_str(value);
+                if let Some(value) = lookup(&tail[1..end]) {
+                    out.push_str(&value);
                     rest = &tail[end + 1..];
                     continue;
                 }
@@ -437,15 +462,6 @@ pub fn expand(template: &str, fields: &[(&str, &str)]) -> String {
     }
     out.push_str(rest);
     out
-}
-
-/// Fields a row template can use. Each is shortened like a label.
-pub fn row_fields(record: &crate::Record, label_max: usize) -> [(&'static str, String); 3] {
-    [
-        ("label", shorten_label(&record.label, label_max)),
-        ("key", shorten_label(&record.key, label_max)),
-        ("value", shorten_label(&record.value, label_max)),
-    ]
 }
 
 /// How a widget gets its layout each time it opens.
@@ -600,7 +616,11 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(error.contains("row cannot contain") || error.contains("window cannot contain listview"), "{error}");
+        assert!(
+            error.contains("row cannot contain")
+                || error.contains("window cannot contain listview"),
+            "{error}"
+        );
 
         let error = Layout::new(
             Node::new(NodeKind::Window, vec![inputbar(), inputbar()]),
@@ -650,5 +670,35 @@ mod tests {
         assert_eq!(expand("{{label}} {missing}", &fields), "{label} {missing}");
         assert_eq!(expand("open {", &fields), "open {");
         assert_eq!(expand("a}b", &fields), "a}b");
+    }
+
+    #[test]
+    fn row_templates_reach_into_record_data() {
+        let record = crate::Record::new("v").with_data(serde_json::json!({
+            "sender": {"name": "Ada Lovelace"},
+            "tags": ["a", "b"],
+        }));
+        assert_eq!(
+            expand_record("{label}: {sender.name} [{tags[*]}] {nope}", &record, 64),
+            "v: Ada Lovelace [a, b] {nope}"
+        );
+        assert_eq!(expand_record("{sender.name}", &record, 5), "Ada …");
+    }
+
+    #[test]
+    fn fields_belong_in_rows() {
+        let field = || {
+            Node::leaf(NodeKind::Field {
+                path: DataPath::parse("sender.name").unwrap(),
+                fallback: String::new(),
+            })
+        };
+        let row = Node::new(
+            NodeKind::ListView,
+            vec![Node::new(NodeKind::Element, vec![field()])],
+        );
+        assert!(Layout::new(Node::new(NodeKind::Window, vec![row]), None).is_ok());
+        let error = Layout::new(Node::new(NodeKind::Window, vec![field()]), None).unwrap_err();
+        assert!(error.contains("window cannot contain field"), "{error}");
     }
 }

@@ -32,7 +32,7 @@ def test_decorator_sets_on_select(daemon):
         kb.copy(record.value.upper())
 
     assert isinstance(links, kb.Widget)
-    dispatcher().select("links", [("a", "a", "a")])
+    dispatcher().select("links", [("a", "a", "a", None)])
     assert daemon.calls == [("copy", "A")]
 
 
@@ -42,11 +42,11 @@ def test_default_select_prefers_the_provider_then_copies(daemon):
     kb.widget("themes", providers.Themes())
     kb.widget("plain", providers.Static(["x"]))
     d = dispatcher()
-    d.select("run", [("firefox", "firefox", "firefox")])
-    d.select("windows", [("w1", "Title", "Title")])
-    d.select("themes", [("nord", "nord", "nord")])
-    d.select("themes", [("default", "default", "default")])
-    d.select("plain", [("x", "x", "x")])
+    d.select("run", [("firefox", "firefox", "firefox", None)])
+    d.select("windows", [("w1", "Title", "Title", {"title": "Title", "app_id": ""})])
+    d.select("themes", [("nord", "nord", "nord", None)])
+    d.select("themes", [("default", "default", "default", None)])
+    d.select("plain", [("x", "x", "x", None)])
     assert daemon.calls == [
         ("launch", ["firefox"]),
         ("activate_window", "w1"),
@@ -74,12 +74,12 @@ def test_class_providers_supply_select_and_clipboard_hooks(daemon):
     kb.widget("b", todo, on_select=lambda record: seen.append(("own", record.value)))
     config = _registry.wire()
     assert config["clipboard"] is True
-    config["dispatcher"].select("a", [("v", "L", "v")])
-    config["dispatcher"].select("b", [("v", "L", "v")])
+    config["dispatcher"].select("a", [("v", "L", "v", None)])
+    config["dispatcher"].select("b", [("v", "L", "v", None)])
     config["dispatcher"].clipboard("hello")
     assert seen == [("select", kb.Record("v", label="L")), ("own", "v"), ("clip", "hello")]
     fetch = wire_widget("a")["source"]
-    assert fetch() == [("v", "L", "v")]
+    assert fetch() == [("v", "L", "v", None)]
 
 
 def test_function_providers_normalize_records():
@@ -90,11 +90,11 @@ def test_function_providers_normalize_records():
     kb.widget("marks", bookmarks)
     kb.widget("lambda", lambda: ["y"])
     assert wire_widget("marks")["source"]() == [
-        ("plain", "plain", "plain"),
-        ("https://x", "X", "https://x"),
-        ("k", "v", "v"),
+        ("plain", "plain", "plain", None),
+        ("https://x", "X", "https://x", None),
+        ("k", "v", "v", None),
     ]
-    assert wire_widget("lambda")["source"]() == [("y", "y", "y")]
+    assert wire_widget("lambda")["source"]() == [("y", "y", "y", None)]
     with pytest.raises(TypeError, match="no value"):
         kb.widget("bad", lambda: [{"label": "x"}])
         wire_widget("bad")["source"]()
@@ -107,7 +107,7 @@ def test_multi_select_runs_in_marked_order_and_survives_errors(daemon, capsys):
             raise RuntimeError("boom")
         kb.copy(record.value)
 
-    dispatcher().select("pick", [("c", "c", "c"), ("b", "b", "b"), ("a", "a", "a")])
+    dispatcher().select("pick", [("c", "c", "c", None), ("b", "b", "b", None), ("a", "a", "a", None)])
     assert daemon.calls == [("copy", "c"), ("copy", "a")]
     err = capsys.readouterr().err
     assert "widget 'pick': on_select failed" in err
@@ -125,7 +125,7 @@ def test_highlight_handlers(daemon):
 
     assert preview is palettes
     assert wire_widget("themes")["highlight"] is True
-    dispatcher().highlight("themes", ("dracula", "dracula", "dracula"))
+    dispatcher().highlight("themes", ("dracula", "dracula", "dracula", None))
     assert daemon.calls == [("set_theme", themes.dracula._wire())]
 
 
@@ -174,7 +174,7 @@ def test_runtime_operations_check_their_arguments(daemon):
     with pytest.raises(TypeError, match="string"):
         kb.copy(3)  # type: ignore[arg-type]
     kb.show("links", ["a", {"value": "b", "label": "B"}], pointer=(1, 2))
-    assert daemon.calls == [("show", ("links", [("a", "a", "a"), ("b", "B", "b")], (1, 2)))]
+    assert daemon.calls == [("show", ("links", [("a", "a", "a", None), ("b", "B", "b", None)], (1, 2)))]
 
 
 def test_without_a_daemon_operations_raise():
@@ -206,8 +206,8 @@ def test_load_runs_config_files_relative_to_their_directory(tmp_path):
     assert loaded["label_max"] == 32
     assert [w["name"] for w in loaded["widgets"]] == ["links", "echo"]
     links = loaded["widgets"][0]["source"]
-    assert links.records() == [("https://docs", "Docs", "https://docs")]
-    assert loaded["widgets"][1]["source"]() == [(">x", ">x", ">x")]
+    assert links.records() == [("https://docs", "Docs", "https://docs", None)]
+    assert loaded["widgets"][1]["source"]() == [(">x", ">x", ">x", None)]
 
     empty = _registry.load(None)
     assert empty["widgets"] == []

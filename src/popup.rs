@@ -1,10 +1,11 @@
 //! Popup menu rows and placing the popup on the right output so it stays visible.
 //!
 //! Accelerators are matched by this module rather than by GTK mnemonics: the
-//! popup is opened from D-Bus, so it has no input event to hand GTK, and GTK's
+//! popup is opened over Varlink, so it has no input event to hand GTK, and GTK's
 //! own menu key handling stays inert without one. See `ui.rs`.
 
 use super::shorten_label;
+use crate::data::DataPath;
 use crate::theme::Location;
 use crate::Record;
 
@@ -210,15 +211,29 @@ pub fn activation_records<'a>(
     }
 }
 
-/// Rows whose label contains `query` (case-insensitive). An empty query keeps all rows.
-pub fn filter_records<'a>(records: &'a [Record], query: &str) -> Vec<&'a Record> {
+/// Rows where `query` occurs (case-insensitive) in any text a `search` path
+/// names, or in the label when `search` is empty. An empty query keeps all rows.
+pub fn filter_records<'a>(
+    records: &'a [Record],
+    query: &str,
+    search: &[DataPath],
+) -> Vec<&'a Record> {
     if query.is_empty() {
         return records.iter().collect();
     }
     let query = query.to_lowercase();
+    let matches = |text: &str| text.to_lowercase().contains(&query);
     records
         .iter()
-        .filter(|record| record.label.to_lowercase().contains(&query))
+        .filter(|record| {
+            if search.is_empty() {
+                matches(&record.label)
+            } else {
+                search
+                    .iter()
+                    .any(|path| record.texts(path).iter().any(|text| matches(text)))
+            }
+        })
         .collect()
 }
 
@@ -512,13 +527,37 @@ mod tests {
             Record::new("beta"),
             Record::new("Alphabet"),
         ];
-        assert_eq!(filter_records(&records, "").len(), 3);
+        assert_eq!(filter_records(&records, "", &[]).len(), 3);
         assert_eq!(
-            filter_records(&records, "alp")
+            filter_records(&records, "alp", &[])
                 .iter()
                 .map(|record| record.label.as_str())
                 .collect::<Vec<_>>(),
             ["Alpha", "Alphabet"]
+        );
+    }
+
+    #[test]
+    fn filter_searches_the_configured_paths() {
+        let records = [
+            Record::new("one").with_data(serde_json::json!({"body": "Lunch?", "tags": ["food"]})),
+            Record::new("two").with_data(serde_json::json!({"body": "Deploy", "tags": ["work"]})),
+        ];
+        let search = [
+            DataPath::parse("body").unwrap(),
+            DataPath::parse("tags[*]").unwrap(),
+        ];
+        let labels = |query| {
+            filter_records(&records, query, &search)
+                .iter()
+                .map(|record| record.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(labels("lunch"), ["one"]);
+        assert_eq!(labels("WORK"), ["two"]);
+        assert!(
+            labels("one").is_empty(),
+            "the label is not searched unless named"
         );
     }
 

@@ -1,22 +1,26 @@
 //! Named widgets: a record source, a layout, a theme, and behavior.
 
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use serde_json::{Map, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::config::MultiSelect;
+use crate::data::{display, DataPath};
 use crate::executables::executables_on_path;
 use crate::layout::LayoutSpec;
 use crate::theme::{Location, Theme, ThemeSpec};
 use crate::windows::WindowList;
 use crate::HistoryStore;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Record {
     pub key: String,
     pub label: String,
     pub value: String,
+    /// Nested JSON-like data for layouts, filters, and handlers. `null` when unused.
+    pub data: Value,
 }
 
 impl Record {
@@ -26,7 +30,72 @@ impl Record {
             key: value.clone(),
             label: value.clone(),
             value,
+            data: Value::Null,
         }
+    }
+
+    pub fn with_data(mut self, data: Value) -> Self {
+        self.data = data;
+        self
+    }
+
+    /// The texts `path` names: the record's own string for `key`, `label`, or
+    /// `value`, and otherwise every value it reaches inside `data`.
+    pub fn texts(&self, path: &DataPath) -> Vec<String> {
+        match path.record_field() {
+            Some("key") => vec![self.key.clone()],
+            Some("label") => vec![self.label.clone()],
+            Some("value") => vec![self.value.clone()],
+            _ => path.select(&self.data).into_iter().map(display).collect(),
+        }
+    }
+
+    /// What `path` shows in a row; several values are joined with commas.
+    pub fn text(&self, path: &DataPath) -> Option<String> {
+        let texts = self.texts(path);
+        (!texts.is_empty()).then(|| texts.join(", "))
+    }
+
+    /// `{"key", "label", "value", "data"}`, the shape Varlink callers see.
+    pub fn to_json(&self) -> Value {
+        let mut map = Map::new();
+        map.insert("key".into(), Value::String(self.key.clone()));
+        map.insert("label".into(), Value::String(self.label.clone()));
+        map.insert("value".into(), Value::String(self.value.clone()));
+        if !self.data.is_null() {
+            map.insert("data".into(), self.data.clone());
+        }
+        Value::Object(map)
+    }
+
+    /// The Varlink record shape: `value` is required, `key` and `label`
+    /// default to it, and `data` is optional. Other fields are rejected.
+    pub fn from_json(value: &Value) -> Result<Self, String> {
+        let Value::Object(map) = value else {
+            return Err("expected an object with a value".into());
+        };
+        let text = |name: &str| -> Result<Option<String>, String> {
+            match map.get(name) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(text)) => Ok(Some(text.clone())),
+                Some(other) => Err(format!("{name}: expected a string, got {other}")),
+            }
+        };
+        if let Some(unknown) = map
+            .keys()
+            .find(|name| !matches!(name.as_str(), "key" | "label" | "value" | "data"))
+        {
+            return Err(format!(
+                "unknown field {unknown:?}; use key, label, value, and data"
+            ));
+        }
+        let value = text("value")?.ok_or_else(|| "value is required".to_string())?;
+        Ok(Self {
+            key: text("key")?.unwrap_or_else(|| value.clone()),
+            label: text("label")?.unwrap_or_else(|| value.clone()),
+            data: map.get("data").cloned().unwrap_or(Value::Null),
+            value,
+        })
     }
 }
 
@@ -40,19 +109,48 @@ enum SerializedRecord {
         key: Option<String>,
         #[serde(default)]
         label: Option<String>,
+        #[serde(default)]
+        data: Option<Value>,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
     },
 }
 
-impl From<SerializedRecord> for Record {
-    fn from(record: SerializedRecord) -> Self {
-        match record {
+impl TryFrom<SerializedRecord> for Record {
+    type Error = String;
+
+    /// Keys other than `key`, `label`, and `value` become `data`, unless
+    /// `data` is given explicitly.
+    fn try_from(record: SerializedRecord) -> Result<Self, String> {
+        Ok(match record {
             SerializedRecord::Value(value) => Self::new(value),
-            SerializedRecord::Fields { value, key, label } => Self {
-                key: key.unwrap_or_else(|| value.clone()),
-                label: label.unwrap_or_else(|| value.clone()),
+            SerializedRecord::Fields {
                 value,
-            },
-        }
+                key,
+                label,
+                data,
+                extra,
+            } => {
+                let data = match (data, extra.is_empty()) {
+                    (Some(_), false) => {
+                        let names: Vec<_> = extra.keys().cloned().collect();
+                        return Err(format!(
+                            "record {value:?} has both data and extra fields ({}); use one",
+                            names.join(", ")
+                        ));
+                    }
+                    (Some(data), true) => data,
+                    (None, false) => Value::Object(extra),
+                    (None, true) => Value::Null,
+                };
+                Self {
+                    key: key.unwrap_or_else(|| value.clone()),
+                    label: label.unwrap_or_else(|| value.clone()),
+                    value,
+                    data,
+                }
+            }
+        })
     }
 }
 
@@ -115,12 +213,7 @@ impl ClipboardHistorySource {
             return Err("history limit must be greater than zero".into());
         }
         let store = HistoryStore::open(path, limit)
-            .map_err(|err| {
-                format!(
-                    "failed to open history database {}: {err}",
-                    path.display()
-                )
-            })?
+            .map_err(|err| format!("failed to open history database {}: {err}", path.display()))?
             .with_coalesce_growing(coalesce_growing)
             .with_skip_whitespace_only(skip_whitespace_only);
         Ok(Self {
@@ -148,6 +241,7 @@ impl RecordSource for ClipboardHistorySource {
                 key: row.id.to_string(),
                 label: row.text.clone(),
                 value: row.text,
+                data: Value::Null,
             })
             .collect())
     }
@@ -225,6 +319,36 @@ pub trait Handlers: Send + Sync {
     fn highlight(&self, widget: &str, record: Record);
     /// New clipboard text, for sources that are not native.
     fn clipboard(&self, _text: &str) {}
+    /// A notification arrived. `true` means the handlers will decide whether
+    /// it is shown; `false` shows it right away.
+    fn notification(&self, _notification: &crate::notifications::Notification) -> bool {
+        false
+    }
+    /// An RPC method the configuration answers, such as `StashList`. Blocks
+    /// until the answer is ready, so it must not be called from the UI thread.
+    fn call(&self, method: &str, _parameters: Value) -> Result<Value, CallError> {
+        Err(CallError::failed(format!("{method} is not available")))
+    }
+}
+
+/// A Varlink error: the unqualified error name and its parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallError {
+    pub error: String,
+    pub parameters: Value,
+}
+
+impl CallError {
+    pub fn new(error: impl Into<String>, parameters: Value) -> Self {
+        Self {
+            error: error.into(),
+            parameters,
+        }
+    }
+
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self::new("Failed", serde_json::json!({ "message": message.into() }))
+    }
 }
 
 /// Drops every event. Used when nothing is configured.
@@ -247,6 +371,8 @@ pub struct WidgetDef {
     pub multi: Option<MultiSelect>,
     /// Whether highlight events are worth sending to the handlers.
     pub highlight: bool,
+    /// What the filter matches. Empty means the label.
+    pub search: Vec<DataPath>,
 }
 
 impl WidgetDef {
@@ -259,6 +385,7 @@ impl WidgetDef {
             location: None,
             multi: None,
             highlight: false,
+            search: Vec::new(),
         }
     }
 }
@@ -344,6 +471,10 @@ impl Widgets {
         self.defs.iter().map(|def| def.name.clone()).collect()
     }
 
+    pub fn defs(&self) -> &[WidgetDef] {
+        &self.defs
+    }
+
     /// Widgets the tray can open. On-demand widgets need records from the caller.
     pub fn names_with_provider(&self) -> Vec<String> {
         self.defs
@@ -404,7 +535,10 @@ impl Widgets {
 /// Loads and validates a widget's rows. Errors name the widget.
 pub fn fetch_records(def: &WidgetDef) -> Result<Vec<Record>, String> {
     let Some(source) = &def.source else {
-        return Err(format!("widget {:?} has no provider; pass records", def.name));
+        return Err(format!(
+            "widget {:?} has no provider; pass records",
+            def.name
+        ));
     };
     let records = source
         .records()
@@ -429,44 +563,29 @@ pub fn parse_records(text: &str, format: FileFormat) -> Result<Vec<Record>, Stri
         FileFormat::Json => {
             let records: Vec<SerializedRecord> =
                 serde_json::from_str(text).map_err(|err| format!("invalid JSON: {err}"))?;
-            Ok(records.into_iter().map(Record::from).collect())
+            records.into_iter().map(Record::try_from).collect()
         }
         FileFormat::Yaml => {
             let records: Vec<SerializedRecord> =
                 serde_yaml::from_str(text).map_err(|err| format!("invalid YAML: {err}"))?;
-            Ok(records.into_iter().map(Record::from).collect())
+            records.into_iter().map(Record::try_from).collect()
         }
     }
 }
 
-/// An empty list means the caller did not supply records. A non-empty list
-/// uses the same field defaults as [`parse_records`] and rejects duplicate
-/// or empty keys.
-pub(crate) fn records_from_maps(
-    widget: &str,
-    rows: Vec<BTreeMap<String, String>>,
-) -> Result<Option<Vec<Record>>, String> {
-    if rows.is_empty() {
-        return Ok(None);
-    }
-    let mut records = Vec::with_capacity(rows.len());
-    for (index, mut row) in rows.into_iter().enumerate() {
-        let Some(value) = row.remove("value") else {
-            return Err(format!(
-                "widget {widget:?}: record {}: value is required",
-                index + 1
-            ));
-        };
-        let key = row.remove("key");
-        let label = row.remove("label");
-        records.push(Record {
-            key: key.unwrap_or_else(|| value.clone()),
-            label: label.unwrap_or_else(|| value.clone()),
-            value,
-        });
-    }
+/// Decodes records a caller passed, naming the widget and row on errors.
+/// Duplicate or empty keys are rejected.
+pub fn records_from_json(widget: &str, rows: &[Value]) -> Result<Vec<Record>, String> {
+    let records = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            Record::from_json(row)
+                .map_err(|err| format!("widget {widget:?}: record {}: {err}", index + 1))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     validate_records(widget, &records)?;
-    Ok(Some(records))
+    Ok(records)
 }
 
 pub fn validate_records(widget_name: &str, records: &[Record]) -> Result<(), String> {
@@ -492,6 +611,7 @@ pub fn validate_records(widget_name: &str, records: &[Record]) -> Result<(), Str
 mod tests {
     use super::*;
     use crate::theme::{Props, Rgba};
+    use serde_json::json;
 
     fn file_widget(format: FileFormat, contents: &str) -> (tempfile::TempDir, Widgets) {
         let dir = tempfile::tempdir().unwrap();
@@ -527,8 +647,11 @@ mod tests {
     fn a_broken_file_fails_when_opened() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("records.json");
-        std::fs::write(&path, r#"[{"key":"same","value":"one"},{"key":"same","value":"two"}]"#)
-            .unwrap();
+        std::fs::write(
+            &path,
+            r#"[{"key":"same","value":"one"},{"key":"same","value":"two"}]"#,
+        )
+        .unwrap();
         let error = FileSource::open(path.clone(), FileFormat::Json)
             .err()
             .unwrap();
@@ -585,6 +708,7 @@ mod tests {
                 key: "1".into(),
                 label: "   \n".into(),
                 value: "   \n".into(),
+                data: Value::Null,
             }]
         );
     }
@@ -594,7 +718,10 @@ mod tests {
         let widgets = Widgets::new(
             vec![
                 WidgetDef::new("pick", None),
-                WidgetDef::new("items", Some(Arc::new(StaticSource(vec![Record::new("x")])))),
+                WidgetDef::new(
+                    "items",
+                    Some(Arc::new(StaticSource(vec![Record::new("x")]))),
+                ),
             ],
             ThemeSpec::default(),
             ThemeSpec::default(),
@@ -670,7 +797,7 @@ mod tests {
         );
         assert_eq!(
             parse_records(
-                r#"["plain", {"label":"Readable", "value":"copied", "extra":"ignored"}]"#,
+                r#"["plain", {"label":"Readable", "value":"copied"}]"#,
                 FileFormat::Json,
             )
             .unwrap(),
@@ -680,6 +807,7 @@ mod tests {
                     key: "copied".into(),
                     label: "Readable".into(),
                     value: "copied".into(),
+                    data: Value::Null,
                 },
             ]
         );
@@ -690,28 +818,59 @@ mod tests {
     }
 
     #[test]
-    fn dbus_maps_default_missing_fields_and_reject_bad_keys() {
-        let mut partial = BTreeMap::new();
-        partial.insert("value".into(), "copied".into());
-        partial.insert("extra".into(), "ignored".into());
+    fn extra_keys_or_data_become_nested_data() {
         assert_eq!(
-            records_from_maps("items", vec![partial]).unwrap(),
-            Some(vec![Record::new("copied")])
+            parse_records(
+                r#"[{"value":"v", "sender":{"name":"Ada"}, "tags":["a"]}]"#,
+                FileFormat::Json
+            )
+            .unwrap(),
+            vec![Record::new("v").with_data(json!({"sender": {"name": "Ada"}, "tags": ["a"]}))]
         );
+        assert_eq!(
+            parse_records("- value: v\n  data: [1, 2]\n", FileFormat::Yaml).unwrap(),
+            vec![Record::new("v").with_data(json!([1, 2]))]
+        );
+        let error =
+            parse_records(r#"[{"value":"v", "data":1, "extra":2}]"#, FileFormat::Json).unwrap_err();
+        assert!(
+            error.contains("both data and extra fields (extra)"),
+            "{error}"
+        );
+    }
 
-        let mut missing = BTreeMap::new();
-        missing.insert("key".into(), "id".into());
-        let error = records_from_maps("items", vec![missing]).unwrap_err();
-        assert!(error.contains("value is required"), "{error}");
-
-        let mut first = BTreeMap::new();
-        first.insert("key".into(), "same".into());
-        first.insert("value".into(), "one".into());
-        let mut second = BTreeMap::new();
-        second.insert("key".into(), "same".into());
-        second.insert("value".into(), "two".into());
-        let error = records_from_maps("items", vec![first, second]).unwrap_err();
+    #[test]
+    fn json_records_default_missing_fields_and_reject_bad_keys() {
+        let record = Record::new("copied").with_data(json!({"n": 1}));
+        assert_eq!(Record::from_json(&record.to_json()).unwrap(), record);
+        assert_eq!(
+            records_from_json("items", &[json!({"value": "copied"})]).unwrap(),
+            vec![Record::new("copied")]
+        );
+        let error = records_from_json("items", &[json!({"key": "id"})]).unwrap_err();
+        assert!(error.contains("record 1: value is required"), "{error}");
+        let error = records_from_json("items", &[json!({"value": "v", "extra": 1})]).unwrap_err();
+        assert!(error.contains("unknown field \"extra\""), "{error}");
+        let error = records_from_json("items", &[json!({"value": 3})]).unwrap_err();
+        assert!(error.contains("value: expected a string"), "{error}");
+        let error = records_from_json(
+            "items",
+            &[
+                json!({"key": "same", "value": "one"}),
+                json!({"key": "same", "value": "two"}),
+            ],
+        )
+        .unwrap_err();
         assert!(error.contains("duplicate record key"), "{error}");
-        assert!(records_from_maps("items", Vec::new()).unwrap().is_none());
+    }
+
+    #[test]
+    fn record_texts_name_own_fields_or_data_paths() {
+        let record = Record::new("v").with_data(json!({"tags": ["a", "b"], "n": 2}));
+        let path = |text| DataPath::parse(text).unwrap();
+        assert_eq!(record.text(&path("value")).as_deref(), Some("v"));
+        assert_eq!(record.text(&path("tags[*]")).as_deref(), Some("a, b"));
+        assert_eq!(record.text(&path("n")).as_deref(), Some("2"));
+        assert_eq!(record.text(&path("missing")), None);
     }
 }

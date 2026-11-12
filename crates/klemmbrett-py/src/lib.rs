@@ -1,28 +1,28 @@
 //! `klemmbrett._core`: the daemon, its built-in providers, and the operations
 //! Python handlers call back into.
 //!
-//! Python hands configuration over as plain data (see `python/klemmbrett/_wire.py`):
+//! Python hands configuration over as plain data (see `python/klemmbrett/_registry.py`):
 //! theme specs are `{"selector": {property: value}}`, layout nodes are
-//! `{"kind", "style", "children", "text"}`, and records are `(key, label, value)`
-//! tuples.
+//! `{"kind", "style", "children", "text"}`, and records are
+//! `(key, label, value, data)` tuples whose `data` is JSON-like.
 
 use klemmbrett::cli::{self, Invocation};
+use klemmbrett::notifications::{CloseReason, Notification, NotificationConfig};
 use klemmbrett::{
-    cmyk, hsl, hwb, parse_color, resolve_config_path, systemd, ui, AppConfig, ClipboardHistorySource,
-    Edges, ExecutablesSource, FileFormat, FileSource, Handlers, KeySpec, Launch, Layout,
-    LayoutBuilder, LayoutContext, LayoutSpec, Location, MultiSelect, Node, NodeKind, Orientation,
-    Props, Record, RecordSource, Rgba, Runtime, State, Style, Theme, ThemeSpec,
-    WaylandWindowsSource, Widget, WidgetDef, Widgets,
+    cmyk, hsl, hwb, parse_color, resolve_config_path, systemd, ui, AppConfig, CallError,
+    ClipboardHistorySource, DataPath, Edges, ExecutablesSource, FileFormat, FileSource, Handlers,
+    KeySpec, Launch, Layout, LayoutBuilder, LayoutContext, LayoutSpec, Location, MultiSelect, Node,
+    NodeKind, Orientation, Props, Record, RecordSource, Rgba, Runtime, State, Style, Theme,
+    ThemeSpec, WaylandWindowsSource, Widget, WidgetDef, Widgets,
 };
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use serde_json::{Map, Number, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, OnceLock};
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-
-type RecordTuple = (String, String, String);
 
 fn value_error(message: impl Into<String>) -> PyErr {
     PyValueError::new_err(message.into())
@@ -40,12 +40,148 @@ fn runtime() -> PyResult<&'static Runtime> {
     })
 }
 
-fn to_tuple(record: Record) -> RecordTuple {
-    (record.key, record.label, record.value)
+// ---------------------------------------------------------------------------
+// JSON-like values and records
+// ---------------------------------------------------------------------------
+
+/// `None`, `bool`, `int`, `float`, `str`, lists, tuples, and dicts with
+/// string keys. Python turns dataclasses and the like into these first.
+fn to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if value.is_none() {
+        return Ok(Value::Null);
+    }
+    if let Ok(flag) = value.cast::<PyBool>() {
+        return Ok(Value::Bool(flag.is_true()));
+    }
+    if value.cast::<PyInt>().is_ok() {
+        if let Ok(number) = value.extract::<i64>() {
+            return Ok(Value::from(number));
+        }
+        if let Ok(number) = value.extract::<u64>() {
+            return Ok(Value::from(number));
+        }
+        return Err(value_error(format!(
+            "integer {value} does not fit in 64 bits"
+        )));
+    }
+    if let Ok(number) = value.cast::<PyFloat>() {
+        return Number::from_f64(number.value())
+            .map(Value::Number)
+            .ok_or_else(|| value_error(format!("{value} is not a JSON number")));
+    }
+    if let Ok(text) = value.cast::<PyString>() {
+        return Ok(Value::String(text.to_str()?.to_owned()));
+    }
+    if let Ok(list) = value.cast::<PyList>() {
+        return list
+            .iter()
+            .map(|item| to_json(&item))
+            .collect::<PyResult<_>>()
+            .map(Value::Array);
+    }
+    if let Ok(tuple) = value.cast::<PyTuple>() {
+        return tuple
+            .iter()
+            .map(|item| to_json(&item))
+            .collect::<PyResult<_>>()
+            .map(Value::Array);
+    }
+    if let Ok(dict) = value.cast::<PyDict>() {
+        let mut map = Map::new();
+        for (key, item) in dict.iter() {
+            let key = key
+                .cast::<PyString>()
+                .map_err(|_| PyTypeError::new_err(format!("dict key {key} is not a string")))?
+                .to_str()?
+                .to_owned();
+            map.insert(key, to_json(&item)?);
+        }
+        return Ok(Value::Object(map));
+    }
+    Err(PyTypeError::new_err(format!(
+        "{} is not JSON-like data",
+        value.get_type().name()?
+    )))
 }
 
-fn from_tuple((key, label, value): RecordTuple) -> Record {
-    Record { key, label, value }
+fn to_py<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match value {
+        Value::Null => py.None().into_bound(py),
+        Value::Bool(flag) => PyBool::new(py, *flag).to_owned().into_any(),
+        Value::Number(number) => match (number.as_i64(), number.as_u64()) {
+            (Some(int), _) => int.into_pyobject(py)?.into_any(),
+            (None, Some(int)) => int.into_pyobject(py)?.into_any(),
+            _ => number
+                .as_f64()
+                .unwrap_or(f64::NAN)
+                .into_pyobject(py)?
+                .into_any(),
+        },
+        Value::String(text) => PyString::new(py, text).into_any(),
+        Value::Array(items) => PyList::new(
+            py,
+            items
+                .iter()
+                .map(|item| to_py(py, item))
+                .collect::<PyResult<Vec<_>>>()?,
+        )?
+        .into_any(),
+        Value::Object(map) => {
+            let dict = PyDict::new(py);
+            for (key, item) in map {
+                dict.set_item(key, to_py(py, item)?)?;
+            }
+            dict.into_any()
+        }
+    })
+}
+
+/// `(key, label, value, data)`.
+fn record_to_py<'py>(py: Python<'py>, record: &Record) -> PyResult<Bound<'py, PyAny>> {
+    Ok(PyTuple::new(
+        py,
+        [
+            PyString::new(py, &record.key).into_any(),
+            PyString::new(py, &record.label).into_any(),
+            PyString::new(py, &record.value).into_any(),
+            to_py(py, &record.data)?,
+        ],
+    )?
+    .into_any())
+}
+
+fn record_from_py(item: &Bound<'_, PyAny>) -> PyResult<Record> {
+    let tuple = item
+        .cast::<PyTuple>()
+        .map_err(|_| PyTypeError::new_err("expected a (key, label, value, data) tuple"))?;
+    if tuple.len() != 4 {
+        return Err(PyTypeError::new_err(
+            "expected a (key, label, value, data) tuple",
+        ));
+    }
+    Ok(Record {
+        key: tuple.get_item(0)?.extract()?,
+        label: tuple.get_item(1)?.extract()?,
+        value: tuple.get_item(2)?.extract()?,
+        data: to_json(&tuple.get_item(3)?)?,
+    })
+}
+
+fn records_from_py(items: &Bound<'_, PyAny>) -> PyResult<Vec<Record>> {
+    items
+        .try_iter()?
+        .map(|item| record_from_py(&item?))
+        .collect()
+}
+
+fn records_to_py<'py>(py: Python<'py>, records: &[Record]) -> PyResult<Bound<'py, PyList>> {
+    PyList::new(
+        py,
+        records
+            .iter()
+            .map(|record| record_to_py(py, record))
+            .collect::<PyResult<Vec<_>>>()?,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +209,9 @@ fn edges(value: &Bound<'_, PyAny>) -> Result<Edges, String> {
 }
 
 fn number(value: &Bound<'_, PyAny>) -> Result<f32, String> {
-    value.extract::<f32>().map_err(|_| "expected a number".to_string())
+    value
+        .extract::<f32>()
+        .map_err(|_| "expected a number".to_string())
 }
 
 fn props(dict: &Bound<'_, PyAny>, context: &str) -> PyResult<Props> {
@@ -212,6 +350,20 @@ fn node(value: &Bound<'_, PyAny>) -> PyResult<Node> {
             Some(text) => text.extract()?,
             None => String::new(),
         }),
+        "field" => {
+            let path: String = match dict.get_item("text")? {
+                Some(path) => path.extract()?,
+                None => return Err(value_error("layout: field without a path")),
+            };
+            NodeKind::Field {
+                path: DataPath::parse(&path)
+                    .map_err(|err| value_error(format!("layout: {err}")))?,
+                fallback: match dict.get_item("fallback")? {
+                    Some(fallback) if !fallback.is_none() => fallback.extract()?,
+                    _ => String::new(),
+                },
+            }
+        }
         "spacer" => NodeKind::Spacer,
         "row" => NodeKind::Row,
         "column" => NodeKind::Column,
@@ -307,10 +459,10 @@ impl NativeSource {
     }
 
     /// Reads the current records, as the popup would.
-    fn records(&self, py: Python<'_>) -> PyResult<Vec<RecordTuple>> {
+    fn records<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let inner = self.inner.clone();
         let records = py.detach(move || inner.records()).map_err(runtime_error)?;
-        Ok(records.into_iter().map(to_tuple).collect())
+        records_to_py(py, &records)
     }
 
     fn __repr__(&self) -> String {
@@ -329,9 +481,9 @@ impl RecordSource for PySource {
             let result = self
                 .fetch
                 .call0(py)
-                .and_then(|records| records.extract::<Vec<RecordTuple>>(py).map_err(PyErr::from));
+                .and_then(|records| records_from_py(records.bind(py)));
             match result {
-                Ok(records) => Ok(records.into_iter().map(from_tuple).collect()),
+                Ok(records) => Ok(records),
                 Err(err) => {
                     let message = err.to_string();
                     err.print(py);
@@ -400,10 +552,14 @@ fn layout_spec(value: Option<&Bound<'_, PyAny>>) -> PyResult<LayoutSpec> {
 // Handlers
 // ---------------------------------------------------------------------------
 
+type CallReply = mpsc::Sender<Result<Value, CallError>>;
+
 enum Event {
     Select(String, Vec<Record>),
     Highlight(String, Record),
     Clipboard(String),
+    Notification(Value),
+    Call(String, Value, CallReply),
 }
 
 /// Queues events to one Python thread, so handlers run in the order they
@@ -411,10 +567,23 @@ enum Event {
 struct PyHandlers {
     events: mpsc::Sender<Event>,
     clipboard: bool,
+    notifications: bool,
+}
+
+/// The dispatcher answers a call with `{"ok": value}` or
+/// `{"error": name, "parameters": {...}}`.
+fn call_reply(reply: PyResult<Bound<'_, PyAny>>) -> Result<Value, CallError> {
+    let reply = reply.map_err(|err| CallError::failed(err.to_string()))?;
+    let reply = to_json(&reply).map_err(|err| CallError::failed(err.to_string()))?;
+    if let Some(error) = reply.get("error").and_then(Value::as_str) {
+        let parameters = reply.get("parameters").cloned().unwrap_or(Value::Null);
+        return Err(CallError::new(error, parameters));
+    }
+    Ok(reply.get("ok").cloned().unwrap_or(Value::Null))
 }
 
 impl PyHandlers {
-    fn spawn(dispatcher: Py<PyAny>, clipboard: bool) -> PyResult<Self> {
+    fn spawn(dispatcher: Py<PyAny>, clipboard: bool, notifications: bool) -> PyResult<Self> {
         let (events, queue) = mpsc::channel::<Event>();
         std::thread::Builder::new()
             .name("klemmbrett-handlers".into())
@@ -424,15 +593,27 @@ impl PyHandlers {
                         let dispatcher = dispatcher.bind(py);
                         let result = match event {
                             Event::Select(widget, records) => {
-                                let records: Vec<RecordTuple> =
-                                    records.into_iter().map(to_tuple).collect();
-                                dispatcher.call_method1("select", (widget, records))
+                                records_to_py(py, &records).and_then(|records| {
+                                    dispatcher.call_method1("select", (widget, records))
+                                })
                             }
                             Event::Highlight(widget, record) => {
-                                dispatcher.call_method1("highlight", (widget, to_tuple(record)))
+                                record_to_py(py, &record).and_then(|record| {
+                                    dispatcher.call_method1("highlight", (widget, record))
+                                })
                             }
-                            Event::Clipboard(text) => {
-                                dispatcher.call_method1("clipboard", (text,))
+                            Event::Clipboard(text) => dispatcher.call_method1("clipboard", (text,)),
+                            Event::Notification(notification) => {
+                                to_py(py, &notification).and_then(|notification| {
+                                    dispatcher.call_method1("notification", (notification,))
+                                })
+                            }
+                            Event::Call(method, parameters, reply) => {
+                                let answer = to_py(py, &parameters).and_then(|parameters| {
+                                    dispatcher.call_method1("call", (method, parameters))
+                                });
+                                let _ = reply.send(call_reply(answer));
+                                return;
                             }
                         };
                         if let Err(err) = result {
@@ -442,7 +623,11 @@ impl PyHandlers {
                 }
             })
             .map_err(|err| runtime_error(format!("failed to start the handler thread: {err}")))?;
-        Ok(Self { events, clipboard })
+        Ok(Self {
+            events,
+            clipboard,
+            notifications,
+        })
     }
 
     fn send(&self, event: Event) {
@@ -465,6 +650,22 @@ impl Handlers for PyHandlers {
         if self.clipboard {
             self.send(Event::Clipboard(text.to_owned()));
         }
+    }
+
+    fn notification(&self, notification: &Notification) -> bool {
+        if !self.notifications {
+            return false;
+        }
+        self.send(Event::Notification(notification.to_json()));
+        true
+    }
+
+    fn call(&self, method: &str, parameters: Value) -> Result<Value, CallError> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Event::Call(method.to_owned(), parameters, reply));
+        answer
+            .recv()
+            .unwrap_or_else(|_| Err(CallError::failed("the handler thread has stopped")))
     }
 }
 
@@ -533,7 +734,11 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
     def.layout = layout_spec(item(dict, "layout")?.as_ref()).map_err(context)?;
     def.theme = optional_spec(item(dict, "theme")?.as_ref()).map_err(context)?;
     def.location = match item(dict, "location")? {
-        Some(value) => Some(location(&value.extract::<String>()?).map_err(value_error).map_err(context)?),
+        Some(value) => Some(
+            location(&value.extract::<String>()?)
+                .map_err(value_error)
+                .map_err(context)?,
+        ),
         None => None,
     };
     def.multi = multi(item(dict, "multi")?, &name)?;
@@ -541,7 +746,47 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
         Some(value) => value.extract()?,
         None => false,
     };
+    if let Some(search) = item(dict, "search")? {
+        def.search = search
+            .extract::<Vec<String>>()?
+            .iter()
+            .map(|path| DataPath::parse(path))
+            .collect::<Result<_, _>>()
+            .map_err(|err| value_error(format!("widget {name:?}: search: {err}")))?;
+    }
     Ok(def)
+}
+
+fn notification_config(value: &Bound<'_, PyAny>) -> PyResult<NotificationConfig> {
+    let dict = value
+        .cast::<PyDict>()
+        .map_err(|_| value_error("notifications: expected a dict"))?;
+    let mut config = NotificationConfig::default();
+    if let Some(timeout) = item(dict, "timeout")? {
+        let seconds: f64 = timeout.extract()?;
+        if seconds.is_nan() || seconds <= 0.0 {
+            return Err(value_error(
+                "notifications: timeout must be greater than zero",
+            ));
+        }
+        config.timeout_ms = (seconds * 1000.0).round() as u32;
+    }
+    if let Some(name) = item(dict, "location")? {
+        config.location = location(&name.extract::<String>()?)
+            .map_err(|err| value_error(format!("notifications: {err}")))?;
+    }
+    if let Some(replace) = item(dict, "replace")? {
+        config.replace = replace.extract()?;
+    }
+    if let Some(max_visible) = item(dict, "max_visible")? {
+        config.max_visible = max_visible.extract()?;
+        if config.max_visible == 0 {
+            return Err(value_error(
+                "notifications: max_visible must be greater than zero",
+            ));
+        }
+    }
+    Ok(config)
 }
 
 fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
@@ -558,13 +803,25 @@ fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
     let palette = optional_spec(item(dict, "theme")?.as_ref())?.unwrap_or_default();
     let overrides = optional_spec(item(dict, "overrides")?.as_ref())?.unwrap_or_default();
     let widgets = Widgets::new(defs, palette, overrides).map_err(value_error)?;
+    let notifications = match item(dict, "notifications")? {
+        Some(value) => Some(notification_config(&value)?),
+        None => None,
+    };
     let handlers: Arc<dyn Handlers> = match item(dict, "dispatcher")? {
         Some(dispatcher) => {
             let clipboard = match item(dict, "clipboard")? {
                 Some(value) => value.extract()?,
                 None => false,
             };
-            Arc::new(PyHandlers::spawn(dispatcher.unbind(), clipboard)?)
+            let routed = match item(dict, "route_notifications")? {
+                Some(value) => value.extract()?,
+                None => false,
+            };
+            Arc::new(PyHandlers::spawn(
+                dispatcher.unbind(),
+                clipboard,
+                routed && notifications.is_some(),
+            )?)
         }
         None => Arc::new(klemmbrett::NoHandlers),
     };
@@ -572,6 +829,7 @@ fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
         launch: launch(item(dict, "launch")?)?,
         widgets,
         handlers,
+        notifications,
         ..AppConfig::default()
     };
     if let Some(label_max) = item(dict, "label_max")? {
@@ -590,18 +848,28 @@ fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
 /// Runs the command line. `load(path)` returns the configuration for the
 /// daemon; `exe` is the command that starts klemmbrett again (for systemd).
 #[pyfunction]
-fn main(py: Python<'_>, argv: Vec<String>, load: Bound<'_, PyAny>, exe: Vec<String>) -> PyResult<i32> {
-    let invocation = match cli::parse(&argv) {
-        Ok(invocation) => invocation,
+fn main(
+    py: Python<'_>,
+    argv: Vec<String>,
+    load: Bound<'_, PyAny>,
+    exe: Vec<String>,
+) -> PyResult<i32> {
+    let parsed = match cli::parse(&argv) {
+        Ok(parsed) => parsed,
         Err(err) => {
             let code = err.exit_code();
             let _ = err.print();
             return Ok(code);
         }
     };
-    match invocation {
-        Invocation::Show(args) => Ok(py.detach(|| cli::run_popup(&args, false))),
-        Invocation::Prompt(args) => Ok(py.detach(|| cli::run_popup(&args, true))),
+    let socket = parsed.socket;
+    match parsed.invocation {
+        Invocation::Show(args) => Ok(py.detach(|| cli::run_popup(&args, false, socket.as_deref()))),
+        Invocation::Prompt(args) => {
+            Ok(py.detach(|| cli::run_popup(&args, true, socket.as_deref())))
+        }
+        Invocation::Watch(args) => Ok(py.detach(|| cli::run_watch(&args, socket.as_deref()))),
+        Invocation::Stash(args) => Ok(py.detach(|| cli::run_stash(&args, socket.as_deref()))),
         Invocation::InstallSystemd { config } => {
             let config = match config {
                 Some(path) => Some(absolute(&path)?),
@@ -624,8 +892,9 @@ fn main(py: Python<'_>, argv: Vec<String>, load: Bound<'_, PyAny>, exe: Vec<Stri
                 }
             };
             let loaded = load.call1((path,))?;
-            let app = app_config(&loaded)?;
+            let mut app = app_config(&loaded)?;
             drop(loaded);
+            app.socket = socket;
             let result = py.detach(move || {
                 ui::run(app, |runtime| {
                     let _ = RUNTIME.set(runtime);
@@ -685,12 +954,41 @@ fn set_theme(py: Python<'_>, theme: Bound<'_, PyAny>) -> PyResult<()> {
 fn show(
     py: Python<'_>,
     widget: String,
-    records: Option<Vec<RecordTuple>>,
+    records: Option<Bound<'_, PyAny>>,
     pointer: Option<(i32, i32)>,
 ) -> PyResult<()> {
-    let records = records.map(|records| records.into_iter().map(from_tuple).collect());
+    let records = records
+        .map(|records| records_from_py(&records))
+        .transpose()?;
     let runtime = runtime()?;
     py.detach(|| runtime.show(&widget, records, pointer))
+        .map_err(runtime_error)
+}
+
+/// Tells open popups of these widgets, and subscribers, that their records changed.
+#[pyfunction]
+fn refresh(py: Python<'_>, widgets: Vec<String>) -> PyResult<()> {
+    let runtime = runtime()?;
+    py.detach(|| runtime.refresh(widgets))
+        .map_err(runtime_error)
+}
+
+/// Shows a routed notification as a toast.
+#[pyfunction]
+fn notification_show(py: Python<'_>, id: u32) -> PyResult<()> {
+    let runtime = runtime()?;
+    py.detach(|| runtime.show_notification(id))
+        .map_err(runtime_error)
+}
+
+/// Ends a routed notification that is not shown; `reason` is a
+/// `NotificationClosed` code (1 expired, 2 dismissed, 3 closed, 4 undefined).
+#[pyfunction]
+fn notification_close(py: Python<'_>, id: u32, reason: u32) -> PyResult<()> {
+    let reason = CloseReason::from_code(reason)
+        .ok_or_else(|| value_error(format!("unknown close reason {reason}")))?;
+    let runtime = runtime()?;
+    py.detach(|| runtime.close_notification(id, reason))
         .map_err(runtime_error)
 }
 
@@ -783,7 +1081,10 @@ fn resolve_theme<'py>(py: Python<'py>, layers: Bound<'py, PyList>) -> PyResult<B
     for widget in Widget::ALL {
         out.set_item(widget.as_str(), style_dict(py, theme.style(widget))?)?;
     }
-    out.set_item("element:selected", style_dict(py, theme.element_selected())?)?;
+    out.set_item(
+        "element:selected",
+        style_dict(py, theme.element_selected())?,
+    )?;
     out.set_item("element:hover", style_dict(py, theme.element_hover())?)?;
     Ok(out)
 }
@@ -812,6 +1113,9 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(activate_window, module)?)?;
     module.add_function(wrap_pyfunction!(set_theme, module)?)?;
     module.add_function(wrap_pyfunction!(show, module)?)?;
+    module.add_function(wrap_pyfunction!(refresh, module)?)?;
+    module.add_function(wrap_pyfunction!(notification_show, module)?)?;
+    module.add_function(wrap_pyfunction!(notification_close, module)?)?;
     module.add_function(wrap_pyfunction!(quit, module)?)?;
     module.add_function(wrap_pyfunction!(is_running, module)?)?;
     module.add_function(wrap_pyfunction!(default_history_path, module)?)?;

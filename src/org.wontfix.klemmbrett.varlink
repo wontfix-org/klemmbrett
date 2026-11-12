@@ -1,0 +1,59 @@
+# klemmbrett: popup widgets, their records, and stashed notifications.
+interface org.wontfix.klemmbrett
+
+# A pointer position in compositor global coordinates.
+type Point (x: int, y: int)
+
+# One row. key and label default to value. data is any JSON value.
+type Record (
+  key: ?string,
+  label: ?string,
+  value: string,
+  data: ?object
+)
+
+type WidgetInfo (name: string, provider: bool, multi: bool)
+
+# ready is the first event of every subscription. changed means the widget's
+# records changed, selected carries the rows a user picked, and notification
+# carries a notification as it arrives, before it is routed.
+type Event (
+  kind: (ready, changed, selected, notification),
+  widget: ?string,
+  records: ?[]Record,
+  notification: ?object
+)
+
+# Opens a widget. Without records (or with an empty list) its provider
+# supplies the rows.
+method Show(widget: string, pointer: ?Point, records: ?[]Record) -> ()
+
+# Like Show, but waits until the popup closes and returns the picked values.
+# Handlers do not run. Cancelling, or opening another popup, returns no values.
+method Prompt(widget: string, pointer: ?Point, records: ?[]Record) -> (values: []string)
+
+# The configured widgets.
+method Widgets() -> (widgets: []WidgetInfo)
+
+# The rows a widget's provider currently supplies.
+method Records(widget: string) -> (records: []Record)
+
+# Streams events, optionally only those about some widgets. Call with more.
+method Subscribe(widgets: ?[]string) -> (event: Event)
+
+# The notifications in a stash, newest first.
+method StashList(stash: string, unread_only: ?bool) -> (records: []Record)
+
+# Marks notifications as read; without keys, every one in the stash.
+method StashMarkRead(stash: string, keys: ?[]string) -> (marked: int)
+
+# Sends a notification through the configured routing, like org.freedesktop.Notifications.Notify.
+# urgency is 0 (low), 1 (normal), or 2 (critical); timeout is in milliseconds.
+method Notify(app_name: string, summary: string, body: ?string, urgency: ?int, timeout: ?int) -> (id: int)
+
+error UnknownWidget (widget: string, known: []string)
+error NoProvider (widget: string)
+error InvalidRecord (path: string, message: string)
+error UnknownStash (stash: string, known: []string)
+error NotificationsDisabled ()
+error Failed (message: string)

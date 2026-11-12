@@ -21,10 +21,13 @@ pub enum Widget {
     InputBar,
     Prompt,
     Entry,
+    Toast,
+    ToastSummary,
+    ToastBody,
 }
 
 impl Widget {
-    pub const ALL: [Widget; 10] = [
+    pub const ALL: [Widget; 13] = [
         Self::Overlay,
         Self::Window,
         Self::ListView,
@@ -35,6 +38,9 @@ impl Widget {
         Self::InputBar,
         Self::Prompt,
         Self::Entry,
+        Self::Toast,
+        Self::ToastSummary,
+        Self::ToastBody,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -49,6 +55,9 @@ impl Widget {
             Self::InputBar => "inputbar",
             Self::Prompt => "prompt",
             Self::Entry => "entry",
+            Self::Toast => "toast",
+            Self::ToastSummary => "toast-summary",
+            Self::ToastBody => "toast-body",
         }
     }
 
@@ -84,11 +93,7 @@ pub enum Location {
 impl Location {
     pub fn parse(name: &str) -> Option<Self> {
         Some(
-            match name
-                .to_ascii_lowercase()
-                .replace(['-', '_'], " ")
-                .as_str()
-            {
+            match name.to_ascii_lowercase().replace(['-', '_'], " ").as_str() {
                 "pointer" => Self::Pointer,
                 "center" => Self::Center,
                 "north" => Self::North,
@@ -415,6 +420,9 @@ pub struct Theme {
     inputbar: Style,
     prompt: Style,
     entry: Style,
+    toast: Style,
+    toast_summary: Style,
+    toast_body: Style,
 }
 
 impl Default for Theme {
@@ -435,7 +443,18 @@ impl Theme {
         let listview = resolve(&spec, Widget::ListView, State::Normal, Some(&window));
         let inputbar = resolve(&spec, Widget::InputBar, State::Normal, Some(&window));
         let element = resolve(&spec, Widget::Element, State::Normal, Some(&listview));
+        let toast = resolve_like(&spec, Widget::Toast, Widget::Window, Some(&overlay));
+        let toast_summary = resolve_like(
+            &spec,
+            Widget::ToastSummary,
+            Widget::ElementText,
+            Some(&toast),
+        );
+        let toast_body = resolve_like(&spec, Widget::ToastBody, Widget::ElementText, Some(&toast));
         Self {
+            toast,
+            toast_summary,
+            toast_body,
             overlay,
             window,
             listview,
@@ -499,6 +518,18 @@ impl Theme {
         &self.entry
     }
 
+    pub fn toast(&self) -> &Style {
+        &self.toast
+    }
+
+    pub fn toast_summary(&self) -> &Style {
+        &self.toast_summary
+    }
+
+    pub fn toast_body(&self) -> &Style {
+        &self.toast_body
+    }
+
     pub fn style(&self, widget: Widget) -> &Style {
         match widget {
             Widget::Overlay => &self.overlay,
@@ -511,6 +542,9 @@ impl Theme {
             Widget::InputBar => &self.inputbar,
             Widget::Prompt => &self.prompt,
             Widget::Entry => &self.entry,
+            Widget::Toast => &self.toast,
+            Widget::ToastSummary => &self.toast_summary,
+            Widget::ToastBody => &self.toast_body,
         }
     }
 
@@ -601,6 +635,27 @@ fn default_spec() -> ThemeSpec {
 fn resolve(spec: &ThemeSpec, widget: Widget, state: State, parent: Option<&Style>) -> Style {
     let mut props = fallback(widget);
     props.merge(&spec.props(widget, state));
+    resolve_props(props, widget, parent)
+}
+
+/// Resolves `widget` over `like`'s look, so a palette that only styles the
+/// popup still styles toasts. Sizes and placement are not borrowed.
+fn resolve_like(spec: &ThemeSpec, widget: Widget, like: Widget, parent: Option<&Style>) -> Style {
+    let mut props = fallback(like);
+    props.merge(&spec.props(like, State::Normal));
+    props.width = None;
+    props.height = None;
+    props.max_height = None;
+    props.location = None;
+    props.text = None;
+    props.merge(&fallback(widget));
+    if let Some(own) = spec.widgets.get(&(widget, State::Normal)) {
+        props.merge(own);
+    }
+    resolve_props(props, widget, parent)
+}
+
+fn resolve_props(props: Props, widget: Widget, parent: Option<&Style>) -> Style {
     let inherit = |name: &str| props.inherit.iter().any(|item| item == name);
     macro_rules! pick {
         ($name:literal, $field:ident, $parent:expr) => {
@@ -612,8 +667,7 @@ fn resolve(spec: &ThemeSpec, widget: Widget, state: State, parent: Option<&Style
         };
     }
     Style {
-        padding: pick!("padding", padding, |p: &Style| Some(p.padding))
-            .unwrap_or(Edges::all(0.0)),
+        padding: pick!("padding", padding, |p: &Style| Some(p.padding)).unwrap_or(Edges::all(0.0)),
         margin: pick!("margin", margin, |p: &Style| Some(p.margin)).unwrap_or(Edges::all(0.0)),
         border: pick!("border", border, |p: &Style| Some(p.border)).unwrap_or(Edges::all(0.0)),
         border_radius: pick!("border_radius", border_radius, |p: &Style| Some(
@@ -675,6 +729,20 @@ fn fallback(widget: Widget) -> Props {
         }
         Widget::ElementText | Widget::Prompt | Widget::Entry => {
             props.background = Some(Rgba::TRANSPARENT);
+        }
+        Widget::Toast => {
+            props.padding = Some(Edges::vh(8.0, 12.0));
+            props.spacing = Some(4.0);
+            props.width = Some(360.0);
+            props.orientation = Some(Orientation::Vertical);
+        }
+        Widget::ToastSummary => {
+            props.background = Some(Rgba::TRANSPARENT);
+            props.height = Some(20.0);
+        }
+        Widget::ToastBody => {
+            props.background = Some(Rgba::TRANSPARENT);
+            props.height = Some(36.0);
         }
         Widget::InputBar => {
             props.padding = Some(Edges::all(8.0));
@@ -792,6 +860,45 @@ mod tests {
     }
 
     #[test]
+    fn toasts_follow_the_window_unless_styled_themselves() {
+        let theme = Theme::resolve(&[&layer(&[(
+            Widget::Window,
+            State::Normal,
+            Props {
+                background: Some(Rgba::hex(0x112233)),
+                border_radius: Some(8.0),
+                width: Some(700.0),
+                ..Props::default()
+            },
+        )])]);
+        assert_eq!(theme.toast().background, Rgba::hex(0x112233));
+        assert_eq!(theme.toast().border_radius, 8.0);
+        assert_eq!(theme.toast().width, Some(360.0));
+        assert_eq!(theme.toast().border, Edges::all(1.0));
+        assert_eq!(theme.toast_body().background, Rgba::TRANSPARENT);
+
+        let theme = Theme::resolve(&[&layer(&[
+            (
+                Widget::Window,
+                State::Normal,
+                Props {
+                    background: Some(Rgba::hex(0x112233)),
+                    ..Props::default()
+                },
+            ),
+            (
+                Widget::Toast,
+                State::Normal,
+                Props {
+                    background: Some(Rgba::hex(0x445566)),
+                    ..Props::default()
+                },
+            ),
+        ])]);
+        assert_eq!(theme.toast().background, Rgba::hex(0x445566));
+    }
+
+    #[test]
     fn widget_names_accept_dashes_and_underscores() {
         assert_eq!(Widget::parse("element-index"), Some(Widget::ElementIndex));
         assert_eq!(Widget::parse("element_marker"), Some(Widget::ElementMarker));
@@ -801,7 +908,10 @@ mod tests {
     #[test]
     fn edges_follow_css_shorthand() {
         assert_eq!(Edges::from_shorthand(&[8.0]), Some(Edges::all(8.0)));
-        assert_eq!(Edges::from_shorthand(&[0.0, 8.0]), Some(Edges::vh(0.0, 8.0)));
+        assert_eq!(
+            Edges::from_shorthand(&[0.0, 8.0]),
+            Some(Edges::vh(0.0, 8.0))
+        );
         assert_eq!(
             Edges::from_shorthand(&[1.0, 2.0, 3.0]),
             Some(Edges {
