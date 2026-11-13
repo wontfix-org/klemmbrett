@@ -136,12 +136,12 @@ widgets showing it reload as notifications arrive and are read, and
 From the shell, or anything that speaks Varlink:
 
 ```sh
-klemmbrett stash notifications --unread        # one JSON record per line
-klemmbrett stash work --mark-read 41 42
-klemmbrett stash work --all
-klemmbrett watch                               # includes every arriving notification
+kb stash notifications --unread        # one JSON record per line
+kb stash work --mark-read 41 42
+kb stash work --all
+kb watch                               # includes every arriving notification
 ```
 
 A status bar can count unread notifications without polling by running
-`klemmbrett watch` and re-reading the stash on each `changed` event of a
+`kb watch` and re-reading the stash on each `changed` event of a
 widget showing it, or with [`klemmbrett-rpc`](rpc.md) from Python.

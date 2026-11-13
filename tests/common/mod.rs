@@ -1,7 +1,7 @@
 //! Starting the daemon from integration tests.
 //!
 //! The daemon is the Python package plus the `klemmbrett-py` extension. Set
-//! `KLEMMBRETT_BIN` to an installed `klemmbrett` script to test that instead;
+//! `KLEMMBRETT_BIN` to an installed `kb` script to test that instead;
 //! otherwise the extension is built and staged next to `python/klemmbrett`,
 //! with `klemmbrett_rpc` from `packages/klemmbrett-rpc` beside it.
 
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// A command that runs `klemmbrett`; append the arguments.
+/// A command that runs `kb`; append the arguments.
 pub fn daemon_command() -> Command {
     if let Some(bin) = std::env::var_os("KLEMMBRETT_BIN") {
         return Command::new(bin);

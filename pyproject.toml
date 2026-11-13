@@ -18,7 +18,7 @@ classifiers = [
 dynamic = ["version"]
 
 [project.scripts]
-klemmbrett = "klemmbrett.__main__:main"
+kb = "klemmbrett.__main__:main"
 klemmbrett-askpass = "klemmbrett.__main__:askpass"
 klemmbrett-pinentry = "klemmbrett.__main__:pinentry"
 

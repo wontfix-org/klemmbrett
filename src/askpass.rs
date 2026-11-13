@@ -1,4 +1,4 @@
-//! `klemmbrett askpass`: an `SSH_ASKPASS` / `SUDO_ASKPASS` / `GIT_ASKPASS`
+//! `kb askpass`: an `SSH_ASKPASS` / `SUDO_ASKPASS` / `GIT_ASKPASS`
 //! program that asks the running daemon.
 //!
 //! The prompt is the first argument. The answer goes to stdout with a
@@ -84,7 +84,7 @@ pub fn ask_daemon(socket: &Path, request: &SecretRequest) -> Result<SecretReply,
     }
 }
 
-/// Runs `klemmbrett askpass [prompt]` and returns the exit status.
+/// Runs `kb askpass [prompt]` and returns the exit status.
 pub fn run(socket: &Path, prompt: Option<&str>) -> i32 {
     let ssh_prompt = std::env::var("SSH_ASKPASS_PROMPT").ok();
     let request = request(
@@ -106,7 +106,7 @@ pub fn run(socket: &Path, prompt: Option<&str>) -> i32 {
         Ok(SecretReply::Confirmed | SecretReply::Chose(_)) => 0,
         Ok(SecretReply::Cancelled) => 1,
         Err(err) => {
-            eprintln!("klemmbrett askpass: {err}");
+            eprintln!("kb askpass: {err}");
             1
         }
     }

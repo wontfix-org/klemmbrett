@@ -146,7 +146,7 @@ GIT_ASKPASS=klemmbrett-askpass
 Then `sudo -A`, or `alias sudo='sudo -A'`. ssh's host key question and
 git's user name question are shown as you type them; passwords are masked.
 `SSH_ASKPASS_PROMPT=confirm` (as `ssh-add -c` sets) asks for Enter or
-Escape. `klemmbrett askpass PROMPT` is the same program.
+Escape. `kb askpass PROMPT` is the same program.
 
 ### gpg-agent
 

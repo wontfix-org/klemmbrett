@@ -407,7 +407,7 @@ impl Server {
         Ok(json!({ "id": id }))
     }
 
-    /// A password or confirmation for `klemmbrett askpass` and `pinentry`.
+    /// A password or confirmation for `kb askpass` and `pinentry`.
     /// The answer goes to this caller only.
     fn ask_secret(&self, parameters: &Value) -> Result<Value, CallError> {
         let kind = parameters["kind"]

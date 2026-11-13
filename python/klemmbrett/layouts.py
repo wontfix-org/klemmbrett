@@ -15,7 +15,7 @@ class LayoutContext:
     widget: str
     #: Multi-select keys are configured, so rows need a marker.
     multi: bool
-    #: Opened by `klemmbrett prompt`, which prints values instead of running handlers.
+    #: Opened by `kb prompt`, which prints values instead of running handlers.
     prompt: bool
 
 

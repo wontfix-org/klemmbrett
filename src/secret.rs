@@ -1,7 +1,7 @@
 //! Secret prompts: passwords, confirmations, and choices that agents ask for.
 //!
 //! An agent (the systemd ask-password watcher, the polkit agent, or a
-//! `klemmbrett askpass` / `klemmbrett pinentry` client over Varlink) builds a
+//! `kb askpass` / `kb pinentry` client over Varlink) builds a
 //! [`SecretRequest`]. [`SecretRoutes`] decides which widget shows it, and the
 //! popup answers with a [`SecretReply`]. Answers go back to the agent only:
 //! they never reach events, handlers, history, or usage.
