@@ -28,10 +28,10 @@ use crate::{
 };
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
-    div, point, prelude::*, px, rgba, size, uniform_list, AnyElement, App, Bounds, Context,
-    DisplayId, Entity, FocusHandle, Focusable, KeyDownEvent, LinuxWindowBackground, MouseButton,
-    Pixels, QuitMode, ScrollStrategy, Styled, UniformListScrollHandle, WeakEntity, Window,
-    WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
+    canvas, div, point, prelude::*, px, rgba, size, uniform_list, AnyElement, App, Bounds, Context,
+    Corners, DisplayId, Entity, FocusHandle, Focusable, KeyDownEvent, LinuxWindowBackground,
+    MouseButton, Pixels, QuitMode, RenderImage, ScrollStrategy, Styled, UniformListScrollHandle,
+    WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use ksni::blocking::TrayMethods;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -405,6 +405,7 @@ impl Klemmbrett {
                 toasts: vec![toast],
                 theme,
                 max_visible: config.max_visible.max(1),
+                plates: Vec::new(),
             };
             let options = toast_options(view.size(), config.location);
             match cx.open_window(options, move |_window, cx| cx.new(|_cx| view)) {
@@ -1650,6 +1651,7 @@ struct ToastView {
     toasts: Vec<Toast>,
     theme: Theme,
     max_visible: usize,
+    plates: Vec<(crate::toast_plate::Key, std::sync::Arc<RenderImage>)>,
 }
 
 impl ToastView {
@@ -1689,6 +1691,29 @@ impl ToastView {
         let gaps = TOAST_GAP * visible.len().saturating_sub(1) as f32;
         let width = self.theme.toast().width.unwrap_or(360.0);
         size(px(width), px((cards + gaps).max(1.0)))
+    }
+
+    fn plate(
+        &mut self,
+        width: f32,
+        height: f32,
+        radius: f32,
+        border: f32,
+        fill: crate::Rgba,
+        stroke: crate::Rgba,
+        scale: f32,
+    ) -> std::sync::Arc<RenderImage> {
+        let key = crate::toast_plate::Key::new(width, height, radius, border, fill, stroke, scale);
+        if let Some((_, image)) = self.plates.iter().find(|(cached, _)| *cached == key) {
+            return image.clone();
+        }
+        let image = crate::toast_plate::rasterize(key);
+        let image = std::sync::Arc::new(image);
+        self.plates.push((key, image.clone()));
+        if self.plates.len() > 8 {
+            self.plates.remove(0);
+        }
+        image
     }
 }
 
@@ -1732,11 +1757,14 @@ fn toast_options(size: gpui::Size<Pixels>, location: Location) -> WindowOptions 
 }
 
 impl Render for ToastView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = &self.theme;
-        let card_style = theme.toast();
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let card_style = self.theme.toast().clone();
+        let summary_style = self.theme.toast_summary().clone();
+        let body_style = self.theme.toast_body().clone();
+        let selected_style = self.theme.element_selected().clone();
         let mut column = div().size_full().flex().flex_col().gap(px(TOAST_GAP));
-        for toast in self.visible() {
+        let visible = self.visible().to_vec();
+        for toast in visible {
             let id = toast.notification.id;
             let default = toast
                 .notification
@@ -1744,19 +1772,32 @@ impl Render for ToastView {
                 .then(|| "default".to_string());
             let app = self.app.clone();
             let dismiss = self.app.clone();
-            let summary_style = theme.toast_summary();
-            let body_style = theme.toast_body();
             let summary_height = summary_style.height.unwrap_or(20.0);
             let body_height = body_style.height.unwrap_or(36.0);
-            let mut card = apply_box(
+            let height = self.card_height(&toast);
+            let scale = window.scale_factor();
+            let card_width = card_style.width.unwrap_or(360.0);
+            let radius = card_style.border_radius;
+            let border = card_style.border.top;
+            let fill = card_style.background;
+            let stroke = card_style.border_color;
+            let plate = self.plate(card_width, height, radius, border, fill, stroke, scale);
+            let painted = plate.clone();
+            let mut card = apply_padding(
                 div()
-                    .id(("toast", id as usize))
-                    .w_full()
-                    .h(px(self.card_height(toast)))
-                    .flex_none()
+                    .size_full()
                     .overflow_hidden()
-                    .text_size(px(card_style.font_size.unwrap_or(14.0))),
-                card_style,
+                    .text_size(px(card_style.font_size.unwrap_or(14.0)))
+                    .text_color(paint(card_style.text_color))
+                    .flex()
+                    .flex_col()
+                    .gap(px(card_style.spacing)),
+                Edges {
+                    top: card_style.padding.top + card_style.border.top,
+                    right: card_style.padding.right + card_style.border.right,
+                    bottom: card_style.padding.bottom + card_style.border.bottom,
+                    left: card_style.padding.left + card_style.border.left,
+                },
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 let action = default.clone();
@@ -1773,7 +1814,7 @@ impl Render for ToastView {
                         .line_height(px(summary_height))
                         .font_weight(gpui::FontWeight::BOLD)
                         .truncate(),
-                    summary_style,
+                    &summary_style,
                 )
                 .child(toast.notification.summary.clone()),
             );
@@ -1787,7 +1828,7 @@ impl Render for ToastView {
                             .overflow_hidden()
                             .line_clamp(2)
                             .text_ellipsis(),
-                        body_style,
+                        &body_style,
                     )
                     .child(toast.notification.body.clone()),
                 );
@@ -1802,7 +1843,7 @@ impl Render for ToastView {
                 for (key, label) in toast.actions() {
                     let app = self.app.clone();
                     let key = key.clone();
-                    let selected = theme.element_selected();
+                    let selected = &selected_style;
                     row = row.child(
                         apply_box(
                             div()
@@ -1823,7 +1864,36 @@ impl Render for ToastView {
                 }
                 card = card.child(row);
             }
-            column = column.child(card);
+            column = column.child(
+                div()
+                    .id(("toast", id as usize))
+                    .relative()
+                    .w_full()
+                    .h(px(height))
+                    .flex_none()
+                    .child(
+                        canvas(
+                            move |_bounds, _window, _app| painted,
+                            move |bounds, plate, window, _app| {
+                                let _ = window.paint_image(
+                                    bounds,
+                                    bounds,
+                                    Corners::default(),
+                                    0.0,
+                                    plate,
+                                    0,
+                                    false,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .bottom(px(0.)),
+                    )
+                    .child(card),
+            );
         }
         column
     }
