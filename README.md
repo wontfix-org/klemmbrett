@@ -130,9 +130,7 @@ notification stash as JSON lines or marks entries read.
 
 The configuration is a Python file, `$XDG_CONFIG_HOME/klemmbrett/config.py`
 (normally `~/.config/klemmbrett/config.py`). If it is missing, clipboard and
-primary sync still run, but there are no popup widgets or history. A
-leftover `config.hcl` or `config.toml` in that directory is rejected with a
-hint to convert it.
+primary sync still run, but there are no popup widgets or history.
 
 ```python
 import subprocess
