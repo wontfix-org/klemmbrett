@@ -28,5 +28,15 @@ def main(argv: list[str] | None = None) -> int:
     return _core.main(["klemmbrett", *args], _registry.load, _self_command())
 
 
+def askpass() -> int:
+    """`klemmbrett-askpass`, for `SSH_ASKPASS`, `SUDO_ASKPASS`, and `GIT_ASKPASS`."""
+    return main(["askpass", *sys.argv[1:]])
+
+
+def pinentry() -> int:
+    """`klemmbrett-pinentry`, for gpg-agent's `pinentry-program`."""
+    return main(["pinentry", *sys.argv[1:]])
+
+
 if __name__ == "__main__":
     sys.exit(main())

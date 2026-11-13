@@ -51,9 +51,33 @@ method StashMarkRead(stash: string, keys: ?[]string) -> (marked: int)
 # urgency is 0 (low), 1 (normal), or 2 (critical); timeout is in milliseconds.
 method Notify(app_name: string, summary: string, body: ?string, urgency: ?int, timeout: ?int) -> (id: int)
 
+# Asks for a password, a confirmation, or acknowledgement of a message, in
+# the widget serving kind (askpass or pinentry) or the one named. The
+# answer goes to this caller only: no events, handlers, or history see it.
+# echo is no, masked (the default), or yes; mode is secret (the default),
+# confirm, or message; timeout is in seconds.
+method AskSecret(
+  kind: string,
+  widget: ?string,
+  id: ?string,
+  title: ?string,
+  message: ?string,
+  prompt: ?string,
+  error: ?string,
+  echo: ?string,
+  mode: ?string,
+  timeout: ?int
+) -> (secret: ?string, confirmed: bool)
+
 error UnknownWidget (widget: string, known: []string)
 error NoProvider (widget: string)
 error InvalidRecord (path: string, message: string)
 error UnknownStash (stash: string, known: []string)
 error NotificationsDisabled ()
+# A secret question is on screen; Show and Prompt are turned away until it is answered.
+error Busy ()
+# The user cancelled a secret question, or it timed out.
+error Cancelled ()
+# No widget answers this kind of secret question.
+error NoAgent (kind: string)
 error Failed (message: string)

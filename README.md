@@ -188,6 +188,25 @@ are toasts that never take the keyboard: left click runs the default action,
 right click dismisses. Stashed ones wait as unread, and picking one in the
 `inbox` widget marks it read. See [`docs/notifications.md`](docs/notifications.md).
 
+## Password prompts
+
+Widgets can answer password questions from systemd user services, ssh,
+sudo, git, gpg-agent, and polkit, instead of a separate askpass, pinentry,
+and polkit agent. The answer goes straight back to the asker and never
+reaches Python, handlers, history, or `watch`:
+
+```python
+from klemmbrett import secrets
+
+kb.widget("unlock", secrets.SystemdAgent())  # systemd-ask-password --user
+kb.widget("ssh", secrets.Askpass())           # SSH_ASKPASS=klemmbrett-askpass
+kb.widget("gpg", secrets.Pinentry())          # pinentry-program klemmbrett-pinentry
+kb.widget("admin", secrets.Polkit())          # pkexec, systemctl, udisksctl
+```
+
+See [`docs/secrets.md`](docs/secrets.md) for routing questions to other
+widgets, layouts, and setup recipes.
+
 ## Popup theme
 
 `kb.configure(theme=themes.nord)` (or `theme="nord"`) sets the palette for

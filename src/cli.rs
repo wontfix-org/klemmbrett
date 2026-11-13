@@ -40,6 +40,24 @@ enum Sub {
     Watch(WatchArgs),
     /// List the notifications in a stash as JSON lines, or mark them read
     Stash(StashArgs),
+    /// Ask for a password in the popup, for SSH_ASKPASS, SUDO_ASKPASS, and GIT_ASKPASS
+    Askpass(AskpassArgs),
+    /// A pinentry for gpg-agent (pinentry-program) that asks in the popup
+    Pinentry(PinentryArgs),
+}
+
+#[derive(ClapArgs, Debug, Clone)]
+pub struct AskpassArgs {
+    /// The question, as ssh, sudo, or git pass it
+    #[arg(allow_hyphen_values = true)]
+    pub prompt: Option<String>,
+}
+
+#[derive(ClapArgs, Debug, Clone)]
+pub struct PinentryArgs {
+    /// gpg-agent's options (--display, --ttyname, ...), which are ignored
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+    pub ignored: Vec<String>,
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -90,6 +108,8 @@ pub enum Invocation {
     Prompt(PopupArgs),
     Watch(WatchArgs),
     Stash(StashArgs),
+    Askpass(AskpassArgs),
+    Pinentry(PinentryArgs),
 }
 
 /// A parsed command line: what to do and which socket to use.
@@ -108,6 +128,8 @@ pub fn parse(argv: &[String]) -> Result<Parsed, clap::Error> {
         Some(Sub::Prompt(popup)) => Invocation::Prompt(popup),
         Some(Sub::Watch(watch)) => Invocation::Watch(watch),
         Some(Sub::Stash(stash)) => Invocation::Stash(stash),
+        Some(Sub::Askpass(askpass)) => Invocation::Askpass(askpass),
+        Some(Sub::Pinentry(pinentry)) => Invocation::Pinentry(pinentry),
         None if args.install_systemd => Invocation::InstallSystemd {
             config: args.config,
         },
@@ -227,6 +249,16 @@ pub fn run_stash(args: &StashArgs, socket: Option<&Path>) -> i32 {
     }
 }
 
+/// Runs `askpass`: prints the answer and exits 0, or exits 1.
+pub fn run_askpass(args: &AskpassArgs, socket: Option<&Path>) -> i32 {
+    crate::askpass::run(&socket_path(socket), args.prompt.as_deref())
+}
+
+/// Runs `pinentry` on stdin and stdout.
+pub fn run_pinentry(socket: Option<&Path>) -> i32 {
+    crate::pinentry::run(&socket_path(socket))
+}
+
 fn load_records(
     widget: &str,
     format: Option<&str>,
@@ -340,6 +372,31 @@ mod tests {
             "1"
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn askpass_and_pinentry_take_what_their_callers_pass() {
+        match invocation(&["klemmbrett", "askpass", "[sudo] password for me: "]) {
+            Invocation::Askpass(args) => {
+                assert_eq!(args.prompt.as_deref(), Some("[sudo] password for me: "))
+            }
+            other => panic!("expected askpass, got {other:?}"),
+        }
+        assert!(matches!(
+            invocation(&["klemmbrett", "askpass", "-not-a-flag"]),
+            Invocation::Askpass(AskpassArgs { prompt: Some(_) })
+        ));
+        match invocation(&[
+            "klemmbrett",
+            "pinentry",
+            "--display",
+            ":0",
+            "--ttyname",
+            "/dev/pts/1",
+        ]) {
+            Invocation::Pinentry(args) => assert_eq!(args.ignored.len(), 4),
+            other => panic!("expected pinentry, got {other:?}"),
+        }
     }
 
     #[test]

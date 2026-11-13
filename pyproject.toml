@@ -19,6 +19,8 @@ dynamic = ["version"]
 
 [project.scripts]
 klemmbrett = "klemmbrett.__main__:main"
+klemmbrett-askpass = "klemmbrett.__main__:askpass"
+klemmbrett-pinentry = "klemmbrett.__main__:pinentry"
 
 [tool.maturin]
 manifest-path = "crates/klemmbrett-py/Cargo.toml"

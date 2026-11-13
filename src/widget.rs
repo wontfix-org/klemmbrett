@@ -11,6 +11,7 @@ use crate::data::{display, DataPath};
 use crate::executables::executables_on_path;
 use crate::layout::LayoutSpec;
 use crate::rank::Ranking;
+use crate::secret::AgentSpec;
 use crate::theme::{Location, Theme, ThemeSpec};
 use crate::windows::WindowList;
 use crate::HistoryStore;
@@ -336,6 +337,12 @@ pub trait Handlers: Send + Sync {
     fn call(&self, method: &str, _parameters: Value) -> Result<Value, CallError> {
         Err(CallError::failed(format!("{method} is not available")))
     }
+    /// Which widget shows a secret question of the agent `widget`, from the
+    /// question's metadata (never its answer). `None` keeps the agent's own.
+    /// Blocks, so it must not be called from the UI thread.
+    fn route_secret(&self, _widget: &str, _question: Value) -> Option<String> {
+        None
+    }
 }
 
 /// A Varlink error: the unqualified error name and its parameters.
@@ -382,6 +389,8 @@ pub struct WidgetDef {
     pub search: Vec<DataPath>,
     /// How typing matches rows and how past picks order them.
     pub ranking: Ranking,
+    /// Set when the widget answers secret questions instead of showing rows.
+    pub agent: Option<AgentSpec>,
 }
 
 impl WidgetDef {
@@ -396,6 +405,7 @@ impl WidgetDef {
             highlight: false,
             search: Vec::new(),
             ranking: Ranking::default(),
+            agent: None,
         }
     }
 }

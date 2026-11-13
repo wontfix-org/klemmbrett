@@ -9,6 +9,7 @@
 use klemmbrett::cli::{self, Invocation};
 use klemmbrett::journal;
 use klemmbrett::notifications::{CloseReason, Notification, NotificationConfig};
+use klemmbrett::secret::{AgentKind, AgentSpec};
 use klemmbrett::{
     cmyk, hsl, hwb, parse_color, resolve_config_path, systemd, ui, AppConfig, CallError,
     ClipboardHistorySource, DataPath, Edges, ExecutablesSource, FileFormat, FileSource, Handlers,
@@ -570,6 +571,7 @@ enum Event {
     Clipboard(String),
     Notification(Value),
     Call(String, Value, CallReply),
+    Route(String, Value, mpsc::Sender<Option<String>>),
 }
 
 /// Queues events to one Python thread, so handlers run in the order they
@@ -627,6 +629,19 @@ impl PyHandlers {
                                 }
                                 return;
                             }
+                            Event::Route(widget, question, reply) => {
+                                let target = to_py(py, &question)
+                                    .and_then(|question| {
+                                        dispatcher.call_method1("route_secret", (widget, question))
+                                    })
+                                    .and_then(|target| target.extract::<Option<String>>());
+                                let target = target.unwrap_or_else(|err| {
+                                    err.print(py);
+                                    None
+                                });
+                                let _ = reply.send(target);
+                                return;
+                            }
                         };
                         if let Err(err) = result {
                             err.print(py);
@@ -678,6 +693,12 @@ impl Handlers for PyHandlers {
         answer
             .recv()
             .unwrap_or_else(|_| Err(CallError::failed("the handler thread has stopped")))
+    }
+
+    fn route_secret(&self, widget: &str, question: Value) -> Option<String> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Event::Route(widget.to_owned(), question, reply));
+        answer.recv().ok().flatten()
     }
 }
 
@@ -769,6 +790,21 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
     if let Some(ranking) = item(dict, "ranking")? {
         def.ranking = Ranking::from_json(&to_json(&ranking)?)
             .map_err(|err| value_error(format!("widget {name:?}: {err}")))?;
+    }
+    if let Some(agent) = item(dict, "agent")? {
+        let agent = agent.cast::<PyDict>()?;
+        let kind: String = item(agent, "kind")?
+            .ok_or_else(|| value_error(format!("widget {name:?}: agent without a kind")))?
+            .extract()?;
+        def.agent = Some(AgentSpec {
+            kind: AgentKind::parse(&kind).ok_or_else(|| {
+                value_error(format!("widget {name:?}: unknown agent kind {kind:?}"))
+            })?,
+            route: match item(agent, "route")? {
+                Some(route) => route.extract()?,
+                None => false,
+            },
+        });
     }
     Ok(def)
 }
@@ -886,6 +922,8 @@ fn main(
         }
         Invocation::Watch(args) => Ok(py.detach(|| cli::run_watch(&args, socket.as_deref()))),
         Invocation::Stash(args) => Ok(py.detach(|| cli::run_stash(&args, socket.as_deref()))),
+        Invocation::Askpass(args) => Ok(py.detach(|| cli::run_askpass(&args, socket.as_deref()))),
+        Invocation::Pinentry(_) => Ok(py.detach(|| cli::run_pinentry(socket.as_deref()))),
         Invocation::InstallSystemd { config } => {
             let config = match config {
                 Some(path) => Some(absolute(&path)?),
