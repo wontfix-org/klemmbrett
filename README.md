@@ -239,9 +239,12 @@ varlinkctl call $XDG_RUNTIME_DIR/klemmbrett/varlink.sock \
     org.wontfix.klemmbrett.Show '{"widget": "history", "pointer": {"x": 120, "y": 80}}'
 ```
 
-`varlinkctl introspect` prints the interface, and `klemmbrett.rpc` is a
-client for Python scripts and event loops. Methods, errors, and events are
-described in [`docs/rpc.md`](docs/rpc.md).
+`varlinkctl introspect` prints the interface. For Python scripts and event
+loops, the [`klemmbrett-rpc`](packages/klemmbrett-rpc) package
+(`pip install klemmbrett-rpc`, imported as `klemmbrett_rpc`) is a client that
+needs only the standard library; inside a configuration it is also
+`klemmbrett.rpc`. Methods, errors, and events are described in
+[`docs/rpc.md`](docs/rpc.md).
 
 ## Sway key binding
 
@@ -311,14 +314,13 @@ bindsym $mod+v exec klemmbrett show history
 ## Qtile key binding
 
 Qtile's Wayland backend exposes the pointer directly. `lazy.spawn` can run
-`klemmbrett show history`, or the example below uses `klemmbrett.rpc` on
+`klemmbrett show history`, or the example below uses `klemmbrett_rpc` on
 Qtile's asyncio loop (`libqtile.utils.create_task`) so the binding does not
-fork a helper. `klemmbrett.rpc` needs only the standard library, so it works
-from Qtile's interpreter as long as the `klemmbrett` package is importable
-there.
+fork a helper. Install `klemmbrett-rpc` for the interpreter Qtile runs on; it
+needs only the standard library, not the full `klemmbrett` package.
 
 ```python
-from klemmbrett import rpc
+import klemmbrett_rpc as rpc
 from libqtile.config import Key
 from libqtile.lazy import lazy
 from libqtile.log_utils import logger

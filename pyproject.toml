@@ -7,6 +7,7 @@ name = "klemmbrett"
 description = "Keep Wayland selections in sync and pick values from popup widgets configured in Python"
 readme = "README.md"
 requires-python = ">=3.11"
+dependencies = ["klemmbrett-rpc>=0.1,<0.2"]
 classifiers = [
     "Environment :: X11 Applications",
     "Operating System :: POSIX :: Linux",

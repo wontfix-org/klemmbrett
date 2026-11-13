@@ -6,12 +6,14 @@ default:
 dev:
     [ -x .venv/bin/python ] || uv venv .venv
     uv pip install --python .venv/bin/python "maturin[patchelf]" pytest
+    uv pip install --python .venv/bin/python -e packages/klemmbrett-rpc
     .venv/bin/maturin develop
 
-# Run the Rust tests and the Python tests (after `just dev`).
+# Run the Rust tests, the Python tests, and the klemmbrett-rpc tests without klemmbrett installed.
 test: dev
     cargo test --workspace
     .venv/bin/python -m pytest
+    uv run --isolated --project packages/klemmbrett-rpc pytest packages/klemmbrett-rpc
 
 # Build release wheels into target/wheels.
 wheel:
