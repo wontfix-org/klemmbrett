@@ -383,7 +383,7 @@ impl Session {
         let mut cmd = common::daemon_command();
         self.isolate(&mut cmd);
         cmd.env("WAYLAND_DISPLAY", &self.client_socket)
-            .arg("--config")
+            .args(["run", "--config"])
             .arg(config)
             .stdout(log.try_clone().expect("clone log handle"))
             .stderr(log);

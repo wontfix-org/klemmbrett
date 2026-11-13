@@ -14,7 +14,7 @@ const IMPORT_VARS: &[&str] = &[
 ];
 
 /// `exec` is the command that starts klemmbrett, such as the `kb` script
-/// path or `python -m klemmbrett`.
+/// path or `python -m klemmbrett`. The unit runs it as `run`.
 pub fn install(exec: &[String], config: Option<&Path>) -> Result<(), String> {
     if exec.is_empty() {
         return Err("no command to start klemmbrett with".into());
@@ -134,6 +134,7 @@ fn exec_start(
         .iter()
         .map(|part| format_exec_arg(&with_home_prefix(part, home)))
         .collect::<Vec<_>>();
+    parts.push("run".into());
     if let Some(config) = config {
         let text = config
             .to_str()
@@ -290,7 +291,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=/usr/bin/python3 -m klemmbrett\n"));
+        assert!(unit.contains("ExecStart=/usr/bin/python3 -m klemmbrett run\n"));
     }
 
     #[test]
@@ -316,7 +317,7 @@ mod tests {
         assert!(unit.contains("Type=notify\n"));
         assert!(!unit.contains("dbus"), "{unit}");
         assert!(unit.contains("PassEnvironment=WAYLAND_DISPLAY XDG_SESSION_TYPE\n"));
-        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett\n"));
+        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett run\n"));
         assert!(!unit.contains("--config"));
     }
 
@@ -336,13 +337,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
+        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett run --config /etc/klemmbrett.py\n"));
     }
 
     #[test]
     fn exec_paths_with_spaces_are_quoted() {
         let unit = unit_file_for(&exec("/opt/my apps/klemmbrett"), None, None).unwrap();
-        assert!(unit.contains("ExecStart=\"/opt/my apps/klemmbrett\"\n"));
+        assert!(unit.contains("ExecStart=\"/opt/my apps/klemmbrett\" run\n"));
     }
 
     #[test]
@@ -359,7 +360,7 @@ mod tests {
         )
         .unwrap();
         assert!(unit.contains(
-            "ExecStart=%h/.venv/bin/python -m klemmbrett --config %h/.config/klemmbrett/config.py\n"
+            "ExecStart=%h/.venv/bin/python -m klemmbrett run --config %h/.config/klemmbrett/config.py\n"
         ));
     }
 
@@ -371,7 +372,7 @@ mod tests {
             Some(OsStr::new("/home/me")),
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=/home/me2/bin/klemmbrett\n"));
+        assert!(unit.contains("ExecStart=/home/me2/bin/klemmbrett run\n"));
     }
 
     #[test]
@@ -382,7 +383,7 @@ mod tests {
             Some(OsStr::new("/home/me")),
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
+        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett run --config /etc/klemmbrett.py\n"));
     }
 
     #[test]
@@ -393,7 +394,7 @@ mod tests {
             Some(OsStr::new("/home/me")),
         )
         .unwrap();
-        assert!(unit.contains("ExecStart=\"%h/my apps/klemmbrett\"\n"));
+        assert!(unit.contains("ExecStart=\"%h/my apps/klemmbrett\" run\n"));
     }
 
     #[test]

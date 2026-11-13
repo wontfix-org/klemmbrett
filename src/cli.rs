@@ -1,5 +1,5 @@
-//! Command line: the daemon, `install-systemd`, `show`, `prompt`, `watch`,
-//! and `stash`. Everything but the daemon talks Varlink to it.
+//! Command line: `run`, `install-systemd`, `show`, `prompt`, `watch`, and
+//! `stash`. Everything but `run` talks Varlink to the daemon.
 
 use crate::varlink::{records_json, socket_path, Client, ClientError};
 use crate::widget::{parse_records, validate_records, FileFormat, Record};
@@ -14,20 +14,22 @@ use std::path::{Path, PathBuf};
     about = "Keep Wayland selections in sync and copy values from configurable popup widgets."
 )]
 struct Args {
-    /// Python configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.py)
-    #[arg(long)]
-    config: Option<PathBuf>,
-
     /// Varlink socket (defaults to $KLEMMBRETT_SOCKET, then $XDG_RUNTIME_DIR/klemmbrett/varlink.sock)
     #[arg(long, global = true, value_name = "PATH")]
     socket: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Option<Sub>,
+    command: Sub,
 }
 
 #[derive(Subcommand, Debug)]
 enum Sub {
+    /// Run the daemon
+    Run {
+        /// Python configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.py)
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Ask the running daemon to show a popup widget
     Show(PopupArgs),
     /// Ask the running daemon to prompt and print the selected values
@@ -126,18 +128,14 @@ pub struct Parsed {
 pub fn parse(argv: &[String]) -> Result<Parsed, clap::Error> {
     let args = Args::try_parse_from(argv)?;
     let invocation = match args.command {
-        Some(Sub::Show(popup)) => Invocation::Show(popup),
-        Some(Sub::Prompt(popup)) => Invocation::Prompt(popup),
-        Some(Sub::Watch(watch)) => Invocation::Watch(watch),
-        Some(Sub::Stash(stash)) => Invocation::Stash(stash),
-        Some(Sub::Askpass(askpass)) => Invocation::Askpass(askpass),
-        Some(Sub::Pinentry(pinentry)) => Invocation::Pinentry(pinentry),
-        Some(Sub::InstallSystemd { config }) => Invocation::InstallSystemd {
-            config: config.or(args.config),
-        },
-        None => Invocation::Daemon {
-            config: args.config,
-        },
+        Sub::Run { config } => Invocation::Daemon { config },
+        Sub::Show(popup) => Invocation::Show(popup),
+        Sub::Prompt(popup) => Invocation::Prompt(popup),
+        Sub::Watch(watch) => Invocation::Watch(watch),
+        Sub::Stash(stash) => Invocation::Stash(stash),
+        Sub::Askpass(askpass) => Invocation::Askpass(askpass),
+        Sub::Pinentry(pinentry) => Invocation::Pinentry(pinentry),
+        Sub::InstallSystemd { config } => Invocation::InstallSystemd { config },
     };
     Ok(Parsed {
         invocation,
@@ -303,17 +301,19 @@ mod tests {
     }
 
     #[test]
-    fn no_subcommand_starts_the_daemon() {
-        match invocation(&["kb"]) {
+    fn run_starts_the_daemon() {
+        match invocation(&["kb", "run"]) {
             Invocation::Daemon { config } => assert!(config.is_none()),
             other => panic!("expected daemon, got {other:?}"),
         }
-        match invocation(&["kb", "--config", "/c.py"]) {
+        match invocation(&["kb", "run", "--config", "/c.py"]) {
             Invocation::Daemon { config } => {
                 assert_eq!(config.as_deref(), Some(std::path::Path::new("/c.py")))
             }
             other => panic!("expected daemon, got {other:?}"),
         }
+        assert!(parse(&argv(&["kb"])).is_err());
+        assert!(parse(&argv(&["kb", "--config", "/c.py"])).is_err());
     }
 
     #[test]
@@ -328,20 +328,17 @@ mod tests {
             }
             other => panic!("expected install-systemd, got {other:?}"),
         }
-        match invocation(&["kb", "--config", "/c.py", "install-systemd"]) {
-            Invocation::InstallSystemd { config } => {
-                assert_eq!(config.as_deref(), Some(Path::new("/c.py")))
-            }
-            other => panic!("expected install-systemd, got {other:?}"),
-        }
         assert!(parse(&argv(&["kb", "--install-systemd"])).is_err());
+        assert!(parse(&argv(&["kb", "--config", "/c.py", "install-systemd"])).is_err());
     }
 
     #[test]
     fn socket_is_global() {
         let parsed = parse(&argv(&["kb", "show", "run", "--socket", "/s"])).unwrap();
         assert_eq!(parsed.socket.as_deref(), Some(Path::new("/s")));
-        let parsed = parse(&argv(&["kb", "--socket", "/d"])).unwrap();
+        let parsed = parse(&argv(&["kb", "run", "--socket", "/d"])).unwrap();
+        assert_eq!(parsed.socket.as_deref(), Some(Path::new("/d")));
+        let parsed = parse(&argv(&["kb", "--socket", "/d", "run"])).unwrap();
         assert_eq!(parsed.socket.as_deref(), Some(Path::new("/d")));
     }
 
