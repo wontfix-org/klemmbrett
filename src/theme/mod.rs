@@ -629,6 +629,11 @@ fn default_spec() -> ThemeSpec {
         );
     }
     spec.set(Widget::ElementText, State::Normal, transparent());
+    // The filter label and the query sit inside the rounded input bar. Their
+    // built-in fill is transparent, so a palette's default background must
+    // not paint a square over that bar.
+    spec.set(Widget::Prompt, State::Normal, transparent());
+    spec.set(Widget::Entry, State::Normal, transparent());
     spec
 }
 
@@ -735,6 +740,8 @@ fn fallback(widget: Widget) -> Props {
             props.spacing = Some(4.0);
             props.width = Some(360.0);
             props.orientation = Some(Orientation::Vertical);
+            // Distance from the screen edges. Not borrowed from the window.
+            props.margin = Some(Edges::all(12.0));
         }
         Widget::ToastSummary => {
             props.background = Some(Rgba::TRANSPARENT);
@@ -875,6 +882,7 @@ mod tests {
         assert_eq!(theme.toast().border_radius, 8.0);
         assert_eq!(theme.toast().width, Some(360.0));
         assert_eq!(theme.toast().border, Edges::all(1.0));
+        assert_eq!(theme.toast().margin, Edges::all(12.0));
         assert_eq!(theme.toast_body().background, Rgba::TRANSPARENT);
 
         let theme = Theme::resolve(&[&layer(&[
@@ -896,6 +904,66 @@ mod tests {
             ),
         ])]);
         assert_eq!(theme.toast().background, Rgba::hex(0x445566));
+    }
+
+    #[test]
+    fn filter_label_and_query_stay_transparent_on_a_colored_bar() {
+        let mut spec = ThemeSpec {
+            global: Props {
+                background: Some(Rgba::hex(0x2d353b)),
+                text_color: Some(Rgba::hex(0xd3c6aa)),
+                ..Props::default()
+            },
+            ..ThemeSpec::default()
+        };
+        spec.set(
+            Widget::InputBar,
+            State::Normal,
+            Props {
+                background: Some(Rgba::hex(0x343f44)),
+                border_radius: Some(10.0),
+                ..Props::default()
+            },
+        );
+        spec.set(
+            Widget::Prompt,
+            State::Normal,
+            Props {
+                text_color: Some(Rgba::hex(0xa7c080)),
+                ..Props::default()
+            },
+        );
+        let theme = Theme::resolve(&[&spec]);
+        assert_eq!(theme.inputbar().background, Rgba::hex(0x343f44));
+        assert_eq!(theme.inputbar().border_radius, 10.0);
+        assert_eq!(theme.prompt().background, Rgba::TRANSPARENT);
+        assert_eq!(theme.entry().background, Rgba::TRANSPARENT);
+        assert_eq!(theme.prompt().text_color, Rgba::hex(0xa7c080));
+        assert_eq!(theme.window().background, Rgba::hex(0x2d353b));
+    }
+
+    #[test]
+    fn toast_margin_is_its_own_and_not_the_window_s() {
+        let theme = Theme::resolve(&[&layer(&[
+            (
+                Widget::Window,
+                State::Normal,
+                Props {
+                    margin: Some(Edges::all(40.0)),
+                    ..Props::default()
+                },
+            ),
+            (
+                Widget::Toast,
+                State::Normal,
+                Props {
+                    margin: Some(Edges::vh(24.0, 8.0)),
+                    ..Props::default()
+                },
+            ),
+        ])]);
+        assert_eq!(theme.window().margin, Edges::all(40.0));
+        assert_eq!(theme.toast().margin, Edges::vh(24.0, 8.0));
     }
 
     #[test]

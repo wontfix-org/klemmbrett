@@ -122,8 +122,10 @@ A notification toast, its summary line, and its body (see
 [notifications](notifications.md)). Unless the theme styles `toast`
 itself, a toast looks like the `window`: same colors, border, radius, and
 font, but never its size or location. `width` is the toast width (default
-360). The summary is 20 px and the body 36 px high by default, both with a
-transparent background. Action buttons use the `element_selected` style.
+360). `margin` is the gap between the toast and the screen edges, default
+12 on every side; `margin=(24, 8)` sets the vertical gap and then the
+horizontal one. The summary is 20 px and the body 36 px high by default,
+both with a transparent background. Action buttons use the `element_selected` style.
 Toasts follow the configured theme (and `kb.set_theme`), not a widget's.
 
 ## Properties
@@ -132,7 +134,7 @@ Every element accepts the same properties. Unknown names are an error.
 
 | Property | Type | Notes |
 | --- | --- | --- |
-| `padding`, `margin`, `border` | 1–4 lengths | CSS order: all; vertical, horizontal; top, horizontal, bottom; top, right, bottom, left. `margin` is not drawn. |
+| `padding`, `margin`, `border` | 1–4 lengths | CSS order: all; vertical, horizontal; top, horizontal, bottom; top, right, bottom, left. `margin` is not drawn, except on `toast`, where it is the gap from the screen edges. |
 | `border_radius` | length | Corner radius |
 | `background_color`, `border_color`, `text_color` | color | Default background `#2b2b2b`, text `#e8e8e8`, border `#555555` |
 | `spacing` | length | Gap between children; on `listview` added to the row height |

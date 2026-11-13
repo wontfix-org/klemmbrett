@@ -407,7 +407,7 @@ impl Klemmbrett {
                 max_visible: config.max_visible.max(1),
                 plates: Vec::new(),
             };
-            let options = toast_options(view.size(), config.location);
+            let options = toast_options(view.size(), config.location, view.theme.toast().margin);
             match cx.open_window(options, move |_window, cx| cx.new(|_cx| view)) {
                 Ok(handle) => self.toasts = Some(handle),
                 Err(err) => {
@@ -1626,7 +1626,6 @@ fn paint(color: crate::Rgba) -> gpui::Rgba {
     rgba(color.to_u32())
 }
 
-const TOAST_MARGIN: f32 = 12.0;
 const TOAST_GAP: f32 = 8.0;
 const TOAST_ACTION_HEIGHT: f32 = 24.0;
 
@@ -1717,7 +1716,7 @@ impl ToastView {
     }
 }
 
-fn toast_options(size: gpui::Size<Pixels>, location: Location) -> WindowOptions {
+fn toast_options(size: gpui::Size<Pixels>, location: Location, margin: Edges) -> WindowOptions {
     let anchor = match location {
         Location::NorthWest => Anchor::TOP | Anchor::LEFT,
         Location::North => Anchor::TOP,
@@ -1728,7 +1727,12 @@ fn toast_options(size: gpui::Size<Pixels>, location: Location) -> WindowOptions 
         Location::East => Anchor::RIGHT,
         Location::NorthEast | Location::Center | Location::Pointer => Anchor::TOP | Anchor::RIGHT,
     };
-    let margin = px(TOAST_MARGIN);
+    let margin = (
+        px(margin.top),
+        px(margin.right),
+        px(margin.bottom),
+        px(margin.left),
+    );
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(
             point(px(0.), px(0.)),
@@ -1743,7 +1747,7 @@ fn toast_options(size: gpui::Size<Pixels>, location: Location) -> WindowOptions 
             anchor,
             exclusive_zone: Some(px(0.)),
             exclusive_edge: None,
-            margin: Some((margin, margin, margin, margin)),
+            margin: Some(margin),
             keyboard_interactivity: KeyboardInteractivity::None,
         }),
         is_movable: false,
