@@ -82,8 +82,7 @@ service is a `Type=notify` unit pulled in by `graphical-session.target`, so
 history is recorded from login. The socket unit holds the control socket,
 `$XDG_RUNTIME_DIR/klemmbrett/varlink.sock`: a call made while the daemon
 restarts waits instead of failing, and the first call starts the daemon if
-it is not running. A D-Bus service file left by an earlier version is
-removed. If this process can see `WAYLAND_DISPLAY`, that value is imported
+it is not running. If this process can see `WAYLAND_DISPLAY`, that value is imported
 into the systemd user manager. `ExecStart` is the `klemmbrett` script you
 ran (or `python -m klemmbrett` with the same interpreter). A path under
 your home directory is written with systemd's `%h` specifier. Pass
@@ -154,9 +153,8 @@ def snippets(record):
 
 Selecting a row calls the widget's `on_select` with the `Record`. Without
 one, the provider decides (`Executables` launches, `WaylandWindows` focuses
-the window), and otherwise the value is copied. Handlers are ordinary Python:
-`subprocess`, `re`, and `json` replace the old transforms and actions.
-`kb.launch` starts detached programs. With `launch="auto"`, that is
+the window), and otherwise the value is copied. Handlers are ordinary Python,
+including `subprocess`, `re`, and `json`. `kb.launch` starts detached programs. With `launch="auto"`, that is
 `systemd-run --user --scope` when klemmbrett runs as a systemd unit, and a
 POSIX double fork otherwise. `"posix"`, `"systemd-run"`, or a wrapper list
 such as `["uwsm", "app", "--"]` override it.

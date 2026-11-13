@@ -2,8 +2,7 @@
 
 A **widget** is a named popup listing records from a **provider**. Picking a
 row calls the widget's **`on_select`** with that `Record`. Everything that
-happens next is plain Python. There are no actions, transforms, or
-`${...}` placeholders.
+happens next is plain Python.
 
 ```python
 import klemmbrett as kb
@@ -308,9 +307,7 @@ call `self.changed()` after inserting, so an open popup shows the new item.
 
 ## Recipes
 
-These are the Python equivalents of the removed transforms and actions.
-
-Copy and notify (several actions):
+Copy and notify:
 
 ```python
 @kb.widget("links", providers.File("links.yaml"))
@@ -319,7 +316,7 @@ def links(record):
     kb.notify(record.label, record.value)
 ```
 
-Open a URL, or start any detached program (`launch`, `xdg-open`):
+Open a URL, or start any detached program:
 
 ```python
 @kb.widget("bookmarks", providers.File("bookmarks.yaml"))
@@ -327,7 +324,7 @@ def bookmarks(record):
     kb.launch(["firefox", "--private-window", record.value])
 ```
 
-Extract with a regular expression (`regex` with `on_miss = "fail"`):
+Extract with a regular expression:
 
 ```python
 TICKET = re.compile(r"https://[^/]+/browse/(?P<ticket>[A-Z]+-\d+)")
@@ -338,7 +335,7 @@ def tickets(record):
         kb.copy(match["ticket"])
 ```
 
-Pick a JSON field (`jq`):
+Pick a JSON field:
 
 ```python
 @kb.widget("payloads", providers.File("payloads.yaml"))
@@ -346,7 +343,7 @@ def payloads(record):
     kb.copy(json.loads(record.value)["data"]["title"])
 ```
 
-Filter through a command (`exec` with `stdin`):
+Filter through a command:
 
 ```python
 @kb.widget("decode", providers.ClipboardHistory())

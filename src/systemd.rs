@@ -6,8 +6,6 @@ use std::process::Command;
 
 const UNIT_NAME: &str = "klemmbrett.service";
 const SOCKET_NAME: &str = "klemmbrett.socket";
-/// What earlier versions installed for D-Bus activation.
-const LEGACY_DBUS_SERVICE: &str = "org.wontfix.klemmbrett.service";
 const IMPORT_VARS: &[&str] = &[
     "WAYLAND_DISPLAY",
     "XDG_RUNTIME_DIR",
@@ -32,7 +30,6 @@ pub fn install(exec: &[String], config: Option<&Path>) -> Result<(), String> {
     let units = systemd_user_dir();
     write_file(&units, UNIT_NAME, &unit_file(exec, config)?)?;
     write_file(&units, SOCKET_NAME, &socket_file())?;
-    remove_legacy_dbus_service(&dbus_service_dir());
 
     import_session_environment();
     reload_user_units()?;
@@ -58,16 +55,6 @@ fn write_file(dir: &Path, name: &str, contents: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A leftover D-Bus service file would let old `Show` calls start the unit.
-fn remove_legacy_dbus_service(dir: &Path) {
-    let path = dir.join(LEGACY_DBUS_SERVICE);
-    match std::fs::remove_file(&path) {
-        Ok(()) => println!("Removed {}", path.display()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => eprintln!("Warning: failed to remove {}: {err}", path.display()),
-    }
-}
-
 pub fn systemd_user_dir() -> PathBuf {
     systemd_user_dir_from_env(
         std::env::var_os("XDG_CONFIG_HOME").as_deref(),
@@ -79,19 +66,6 @@ pub fn systemd_user_dir_from_env(xdg_config_home: Option<&OsStr>, home: Option<&
     xdg_dir(xdg_config_home, home, ".config")
         .join("systemd")
         .join("user")
-}
-
-pub fn dbus_service_dir() -> PathBuf {
-    dbus_service_dir_from_env(
-        std::env::var_os("XDG_DATA_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-    )
-}
-
-pub fn dbus_service_dir_from_env(xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
-    xdg_dir(xdg_data_home, home, ".local/share")
-        .join("dbus-1")
-        .join("services")
 }
 
 fn xdg_dir(xdg: Option<&OsStr>, home: Option<&OsStr>, home_fallback: &str) -> PathBuf {
@@ -273,7 +247,6 @@ fn enable_units() -> Result<(), String> {
 }
 
 fn start_units() -> Result<(), String> {
-    // A daemon from an older install still owns the socket path; stop it first.
     run_systemctl(&["stop", UNIT_NAME], "stop the user unit")?;
     run_systemctl(&["restart", SOCKET_NAME], "start the socket unit")?;
     run_systemctl(&["start", UNIT_NAME], "start the user unit")
@@ -333,18 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn dbus_service_dir_follows_xdg_data_home() {
-        assert_eq!(
-            dbus_service_dir_from_env(Some(OsStr::new("/data")), Some(OsStr::new("/home/me"))),
-            PathBuf::from("/data/dbus-1/services")
-        );
-        assert_eq!(
-            dbus_service_dir_from_env(None, Some(OsStr::new("/home/me"))),
-            PathBuf::from("/home/me/.local/share/dbus-1/services")
-        );
-    }
-
-    #[test]
     fn unit_is_a_notify_service_bound_to_the_session_and_its_socket() {
         let unit = unit_file_for(&exec("/usr/bin/klemmbrett"), None, None).unwrap();
         assert!(unit.contains("PartOf=graphical-session.target"));
@@ -365,16 +326,6 @@ mod tests {
         assert!(socket.contains("ListenStream=%t/klemmbrett/varlink.sock\n"));
         assert!(socket.contains("SocketMode=0600\n"));
         assert!(socket.contains("WantedBy=graphical-session.target\n"));
-    }
-
-    #[test]
-    fn legacy_dbus_service_files_are_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = dir.path().join(LEGACY_DBUS_SERVICE);
-        std::fs::write(&legacy, "[D-BUS Service]\n").unwrap();
-        remove_legacy_dbus_service(dir.path());
-        assert!(!legacy.exists());
-        remove_legacy_dbus_service(dir.path());
     }
 
     #[test]
