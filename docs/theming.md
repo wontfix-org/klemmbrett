@@ -193,7 +193,7 @@ for reuse in your own layouts.
 | `ui.Element(*children)` | `Marker`, `Index`, `Field`, primitives |
 | `ui.Row(*children)`, `ui.Column(*children)` | primitives (and whatever their parent area allows) |
 | `ui.Text(template)`, `ui.Spacer()` | nothing |
-| `ui.Prompt()`, `ui.Entry()`, `ui.Marker()`, `ui.Index()`, `ui.Field(path, fallback="")` | nothing |
+| `ui.Prompt()`, `ui.Entry(mask=None)`, `ui.Marker()`, `ui.Index()`, `ui.Field(path, fallback="")` | nothing |
 
 `InputBar` and `ListView` must be direct children of the window. A window
 with an `InputBar` filters as you type, and accelerators are off. A window
@@ -214,6 +214,140 @@ end of a row.
 Every node takes style keyword arguments that override the theme for that
 node (`ui.Text("{key}", text_color="#888")`, `ui.ListView(..., spacing=2)`).
 Pass `children=[...]` instead of positional children if you prefer.
+`ui.Entry(mask="*")` sets the character password prompts show per typed
+character (see [secrets](secrets.md)).
+
+## Recipes
+
+The examples assume:
+
+```python
+import klemmbrett as kb
+from klemmbrett import layouts, providers, themes, ui
+from klemmbrett.style import Style, Theme, ch, em
+```
+
+### Extend a shipped palette
+
+`|` layers your changes over a palette, so the rest of it stays:
+
+```python
+nord = themes.nord | Theme(
+    window=Style(border_radius=10, border=2, padding=6),
+    element=Style(height=em(2.2), border_radius=6),
+    element_selected=Style(border=(0, 0, 0, 3), border_color="#88c0d0"),
+    element_index=Style(text_color=kb.inherit),
+)
+kb.configure(theme=nord)
+```
+
+The selected row gets a 3 px accent on its left edge, and accelerators take
+the row's own text color instead of the palette's grey.
+
+### Keep tweaks across theme switches
+
+`overrides` sit on top of whatever palette is active, including ones the
+`Themes` widget switches to:
+
+```python
+kb.configure(
+    theme=themes.tokyo_night,
+    overrides=Theme(window=Style(font_size=15, width=ch(60), max_height=420)),
+)
+kb.widget("themes", providers.Themes(), layout=layouts.filter)
+```
+
+### Give one widget its own look
+
+A widget's `theme` replaces the configured one, so start from a palette
+when you only want an accent:
+
+```python
+kb.widget(
+    "run",
+    providers.Executables(),
+    layout=layouts.filter,
+    theme=themes.nord | Theme(
+        prompt=Style(text="run ›", text_color="#a3be8c", padding=(0, 8)),
+        entry=Style(text_color="#eceff4"),
+    ),
+)
+```
+
+### Write a palette from scratch
+
+`defaults` covers every element that does not say otherwise; the rest only
+names what differs. `theme.resolve()` shows the result per element, keyed
+by selector (`element:selected`, `element-index`, `toast-summary`):
+
+```python
+paper = Theme(
+    defaults=Style(background_color="#fdf6e3", text_color="#586e75", border_color="#93a1a1"),
+    window=Style(border=1, border_radius=4, padding=4),
+    element_selected=Style(background_color="#eee8d5", text_color="#073642"),
+    element_hover=Style(background_color="#eee8d5"),
+    inputbar=Style(border=(0, 0, 1, 0)),
+    toast_summary=Style(text_color="#b58900"),
+)
+kb.configure(theme=paper)
+print(paper.resolve()["element:selected"])
+```
+
+### Style single nodes in a layout
+
+Keyword arguments on a node beat every theme layer, for that node only:
+
+```python
+def bookmarks(ctx):
+    return ui.Window(
+        ui.Text("{widget} · {count}", text_color="#888", padding=(4, 10)),
+        ui.InputBar(ui.Prompt(text="⌕"), ui.Entry()),
+        ui.ListView(
+            ui.Element(
+                ui.Index(),
+                ui.Text("{label}"),
+                ui.Spacer(),
+                ui.Field("tags[*]", text_color="#b48ead", width=ch(14)),
+            )
+        ),
+        location="center",
+    )
+```
+
+### Two-line rows
+
+A `Column` stacks its children; give the row the height for both lines:
+
+```python
+def mail(ctx):
+    return ui.Window(
+        ui.InputBar(ui.Prompt(), ui.Entry()),
+        ui.ListView(
+            ui.Element(
+                ui.Column(
+                    ui.Text("{summary}"),
+                    ui.Field("body", text_color="#888"),
+                ),
+                height=em(3),
+            )
+        ),
+        location="north-east",
+    )
+```
+
+### Toasts
+
+Toasts copy the window's look until the theme styles `toast` itself:
+
+```python
+kb.configure(theme=themes.mbra | Theme(
+    toast=Style(width=420, margin=(32, 12), border=(0, 0, 0, 4), border_color="#ebcb8b"),
+    toast_summary=Style(text_color="#ebcb8b"),
+    toast_body=Style(text_color=kb.inherit),
+))
+```
+
+For password prompts, see [secrets](secrets.md#customizing-the-card).
 
 ## Location
 
