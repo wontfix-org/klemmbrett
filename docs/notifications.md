@@ -64,7 +64,8 @@ notify.serve(route=None, *, stash=None, timeout=5, location="north-east", replac
   (an `expire_timeout` of -1). A sender's own timeout is honored, 0 never
   expires, and critical notifications stay until clicked.
 - `location`: where toasts stack, by the names popups use (`north-east`,
-  `south`, ...). `center` and `pointer` mean `north-east`.
+  `south`, ...). `center` and `pointer` mean `north-east`. The gap from
+  that corner is the theme's `toast` margin.
 - `replace`: take the bus name from the running notification daemon. Without
   it, a running mako or dunst keeps the name and klemmbrett prints why it
   serves no notifications.

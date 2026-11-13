@@ -60,6 +60,17 @@ def test_misplaced_nodes_are_rejected(window, message):
         size(window, 1)
 
 
+def test_unused_node_properties_are_rejected():
+    with pytest.raises(TypeError, match="not used on ListView"):
+        ui.ListView(ui.Element(), background_color="#fff")
+    with pytest.raises(TypeError, match="not used on Spacer"):
+        ui.Spacer(padding=4)
+    with pytest.raises(TypeError, match="not used on Text"):
+        ui.Text("{label}", location="center")
+    assert ui.ListView(ui.Element(), spacing=2).style["spacing"] == 2.0
+    assert ui.Window(location="center", padding=4).style["padding"] == (4.0,)
+
+
 def test_leaves_take_no_children():
     with pytest.raises(TypeError, match="no children"):
         ui.Index(ui.Text("x"))

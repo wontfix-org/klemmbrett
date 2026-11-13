@@ -232,6 +232,7 @@ def serve(
       a list of those. Without one, everything is shown.
     - `timeout`: seconds a toast stays when the sender leaves it to us.
     - `location`: where toasts stack, such as `"north-east"` or `"south"`.
+      The gap from that corner is the theme's `toast` margin.
     - `replace`: take the bus name from a running notification daemon.
     - `max_visible`: further toasts wait for one to close.
     """

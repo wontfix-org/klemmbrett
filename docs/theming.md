@@ -97,7 +97,8 @@ by `max_height` (default 600). `font_size` here is the size text is drawn at
 
 ### listview
 
-The scrolling row list. `spacing` is added to each row's height.
+The scrolling row list. `spacing` is added to each row's height. It is
+the only property `listview` reads.
 
 ### element
 
@@ -121,8 +122,10 @@ or its `text`), and the query with a block cursor.
 A notification toast, its summary line, and its body (see
 [notifications](notifications.md)). Unless the theme styles `toast`
 itself, a toast looks like the `window`: same colors, border, radius, and
-font, but never its size or location. `width` is the toast width (default
-360). `margin` is the gap between the toast and the screen edges, default
+font, but never its size or location. The corner is
+`notify.serve(location=...)`; a `location` on the toast style is an error.
+`width` is the toast width (default 360). `margin` is the gap between the
+toast and the screen edges, default
 12 on every side; `margin=(24, 8)` sets the vertical gap and then the
 horizontal one. The summary is 20 px and the body 36 px high by default,
 both with a transparent background. Action buttons use the `element_selected` style.
@@ -130,18 +133,22 @@ Toasts follow the configured theme (and `kb.set_theme`), not a widget's.
 
 ## Properties
 
-Every element accepts the same properties. Unknown names are an error.
+`Style` accepts every property below. Placing one on an element that does
+not read it raises `TypeError`, the same as an unknown name, so a value
+cannot be stored and ignored. `listview` reads `spacing` only, and
+`element_hover` reads `background_color` only.
 
 | Property | Type | Notes |
 | --- | --- | --- |
-| `padding`, `margin`, `border` | 1–4 lengths | CSS order: all; vertical, horizontal; top, horizontal, bottom; top, right, bottom, left. `margin` is not drawn, except on `toast`, where it is the gap from the screen edges. |
+| `padding`, `border` | 1–4 lengths | CSS order: all; vertical, horizontal; top, horizontal, bottom; top, right, bottom, left. |
+| `margin` | 1–4 lengths | The toast's gap from the screen edges. Every other element rejects it. |
 | `border_radius` | length | Corner radius |
 | `background_color`, `border_color`, `text_color` | color | Default background `#2b2b2b`, text `#e8e8e8`, border `#555555` |
 | `spacing` | length | Gap between children; on `listview` added to the row height |
 | `orientation` | `"horizontal"` or `"vertical"` | |
 | `width`, `height`, `max_height` | length | See the elements above |
-| `font_size` | length | Drawn size on `window` |
-| `location` | placement name | Meaningful on `window` |
+| `font_size` | length | Drawn size on `window` and `toast`. `element_text` uses it to measure labels. |
+| `location` | placement name | The popup corner, on `window` (and `defaults`, which falls through to it). The toast corner is `notify.serve(location=...)`. |
 | `text` | string | The marker's mark, or a prompt's text |
 
 Any property may be `kb.inherit` to take the parent element's resolved
