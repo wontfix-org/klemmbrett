@@ -20,6 +20,7 @@ from . import _core
 __all__ = [
     "PROPERTIES",
     "ELEMENTS",
+    "ELEMENT_PROPERTIES",
     "Style",
     "Theme",
     "inherit",
@@ -76,6 +77,76 @@ ELEMENTS = (
 _COLORS = {"background_color", "border_color", "text_color"}
 _EDGES = {"padding", "margin", "border"}
 _VERTICAL = {"height", "max_height", "font_size"}
+
+# Painted by the shared box: padding, border, radius, colors, spacing, orientation.
+_BOX = frozenset(
+    {
+        "padding",
+        "border",
+        "border_radius",
+        "background_color",
+        "border_color",
+        "text_color",
+        "spacing",
+        "orientation",
+    }
+)
+
+#: Properties each theme element actually reads. Anything else is rejected
+#: when the style is placed on that element, so a value cannot be stored
+#: and ignored. `defaults` is the fallback those elements share; `margin`
+#: is not among them because only `toast` reads it, and the toast's own
+#: default replaces a margin inherited from the window.
+ELEMENT_PROPERTIES: dict[str, frozenset[str]] = {
+    "defaults": frozenset(PROPERTIES) - {"margin"},
+    "overlay": _BOX,
+    "window": _BOX | {"width", "max_height", "font_size", "location"},
+    "listview": frozenset({"spacing"}),
+    "element": _BOX | {"height"},
+    "element_selected": _BOX,
+    "element_hover": frozenset({"background_color"}),
+    "element_index": _BOX | {"width"},
+    "element_marker": _BOX | {"width", "text"},
+    "element_text": _BOX | {"width", "font_size"},
+    "inputbar": _BOX | {"height"},
+    "prompt": _BOX | {"text"},
+    "entry": _BOX,
+    "toast": frozenset(
+        {
+            "padding",
+            "margin",
+            "border",
+            "border_radius",
+            "background_color",
+            "border_color",
+            "text_color",
+            "spacing",
+            "width",
+            "font_size",
+        }
+    ),
+    "toast_summary": _BOX | {"height"},
+    "toast_body": _BOX | {"height"},
+}
+
+#: Style kwargs a layout node reads. Not the same as the theme element:
+#: a `Text` node's `font_size` is not measured or drawn, while the
+#: `element_text` theme property is.
+NODE_PROPERTIES: dict[str, frozenset[str]] = {
+    "Window": ELEMENT_PROPERTIES["window"],
+    "InputBar": ELEMENT_PROPERTIES["inputbar"],
+    "ListView": ELEMENT_PROPERTIES["listview"],
+    "Element": ELEMENT_PROPERTIES["element"],
+    "Prompt": ELEMENT_PROPERTIES["prompt"],
+    "Entry": ELEMENT_PROPERTIES["entry"],
+    "Marker": ELEMENT_PROPERTIES["element_marker"],
+    "Index": ELEMENT_PROPERTIES["element_index"],
+    "Text": _BOX | {"width"},
+    "Field": _BOX | {"width"},
+    "Spacer": frozenset({"width", "height"}),
+    "Row": _BOX | {"width", "height"},
+    "Column": _BOX | {"width", "height"},
+}
 
 EM_PX = 14.0
 CH_PX = 9.0
@@ -204,12 +275,32 @@ def _check(name: str, value: Any) -> Any:
     return _length(name, value)
 
 
+def _reject_unused(where: str, style: Style, allowed: frozenset[str]) -> None:
+    extra = [name for name in style if name not in allowed]
+    if not extra:
+        return
+    names = ", ".join(repr(name) for name in extra)
+    verb = "is" if len(extra) == 1 else "are"
+    accepted = ", ".join(name for name in PROPERTIES if name in allowed)
+    hint = ""
+    if "location" in extra:
+        hint = (
+            " The popup corner is `window`'s location; the toast corner is"
+            " `notify.serve(location=...)`."
+        )
+    elif "margin" in extra:
+        hint = " `margin` is only the gap between a toast and the screen edges."
+    raise TypeError(f"{names} {verb} not used on {where}; {where} accepts {accepted}.{hint}")
+
+
 class Style(Mapping[str, Any]):
     """Style properties for one element. Unset properties come from the theme.
 
     Lengths are pixels unless wrapped in `em`, `ch`, `mm`, or `pct`. Edges
     (`padding`, `margin`, `border`) take one to four lengths in CSS order.
     Any property may be `inherit` to take the parent element's value.
+    A property an element does not read is rejected when the style is
+    placed on that element, not stored and ignored.
     """
 
     __slots__ = ("_props",)
@@ -292,10 +383,11 @@ class Theme(Mapping[str, Style]):
                 raise TypeError(
                     f"unknown theme element {element!r}; expected one of {', '.join(ELEMENTS)}"
                 )
-        self._elements = {
-            element: style if isinstance(style, Style) else Style(style)
-            for element, style in merged.items()
-        }
+        self._elements = {}
+        for element, style in merged.items():
+            bound = style if isinstance(style, Style) else Style(style)
+            _reject_unused(element, bound, ELEMENT_PROPERTIES[element])
+            self._elements[element] = bound
         self.name = name
 
     def __getitem__(self, element: str) -> Style:

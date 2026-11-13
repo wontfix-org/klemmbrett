@@ -2,7 +2,7 @@ import pytest
 
 import klemmbrett as kb
 from klemmbrett import themes
-from klemmbrett.style import Style, Theme, ch, em, inherit, mm, pct, px
+from klemmbrett.style import ELEMENTS, ELEMENT_PROPERTIES, Style, Theme, ch, em, inherit, mm, pct, px
 
 
 def test_colors_accept_strings_and_helpers():
@@ -32,6 +32,26 @@ def test_lengths_and_units():
         Style(margin=(1, 2, 3, 4, 5))
     with pytest.raises(TypeError, match="expected a number"):
         Style(height="tall")
+
+
+def test_unused_properties_are_rejected_on_the_element():
+    assert set(ELEMENT_PROPERTIES) == set(ELEMENTS)
+    with pytest.raises(TypeError, match="notify.serve"):
+        Theme(toast=Style(location="north-east"))
+    with pytest.raises(TypeError, match="screen edges"):
+        Theme(window=Style(margin=12))
+    with pytest.raises(TypeError, match="not used on defaults"):
+        Theme(defaults=Style(margin=12))
+    with pytest.raises(TypeError, match="not used on listview"):
+        Theme(listview=Style(background_color="#fff"))
+    with pytest.raises(TypeError, match="not used on element_hover"):
+        Theme(element_hover=Style(text_color="#fff"))
+    theme = Theme(window=Style(location="south-west"), toast=Style(margin=(24, 8)))
+    assert theme["window"]["location"] == "south-west"
+    assert theme["toast"]["margin"] == (24.0, 8.0)
+    resolved = theme.resolve()
+    assert resolved["window"]["location"] == "south west"
+    assert resolved["toast"]["margin"] == (24.0, 8.0, 24.0, 8.0)
 
 
 def test_unknown_properties_name_the_supported_ones():

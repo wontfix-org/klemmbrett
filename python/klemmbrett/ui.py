@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from .style import Style
+from .style import NODE_PROPERTIES, Style, _reject_unused
 
 __all__ = [
     "Node",
@@ -65,6 +65,7 @@ class Node:
                 raise TypeError(f"{type(self).__name__}: expected a layout node, got {child!r}")
         self.children = nodes
         self.style = (style or Style()) | Style(**props)
+        _reject_unused(type(self).__name__, self.style, NODE_PROPERTIES[type(self).__name__])
 
     def __repr__(self) -> str:
         parts = [repr(child) for child in self.children]
