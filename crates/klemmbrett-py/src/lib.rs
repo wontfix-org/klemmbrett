@@ -991,6 +991,22 @@ fn notification_show(py: Python<'_>, id: u32) -> PyResult<()> {
         .map_err(runtime_error)
 }
 
+/// Sends a notification and returns its id; `urgency` is 0–2 and
+/// `timeout` is in milliseconds, -1 for the server's default.
+#[pyfunction]
+fn notify(
+    py: Python<'_>,
+    app_name: String,
+    summary: String,
+    body: String,
+    urgency: u8,
+    timeout: i32,
+) -> PyResult<u32> {
+    let runtime = runtime()?;
+    py.detach(|| runtime.notify(&app_name, &summary, &body, urgency, timeout))
+        .map_err(runtime_error)
+}
+
 /// Ends a routed notification that is not shown; `reason` is a
 /// `NotificationClosed` code (1 expired, 2 dismissed, 3 closed, 4 undefined).
 #[pyfunction]
@@ -1124,6 +1140,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(set_theme, module)?)?;
     module.add_function(wrap_pyfunction!(show, module)?)?;
     module.add_function(wrap_pyfunction!(refresh, module)?)?;
+    module.add_function(wrap_pyfunction!(notify, module)?)?;
     module.add_function(wrap_pyfunction!(notification_show, module)?)?;
     module.add_function(wrap_pyfunction!(notification_close, module)?)?;
     module.add_function(wrap_pyfunction!(quit, module)?)?;

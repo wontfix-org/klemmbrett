@@ -177,6 +177,23 @@ def test_runtime_operations_check_their_arguments(daemon):
     assert daemon.calls == [("show", ("links", [("a", "a", "a", None), ("b", "B", "b", None)], (1, 2)))]
 
 
+def test_notify_checks_and_defaults_its_arguments(daemon):
+    assert kb.notify("Copied", "https://x") == 7
+    kb.notify("Build", urgency="critical", timeout=0, app_name="ci")
+    kb.notify("Quiet", urgency=0)
+    assert daemon.calls == [
+        ("notify", ("klemmbrett", "Copied", "https://x", 1, -1)),
+        ("notify", ("ci", "Build", "", 2, 0)),
+        ("notify", ("klemmbrett", "Quiet", "", 0, -1)),
+    ]
+    with pytest.raises(ValueError, match="urgency"):
+        kb.notify("x", urgency="urgent")
+    with pytest.raises(ValueError, match="timeout"):
+        kb.notify("x", timeout=-5)
+    with pytest.raises(TypeError, match="body"):
+        kb.notify("x", 3)  # type: ignore[arg-type]
+
+
 def test_without_a_daemon_operations_raise():
     with pytest.raises(RuntimeError, match="not running"):
         kb.copy("x")

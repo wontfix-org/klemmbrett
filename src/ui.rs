@@ -17,7 +17,9 @@ use crate::history::shorten_label;
 use crate::journal;
 use crate::launch::{spawn_detached, ResolvedLaunch};
 use crate::layout::{expand, expand_record, Layout, LayoutContext, Node, NodeKind};
-use crate::notifications::{self, CloseReason, Notification, NotificationCenter, ToastCmd};
+use crate::notifications::{
+    self, CloseReason, Notification, NotificationCenter, NotifyRequest, ToastCmd,
+};
 use crate::rank::{self, Priors, Ranking};
 use crate::usage::{self, UsageStore};
 use crate::varlink::{self, ShowRequest};
@@ -137,6 +139,29 @@ impl Runtime {
     pub fn close_notification(&self, id: u32, reason: CloseReason) -> Result<(), String> {
         self.center()?.closed(id, reason);
         Ok(())
+    }
+
+    /// Sends a notification and returns its id. With notifications enabled it
+    /// is routed like any other; otherwise it goes to the session's server.
+    pub fn notify(
+        &self,
+        app_name: &str,
+        summary: &str,
+        body: &str,
+        urgency: u8,
+        expire_timeout: i32,
+    ) -> Result<u32, String> {
+        let Some(center) = &self.notifications else {
+            return notifications::send(None, app_name, summary, body, urgency, expire_timeout);
+        };
+        Ok(center.notify(NotifyRequest {
+            app_name: app_name.to_owned(),
+            summary: summary.to_owned(),
+            body: body.to_owned(),
+            hints: serde_json::json!({ "urgency": urgency }),
+            expire_timeout,
+            ..NotifyRequest::default()
+        }))
     }
 
     fn center(&self) -> Result<&NotificationCenter, String> {

@@ -31,6 +31,10 @@ class FakeBackend:
     def refresh(self, widgets: list[str]) -> None:
         self.calls.append(("refresh", widgets))
 
+    def notify(self, app_name: str, summary: str, body: str, urgency: int, timeout: int) -> int:
+        self.calls.append(("notify", (app_name, summary, body, urgency, timeout)))
+        return 7
+
     def notification_show(self, id: int) -> None:  # noqa: A002
         self.calls.append(("notification_show", id))
 
