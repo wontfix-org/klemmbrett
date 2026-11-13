@@ -32,6 +32,58 @@ whatever details the action passes). `ui.Entry(mask="*")` changes the mask.
 A layout that cannot ask the question, such as one without an input bar for
 a password, is replaced by the built-in card.
 
+## Customizing the card
+
+Agent widgets take `theme` and `layout` like any widget (see
+[theming](theming.md)). In a password card, a `Text` line whose template
+comes out empty (no error yet, no title) is left out, and the `Prompt`
+shows the asker's prompt (`Password:`) when it gives one, else its `text`.
+
+A red frame for administrator prompts, so they stand out from the rest:
+
+```python
+from klemmbrett import secrets, themes, ui
+from klemmbrett.style import Style, Theme
+
+alarm = themes.nord | Theme(
+    window=Style(border=2, border_color="#bf616a", border_radius=8, padding=8),
+    prompt=Style(text_color="#bf616a"),
+)
+kb.widget("polkit", secrets.Polkit(), theme=alarm)
+```
+
+A polkit card that says which action and user it is about:
+
+```python
+def admin_card(ctx):
+    line = Style(padding=(2, 10))
+    return ui.Window(
+        ui.Text("{title}", style=line, text_color="#ebcb8b"),
+        ui.Text("{message}", style=line),
+        ui.Text("{details.action_id} as {details.user}", style=line, text_color="#888"),
+        ui.Text("{error}", style=line, text_color="#bf616a"),
+        ui.InputBar(ui.Prompt(), ui.Entry(mask="✱")),
+        location="center",
+    )
+
+kb.widget("polkit", secrets.Polkit(), layout=admin_card, theme=alarm)
+```
+
+Templates naming details a question does not have are kept as written,
+so keep `{details.…}` to widgets whose agent sets them. When polkit lets
+several users authenticate, it asks which one first; a layout without a
+list, like this one, falls back to the built-in card for that step.
+
+A quiet card at the top of the screen for systemd services, and a wider
+mask for ssh:
+
+```python
+quiet = Theme(window=Style(width=420, location="north"), entry=Style(text_color="#a3be8c"))
+
+kb.widget("unlock", secrets.SystemdAgent(), theme=themes.mbra | quiet)
+kb.widget("askpass", secrets.Askpass(), layout=lambda ctx: layouts.secret(ctx, mask="● "))
+```
+
 ## What stays private
 
 Answers go back to the asker only. They never reach Python, `klemmbrett
