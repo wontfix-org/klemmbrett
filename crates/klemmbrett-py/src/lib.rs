@@ -7,6 +7,7 @@
 //! `(key, label, value, data)` tuples whose `data` is JSON-like.
 
 use klemmbrett::cli::{self, Invocation};
+use klemmbrett::journal;
 use klemmbrett::notifications::{CloseReason, Notification, NotificationConfig};
 use klemmbrett::{
     cmyk, hsl, hwb, parse_color, resolve_config_path, systemd, ui, AppConfig, CallError,
@@ -612,7 +613,9 @@ impl PyHandlers {
                                 let answer = to_py(py, &parameters).and_then(|parameters| {
                                     dispatcher.call_method1("call", (method, parameters))
                                 });
-                                let _ = reply.send(call_reply(answer));
+                                if reply.send(call_reply(answer)).is_err() {
+                                    journal::info("dropped a call reply; the waiter is gone");
+                                }
                                 return;
                             }
                         };
@@ -632,7 +635,7 @@ impl PyHandlers {
 
     fn send(&self, event: Event) {
         if self.events.send(event).is_err() {
-            eprintln!("klemmbrett: the handler thread has stopped; dropping an event");
+            journal::error("klemmbrett: the handler thread has stopped; dropping an event");
         }
     }
 }
@@ -887,7 +890,7 @@ fn main(
             let path = match resolve_config_path(config.as_deref()) {
                 Ok(path) => path,
                 Err(err) => {
-                    eprintln!("klemmbrett: {err}");
+                    journal::error(&format!("klemmbrett: {err}"));
                     return Ok(1);
                 }
             };
@@ -903,7 +906,7 @@ fn main(
             match result {
                 Ok(()) => Ok(0),
                 Err(err) => {
-                    eprintln!("klemmbrett: {err}");
+                    journal::error(&format!("klemmbrett: {err}"));
                     Ok(1)
                 }
             }

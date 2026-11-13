@@ -39,14 +39,18 @@ impl<B: Backend> ClipboardHistory<B> {
     /// Seeds history from whatever the engine already observed at startup.
     pub fn record_current(&mut self) {
         let text = self.sync.last_text().to_owned();
-        let _ = self.history.record(&text);
+        if let Err(err) = self.history.record(&text) {
+            crate::journal::error(&format!("failed to record clipboard history: {err}"));
+        }
     }
 
     pub fn poll(&mut self) {
         let action = self.sync.tick();
         let last = self.sync.last_text().to_owned();
         if let Some(text) = history_candidate(&action, &last) {
-            let _ = self.history.record(text);
+            if let Err(err) = self.history.record(text) {
+                crate::journal::error(&format!("failed to record clipboard history: {err}"));
+            }
         }
     }
 

@@ -64,7 +64,9 @@ pub struct HistoryStore {
 impl HistoryStore {
     pub fn open(path: &Path, limit: usize) -> rusqlite::Result<Self> {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                crate::journal::error(&format!("failed to create {}: {err}", parent.display()));
+            }
         }
         let conn = Connection::open(path)?;
         Self::from_connection(conn, limit)
