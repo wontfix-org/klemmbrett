@@ -167,9 +167,6 @@ monitor: the height for `height`, `max_height`, and `font_size`, and the
 width otherwise. They are plain numbers, so arithmetic works:
 `width=kb.pct(10) + 20`. They do not follow the live monitor.
 
-Anything the old HCL files did with `locals`, `env()`, `import`, or `media`
-is ordinary Python now: variables, `os.environ`, imports, and `if`.
-
 ## Layouts
 
 A layout is a `ui.Window`, or a function of a `LayoutContext` returning

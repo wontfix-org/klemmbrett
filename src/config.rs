@@ -123,32 +123,12 @@ pub fn config_path_from_env(xdg_config_home: Option<&OsStr>, home: Option<&OsStr
 /// The configuration file to evaluate, if any.
 ///
 /// An explicit path is always used. A missing default file means a sync-only
-/// daemon, unless an old-format configuration sits next to it.
-pub fn resolve_config_path(explicit: Option<&Path>) -> Result<Option<PathBuf>, String> {
+/// daemon.
+pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = explicit {
-        return Ok(Some(path.to_owned()));
+        return Some(path.to_owned());
     }
-    let path = default_config_path();
-    if path.exists() {
-        return Ok(Some(path));
-    }
-    reject_legacy_config(&path)?;
-    Ok(None)
-}
-
-fn reject_legacy_config(py_path: &Path) -> Result<(), String> {
-    for name in ["config.hcl", "config.toml"] {
-        let leftover = py_path.with_file_name(name);
-        if leftover.exists() {
-            return Err(format!(
-                "found {}, but klemmbrett now reads {}; rewrite the settings as Python \
-                 (see docs/widgets.md)",
-                leftover.display(),
-                py_path.display()
-            ));
-        }
-    }
-    Ok(())
+    Some(default_config_path()).filter(|path| path.exists())
 }
 
 #[cfg(test)]
@@ -180,17 +160,5 @@ mod tests {
             config_path_from_env(None, Some(OsStr::new("/home/me"))),
             PathBuf::from("/home/me/.config/klemmbrett/config.py")
         );
-    }
-
-    #[test]
-    fn leftover_hcl_is_rejected_with_a_hint() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.hcl"), "unused").unwrap();
-        let error = reject_legacy_config(&dir.path().join("config.py")).unwrap_err();
-        assert!(
-            error.contains("config.hcl") && error.contains("config.py"),
-            "{error}"
-        );
-        assert!(reject_legacy_config(&dir.path().join("nested").join("config.py")).is_ok());
     }
 }

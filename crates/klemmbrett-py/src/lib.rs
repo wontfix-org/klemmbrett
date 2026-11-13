@@ -900,13 +900,7 @@ fn main(
             }
         }
         Invocation::Daemon { config } => {
-            let path = match resolve_config_path(config.as_deref()) {
-                Ok(path) => path,
-                Err(err) => {
-                    journal::error(&format!("klemmbrett: {err}"));
-                    return Ok(1);
-                }
-            };
+            let path = resolve_config_path(config.as_deref());
             let loaded = load.call1((path,))?;
             let mut app = app_config(&loaded)?;
             drop(loaded);
