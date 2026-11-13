@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +10,7 @@ use crate::config::MultiSelect;
 use crate::data::{display, DataPath};
 use crate::executables::executables_on_path;
 use crate::layout::LayoutSpec;
+use crate::rank::Ranking;
 use crate::theme::{Location, Theme, ThemeSpec};
 use crate::windows::WindowList;
 use crate::HistoryStore;
@@ -188,6 +189,12 @@ impl FileFormat {
 /// `records` may block: it runs off the UI thread each time the widget opens.
 pub trait RecordSource: Send + Sync {
     fn records(&self) -> Result<Vec<Record>, String>;
+
+    /// The records with a rank score for each, for `rk.score`. Sources
+    /// that compute none return an empty list.
+    fn scored_records(&self) -> Result<(Vec<Record>, Vec<f64>), String> {
+        Ok((self.records()?, Vec::new()))
+    }
 
     /// Called with every new clipboard text.
     fn record_clipboard(&self, _text: &str) -> Result<(), String> {
@@ -373,6 +380,8 @@ pub struct WidgetDef {
     pub highlight: bool,
     /// What the filter matches. Empty means the label.
     pub search: Vec<DataPath>,
+    /// How typing matches rows and how past picks order them.
+    pub ranking: Ranking,
 }
 
 impl WidgetDef {
@@ -386,6 +395,7 @@ impl WidgetDef {
             multi: None,
             highlight: false,
             search: Vec::new(),
+            ranking: Ranking::default(),
         }
     }
 }
@@ -475,6 +485,11 @@ impl Widgets {
         &self.defs
     }
 
+    /// Whether any widget ranks by past picks, so they have to be recorded.
+    pub fn uses_usage(&self) -> bool {
+        self.defs.iter().any(|def| def.ranking.uses_usage())
+    }
+
     /// Widgets the tray can open. On-demand widgets need records from the caller.
     pub fn names_with_provider(&self) -> Vec<String> {
         self.defs
@@ -545,6 +560,34 @@ pub fn fetch_records(def: &WidgetDef) -> Result<Vec<Record>, String> {
         .map_err(|err| format!("widget {:?}: {err}", def.name))?;
     validate_records(&def.name, &records)?;
     Ok(records)
+}
+
+/// The widget's records and the rank scores its source computed, by key.
+pub fn fetch_scored(def: &WidgetDef) -> Result<(Vec<Record>, HashMap<String, f64>), String> {
+    let Some(source) = &def.source else {
+        return Err(format!(
+            "widget {:?} has no provider; pass records",
+            def.name
+        ));
+    };
+    let (records, scores) = source
+        .scored_records()
+        .map_err(|err| format!("widget {:?}: {err}", def.name))?;
+    validate_records(&def.name, &records)?;
+    if !scores.is_empty() && scores.len() != records.len() {
+        return Err(format!(
+            "widget {:?}: {} scores for {} records",
+            def.name,
+            scores.len(),
+            records.len()
+        ));
+    }
+    let scores = records
+        .iter()
+        .zip(scores)
+        .map(|(record, score)| (record.key.clone(), score))
+        .collect();
+    Ok((records, scores))
 }
 
 /// Decodes text, JSON, or YAML the way a `File` provider does.

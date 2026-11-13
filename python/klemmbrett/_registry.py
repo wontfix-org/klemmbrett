@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _core, _runtime, notifications, providers
+from . import ranking as rk
 from ._record import Record, from_wire, to_record
 from .layouts import LayoutContext
 from .style import Theme
@@ -20,6 +21,9 @@ Handler = Callable[[Record], Any]
 Layout = Window | Callable[[LayoutContext], Window]
 
 _LAUNCH_MODES = ("auto", "posix", "systemd-run")
+
+#: `match=` and `rank=` left out: the provider's defaults apply.
+_PROVIDER_DEFAULT: Any = object()
 
 
 class Settings:
@@ -105,6 +109,9 @@ class Widget:
         on_select: Handler | None,
         on_highlight: Handler | None,
         search: Sequence[str] | None = None,
+        match: rk.Matcher | None = _PROVIDER_DEFAULT,
+        rank: rk.Rank | None = _PROVIDER_DEFAULT,
+        prefer: str = "blend",
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("widget name must be a non-empty string")
@@ -124,6 +131,22 @@ class Widget:
             multi_keys = None
         self.name = name
         self.provider = providers.as_provider(provider)
+        suggested_match, suggested_rank = providers.defaults(self.provider)
+        if match is _PROVIDER_DEFAULT:
+            match = suggested_match
+        if rank is _PROVIDER_DEFAULT:
+            rank = suggested_rank
+        if match is None:
+            match = rk.substring()
+        if not isinstance(match, rk.Matcher):
+            raise TypeError(f"widget {name!r}: match must be a matcher such as rk.fuzzy(), got {match!r}")
+        if rank is not None and not isinstance(rank, rk.Rank):
+            raise TypeError(f"widget {name!r}: rank must be rankers such as rk.frecency(), got {rank!r}")
+        if prefer not in rk.PREFER:
+            raise ValueError(f"widget {name!r}: prefer must be one of {', '.join(rk.PREFER)}")
+        self.match = match
+        self.rank = rank
+        self.prefer = prefer
         self.layout = layout
         self.theme = theme
         self.location = location
@@ -195,6 +218,7 @@ class Widget:
             "multi": self.multi,
             "highlight": self._on_highlight is not None,
             "search": self.search,
+            "ranking": rk.wire(self.match, self.rank, self.prefer),
         }
 
 
@@ -217,6 +241,9 @@ def widget(
     on_select: Handler | None = None,
     on_highlight: Handler | None = None,
     search: Sequence[str] | None = None,
+    match: rk.Matcher | None = _PROVIDER_DEFAULT,
+    rank: rk.Rank | None = _PROVIDER_DEFAULT,
+    prefer: str = "blend",
 ) -> Widget:
     """Declares a popup widget.
 
@@ -229,6 +256,11 @@ def widget(
     - `on_select`, `on_highlight`: functions of a `Record`.
     - `search`: what typing filters on, as paths such as `"label"` or
       `"sender.name"`. Defaults to the label.
+    - `match`: how typing matches rows, such as `ranking.fuzzy()`. `None` is
+      `ranking.substring()`. Left out, the provider's default applies.
+    - `rank`: how past picks order rows, such as `ranking.frecency()`. `None`
+      keeps the provider's order. Left out, the provider's default applies.
+    - `prefer`: `"blend"`, `"match"`, or `"usage"`; see docs/ranking.md.
     """
     if name in registry.widgets:
         raise ValueError(f"widget {name!r} is configured more than once")
@@ -244,6 +276,9 @@ def widget(
         on_select=on_select,
         on_highlight=on_highlight,
         search=search,
+        match=match,
+        rank=rank,
+        prefer=prefer,
     )
     registry.widgets[name] = created
     return created
@@ -252,13 +287,17 @@ def widget(
 def _source(provider: Any, widget: Widget) -> Any:
     if provider is None:
         return None
-    if isinstance(provider, providers._Native) and provider.schema is None:
+    rank = widget.rank if widget.rank is not None and widget.rank.uses_python() else None
+    if rank is None and isinstance(provider, providers._Native) and provider.schema is None:
         return provider.native()
 
-    def fetch() -> list[tuple[str, str, str, Any]]:
+    def fetch() -> Any:
         records = [to_record(record) for record in provider.records()]
         widget._remember(records)
-        return [record._wire() for record in records]
+        wires = [record._wire() for record in records]
+        if rank is None:
+            return wires
+        return wires, rank.scores(records)
 
     return fetch
 

@@ -13,8 +13,8 @@ use klemmbrett::{
     cmyk, hsl, hwb, parse_color, resolve_config_path, systemd, ui, AppConfig, CallError,
     ClipboardHistorySource, DataPath, Edges, ExecutablesSource, FileFormat, FileSource, Handlers,
     KeySpec, Launch, Layout, LayoutBuilder, LayoutContext, LayoutSpec, Location, MultiSelect, Node,
-    NodeKind, Orientation, Props, Record, RecordSource, Rgba, Runtime, State, Style, Theme,
-    ThemeSpec, WaylandWindowsSource, Widget, WidgetDef, Widgets,
+    NodeKind, Orientation, Props, Ranking, Record, RecordSource, Rgba, Runtime, State, Style,
+    Theme, ThemeSpec, WaylandWindowsSource, Widget, WidgetDef, Widgets,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -478,19 +478,28 @@ struct PySource {
 
 impl RecordSource for PySource {
     fn records(&self) -> Result<Vec<Record>, String> {
+        Ok(self.scored_records()?.0)
+    }
+
+    /// `fetch` returns the records, or `(records, scores)` when the widget
+    /// has rankers that run in Python.
+    fn scored_records(&self) -> Result<(Vec<Record>, Vec<f64>), String> {
         Python::attach(|py| {
-            let result = self
-                .fetch
-                .call0(py)
-                .and_then(|records| records_from_py(records.bind(py)));
-            match result {
-                Ok(records) => Ok(records),
-                Err(err) => {
-                    let message = err.to_string();
-                    err.print(py);
-                    Err(message)
+            let result = self.fetch.call0(py).and_then(|fetched| {
+                let fetched = fetched.bind(py);
+                match fetched.cast::<PyTuple>() {
+                    Ok(pair) if pair.len() == 2 => Ok((
+                        records_from_py(&pair.get_item(0)?)?,
+                        pair.get_item(1)?.extract::<Vec<f64>>()?,
+                    )),
+                    _ => Ok((records_from_py(fetched)?, Vec::new())),
                 }
-            }
+            });
+            result.map_err(|err| {
+                let message = err.to_string();
+                err.print(py);
+                message
+            })
         })
     }
 }
@@ -756,6 +765,10 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
             .map(|path| DataPath::parse(path))
             .collect::<Result<_, _>>()
             .map_err(|err| value_error(format!("widget {name:?}: search: {err}")))?;
+    }
+    if let Some(ranking) = item(dict, "ranking")? {
+        def.ranking = Ranking::from_json(&to_json(&ranking)?)
+            .map_err(|err| value_error(format!("widget {name:?}: {err}")))?;
     }
     Ok(def)
 }

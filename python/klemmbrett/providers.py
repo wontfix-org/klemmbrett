@@ -10,6 +10,8 @@ A provider may also define:
 - `select(record)`: what a widget does with a picked record when it has no
   `on_select` of its own. Without it, the value is copied.
 - `on_clipboard(text)`: called with every new clipboard text.
+- `default_match` and `default_rank`: the `ranking` matcher and rankers a
+  widget showing it uses unless it sets `match=` or `rank=`.
 
 Call `changed()` on a provider when its records change: every open popup
 showing it, directly or through a `View` or `Merge`, reloads, and
@@ -28,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _core, _runtime
+from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
 
 __all__ = [
@@ -50,7 +53,11 @@ _on_changed: Callable[[Provider], None] | None = None
 
 class Provider:
     """Base class for providers. Override `records()`; `select` and
-    `on_clipboard` are optional."""
+    `on_clipboard` are optional, and `default_match` and `default_rank` set
+    how widgets showing it match and rank by default."""
+
+    default_match: rk.Matcher | None = None
+    default_rank: rk.Rank | None = None
 
     def records(self) -> Iterable[RecordLike]:
         raise NotImplementedError
@@ -114,6 +121,8 @@ class ClipboardHistory(_Native):
     each new clipboard text is recorded once.
     """
 
+    default_match = rk.fuzzy(scheme="history")
+
     def __init__(
         self,
         limit: int = _core.DEFAULT_HISTORY_LIMIT,
@@ -148,6 +157,8 @@ class File(_Native):
     (a dataclass or NamedTuple), every record's data must match it.
     """
 
+    default_match = rk.fuzzy()
+
     def __init__(
         self,
         path: str | os.PathLike[str],
@@ -170,6 +181,9 @@ class File(_Native):
 class Executables(_Native):
     """Programs on `PATH`; the first of each basename wins. Selecting launches it."""
 
+    default_match = rk.fuzzy()
+    default_rank = rk.frecency() + rk.learned()
+
     def _open(self) -> _core.NativeSource:
         return _core.NativeSource.executables()
 
@@ -179,6 +193,9 @@ class Executables(_Native):
 
 class WaylandWindows(_Native):
     """Open toplevel windows. Selecting focuses the window."""
+
+    default_match = rk.fuzzy()
+    default_rank = rk.recent()
 
     def _open(self) -> _core.NativeSource:
         return _core.NativeSource.wayland_windows()
@@ -374,6 +391,14 @@ class View(Provider):
     def select(self, record: Record) -> None:
         _select_with(self.source, record)
 
+    @property
+    def default_match(self) -> rk.Matcher | None:  # type: ignore[override]
+        return defaults(self.source)[0]
+
+    @property
+    def default_rank(self) -> rk.Rank | None:  # type: ignore[override]
+        return defaults(self.source)[1]
+
     def _sources(self) -> tuple[Provider, ...]:
         return (self.source,)
 
@@ -415,11 +440,34 @@ class Merge(Provider):
         source, original = self._origin.get(record.key, (None, record))
         _select_with(source, original)
 
+    @property
+    def default_match(self) -> rk.Matcher | None:  # type: ignore[override]
+        return _agreed(defaults(source)[0] for source in self.sources)
+
+    @property
+    def default_rank(self) -> rk.Rank | None:  # type: ignore[override]
+        return _agreed(defaults(source)[1] for source in self.sources)
+
     def _sources(self) -> tuple[Provider, ...]:
         return self.sources
 
     def __repr__(self) -> str:
         return f"Merge({', '.join(map(repr, self.sources))})"
+
+
+def defaults(provider: Any) -> tuple[rk.Matcher | None, rk.Rank | None]:
+    """The matcher and rankers `provider` suggests, `None` where it has no opinion."""
+    if provider is None:
+        return None, None
+    return getattr(provider, "default_match", None), getattr(provider, "default_rank", None)
+
+
+def _agreed(values: Iterable[Any]) -> Any:
+    """The value when all are equal, else `None`."""
+    values = list(values)
+    if values and all(value == values[0] for value in values):
+        return values[0]
+    return None
 
 
 def _select_with(source: Any, record: Record) -> None:

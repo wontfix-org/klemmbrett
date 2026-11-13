@@ -205,10 +205,12 @@ pub mod layout;
 pub mod notifications;
 mod outputs;
 mod popup;
+pub mod rank;
 pub mod systemd;
 pub mod theme;
 mod toast_plate;
 pub mod ui;
+pub mod usage;
 pub mod varlink;
 pub mod widget;
 mod windows;
@@ -231,16 +233,18 @@ pub use popup::{
     place_at_location, place_on_outputs, position_on_outputs, resize_at_location, toggle_record,
     MenuItemSpec, OutputGeom,
 };
+pub use rank::Ranking;
 pub use theme::{
     cmyk, hsl, hwb, named_color, parse_color, Edges, Location, Orientation, Props, Rgba, State,
     Style, Theme, ThemeSpec, Widget,
 };
 pub use ui::Runtime;
+pub use usage::UsageStore;
 pub use varlink::{socket_path, Client, ClientError, ShowRequest};
 pub use widget::{
-    parse_records, records_from_json, validate_records, CallError, ClipboardHistorySource,
-    ExecutablesSource, FileFormat, FileSource, Handlers, NoHandlers, Record, RecordSource,
-    StaticSource, WaylandWindowsSource, WidgetDef, Widgets,
+    fetch_scored, parse_records, records_from_json, validate_records, CallError,
+    ClipboardHistorySource, ExecutablesSource, FileFormat, FileSource, Handlers, NoHandlers,
+    Record, RecordSource, StaticSource, WaylandWindowsSource, WidgetDef, Widgets,
 };
 
 #[cfg(target_os = "linux")]

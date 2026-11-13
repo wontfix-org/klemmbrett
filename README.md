@@ -7,8 +7,8 @@ Wayland windows to switch to.
 
 A GPUI popup lists a configured widget. Entries longer than a configurable length are
 shown shortened. A widget can pack either today's accelerator menu or a
-filter: `layout=layouts.filter` adds an input bar and types into a case-insensitive
-label filter; without that, the first 35 items can be chosen with accelerator keys
+filter: `layout=layouts.filter` adds an input bar that filters the labels,
+fuzzily for programs, windows, and files; without that, the first 35 items can be chosen with accelerator keys
 (`1`–`9`, then `a`–`z`). `Up`/`Down` and `Enter` also work, and `Escape`
 closes the popup. A StatusNotifierItem tray icon has a Widgets submenu.
 
@@ -166,7 +166,9 @@ POSIX double fork otherwise. `"posix"`, `"systemd-run"`, or a wrapper list
 such as `["uwsm", "app", "--"]` override it.
 
 Widgets, providers, record data, live stores, handlers, and recipes are
-documented in [`docs/widgets.md`](docs/widgets.md).
+documented in [`docs/widgets.md`](docs/widgets.md). Fuzzy matching and
+ordering by past picks (`match=rk.fuzzy()`, `rank=rk.frecency()`) are
+described in [`docs/ranking.md`](docs/ranking.md).
 
 ## Notifications
 

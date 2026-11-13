@@ -17,7 +17,9 @@ def links(record):
 ```
 
 `kb.widget(name, provider=None, *, layout, theme, location, multi, select,
-deselect, on_select, on_highlight, search)` returns a `Widget`. Calling the `Widget`
+deselect, on_select, on_highlight, search, match, rank, prefer)` returns a
+`Widget`. `match`, `rank`, and `prefer` choose how typing matches rows and
+how past picks order them; see [`ranking.md`](ranking.md). Calling the `Widget`
 with a function sets `on_select`, which is what makes the decorator form
 work. `Widget.on_highlight` is a decorator too, and both can also be passed
 as keyword arguments. Widget names must be unique. Relative paths given to
@@ -58,7 +60,8 @@ kb.widget("mail", mail_provider, layout=layouts.filter, search=["label", "sender
 `ui.Text("{sender.name}: {subject}")` expands paths inside a row template.
 `ui.Field(path)` shows every value the path reaches, joined by commas;
 strings show as they are and other values as compact JSON. `search=` sets
-what typing into the filter matches; it defaults to the label.
+what typing into the filter matches; it defaults to the label. `match=`
+decides how ([`ranking.md`](ranking.md)).
 
 ### Schemas
 
