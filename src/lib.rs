@@ -203,6 +203,7 @@ mod outputs;
 mod popup;
 pub mod systemd;
 pub mod theme;
+mod toast_plate;
 pub mod ui;
 pub mod varlink;
 pub mod widget;

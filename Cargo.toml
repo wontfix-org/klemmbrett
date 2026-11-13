@@ -16,6 +16,7 @@ arboard = { version = "3.4", features = ["wayland-data-control"] }
 async-channel = "2"
 clap = { version = "4", features = ["derive"] }
 gpui = { package = "gpui-ce", version = "0.3" }
+image = { version = "0.25.10", default-features = false }
 gpui_platform = { package = "gpui_ce_platform", version = "0.3", default-features = false, features = ["wayland"] }
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 libc = "0.2"

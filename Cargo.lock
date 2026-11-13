@@ -3226,6 +3226,7 @@ dependencies = [
  "clap",
  "gpui-ce",
  "gpui_ce_platform",
+ "image",
  "ksni",
  "libc",
  "rusqlite",
