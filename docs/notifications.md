@@ -137,4 +137,4 @@ klemmbrett watch                               # includes every arriving notific
 
 A status bar can count unread notifications without polling by running
 `klemmbrett watch` and re-reading the stash on each `changed` event of a
-widget showing it, or with `klemmbrett.rpc` from Python.
+widget showing it, or with [`klemmbrett-rpc`](rpc.md) from Python.

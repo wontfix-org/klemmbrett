@@ -1,6 +1,3 @@
-import json
-import socket
-import threading
 from dataclasses import dataclass
 from typing import Literal, NamedTuple, Optional
 
@@ -217,67 +214,15 @@ def test_stashes_mark_read_and_answer_varlink_calls(daemon):
         notifications.serve()
 
 
-@pytest.fixture
-def varlink_server(tmp_path):
-    """A one-connection Varlink server answering from a script of replies."""
-    path = tmp_path / "test.sock"
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(path))
-    server.listen(1)
-    received = []
-    replies = {}
+def test_rpc_is_the_slim_client_and_encodes_records():
+    import klemmbrett_rpc
+    from klemmbrett_rpc._records import _encode_record
 
-    def serve():
-        conn, _ = server.accept()
-        buffer = b""
-        with conn:
-            while True:
-                chunk = conn.recv(4096)
-                if not chunk:
-                    return
-                buffer += chunk
-                while b"\0" in buffer:
-                    raw, buffer = buffer.split(b"\0", 1)
-                    message = json.loads(raw)
-                    received.append(message)
-                    for reply in replies.get(message["method"].rsplit(".", 1)[-1], [{}]):
-                        conn.sendall(json.dumps(reply).encode() + b"\0")
-
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    yield path, received, replies
-    server.close()
-
-
-def test_rpc_client_calls_streams_and_raises(varlink_server):
-    path, received, replies = varlink_server
-    replies["Prompt"] = [{"parameters": {"values": ["a"]}}]
-    replies["Subscribe"] = [
-        {"parameters": {"event": {"kind": "ready"}}, "continues": True},
-        {"parameters": {"event": {"kind": "changed", "widget": "w"}}, "continues": True},
-        {"parameters": {"event": {"kind": "changed", "widget": "v"}}},
-    ]
-    replies["Show"] = [{"error": "org.wontfix.klemmbrett.UnknownWidget", "parameters": {"widget": "x", "known": []}}]
-    with rpc.Client(path) as client:
-        assert client.prompt("w", ["a", {"value": "b", "n": 1}], pointer=(1, 2)) == ["a"]
-        assert [e["widget"] for e in client.subscribe(["w"])] == ["w", "v"]
-        with pytest.raises(rpc.VarlinkError) as err:
-            client.show("x")
-    assert err.value.name == "UnknownWidget"
-    assert received[0] == {
-        "method": "org.wontfix.klemmbrett.Prompt",
-        "parameters": {
-            "widget": "w",
-            "pointer": {"x": 1, "y": 2},
-            "records": [
-                {"key": "a", "label": "a", "value": "a"},
-                {"key": "b", "label": "b", "value": "b", "data": {"n": 1}},
-            ],
-        },
-    }
-    assert received[1]["more"] is True
-
-
-def test_rpc_client_reports_a_missing_daemon(tmp_path):
-    with pytest.raises(ConnectionError, match="not running"):
-        rpc.Client(tmp_path / "none.sock")
+    assert rpc.Client is klemmbrett_rpc.Client
+    assert rpc.AsyncClient is klemmbrett_rpc.AsyncClient
+    assert rpc.VarlinkError is klemmbrett_rpc.VarlinkError
+    mail = Mail(Sender("ann"), "hi", ["x"])
+    record = kb.Record("v", label="L", data=mail)
+    assert _encode_record(record) == record._json()
+    assert _encode_record({"value": "v", "label": "L", "data": mail}) == record._json()
+    assert _encode_record({"value": "v", "n": 1}) == kb.Record("v", data={"n": 1})._json()

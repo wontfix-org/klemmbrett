@@ -4,3 +4,4 @@ __pycache__/
 /python/klemmbrett/_core*.so
 /.pytest_cache
 /dist
+!/packages/

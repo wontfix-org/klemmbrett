@@ -2,7 +2,8 @@
 //!
 //! The daemon is the Python package plus the `klemmbrett-py` extension. Set
 //! `KLEMMBRETT_BIN` to an installed `klemmbrett` script to test that instead;
-//! otherwise the extension is built and staged next to `python/klemmbrett`.
+//! otherwise the extension is built and staged next to `python/klemmbrett`,
+//! with `klemmbrett_rpc` from `packages/klemmbrett-rpc` beside it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -45,6 +46,12 @@ fn staged_package() -> &'static Path {
         copy_tree(&root.join("python").join("klemmbrett"), &package);
         std::fs::copy(&library, package.join("_core.abi3.so"))
             .unwrap_or_else(|err| panic!("copy {}: {err}", library.display()));
+        let rpc = staged.join("klemmbrett_rpc");
+        let _ = std::fs::remove_dir_all(&rpc);
+        copy_tree(
+            &root.join("packages/klemmbrett-rpc/src/klemmbrett_rpc"),
+            &rpc,
+        );
         staged
     })
 }

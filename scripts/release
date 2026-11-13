@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Set the project version, commit and tag it, then build PyPI artifacts.
 
-Usage: scripts/release [-d|--dry-run] [--rc | --pre] [VERSION]
+Usage: scripts/release [-d|--dry-run] [--package NAME] [--rc | --pre] [VERSION]
 
 VERSION is a dotted release such as 0.2.0 (a leading "v" is accepted and
 stripped). When omitted and stdin is a TTY, the script prints commit
@@ -38,11 +38,20 @@ stored in PEP 440 form (0.3.0rcN). pip and uv will not install it unless
 that version is requested or --pre is given. The candidate is committed on
 the release branch and tagged before the build. dist/latest and dist/rc
 point at it.
+
+--package rpc releases klemmbrett-rpc, the standard-library Varlink client in
+packages/klemmbrett-rpc, which is versioned on its own. Everything above
+applies, except that its version lives in packages/klemmbrett-rpc/pyproject.toml,
+it is built with ``uv build``, its tags are klemmbrett-rpc-vVERSION, its
+commits are "Release klemmbrett-rpc VERSION.", and its artifacts and the
+latest/stable/rc links are in dist/rpc/. Release it before a klemmbrett
+release that requires the new version.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import getpass
 import re
 import shutil
@@ -58,6 +67,8 @@ ROOT = Path(__file__).resolve().parent.parent
 VERSION_MANIFEST = ROOT / "crates" / "klemmbrett-py" / "Cargo.toml"
 CARGO_MANIFESTS = (ROOT / "Cargo.toml", VERSION_MANIFEST)
 CARGO_LOCK = ROOT / "Cargo.lock"
+RPC_ROOT = ROOT / "packages" / "klemmbrett-rpc"
+RPC_PYPROJECT = RPC_ROOT / "pyproject.toml"
 DIST = ROOT / "dist"
 MATURIN = "maturin[patchelf]>=1.7,<2"
 
@@ -79,6 +90,49 @@ PRE_PEP440_RE = re.compile(
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class Package:
+    """One distribution this script releases."""
+
+    name: str
+    # Tags are ``<tag_prefix>VERSION``; klemmbrett also has older bare tags.
+    tag_prefix: str
+    bare_tags: bool
+    subject_prefix: str
+    dist: Path
+    # The version lives in the Cargo manifests (maturin) or in pyproject.toml.
+    cargo: bool
+
+    def tag(self, version: str) -> str:
+        return f"{self.tag_prefix}{version}"
+
+    def subject(self, version: str) -> str:
+        return f"{self.subject_prefix}{version}."
+
+
+PACKAGES = {
+    "klemmbrett": Package(
+        name="klemmbrett",
+        tag_prefix="v",
+        bare_tags=True,
+        subject_prefix="Release ",
+        dist=DIST,
+        cargo=True,
+    ),
+    "rpc": Package(
+        name="klemmbrett-rpc",
+        tag_prefix="klemmbrett-rpc-v",
+        bare_tags=False,
+        subject_prefix="Release klemmbrett-rpc ",
+        dist=DIST / "rpc",
+        cargo=False,
+    ),
+}
+
+# The package being released, set from --package.
+PACKAGE = PACKAGES["klemmbrett"]
+
+
 class ReleaseError(Exception):
     def __init__(self, message: str, code: int = 1) -> None:
         super().__init__(message)
@@ -88,8 +142,14 @@ class ReleaseError(Exception):
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="scripts/release",
-        usage="scripts/release [-d|--dry-run] [--rc | --pre] [VERSION]",
+        usage="scripts/release [-d|--dry-run] [--package NAME] [--rc | --pre] [VERSION]",
         description="Commit and tag the project version, then build PyPI artifacts.",
+    )
+    parser.add_argument(
+        "--package",
+        choices=sorted(PACKAGES),
+        default="klemmbrett",
+        help="what to release: klemmbrett (default) or rpc (klemmbrett-rpc)",
     )
     parser.add_argument(
         "-d",
@@ -180,44 +240,60 @@ def pep440_to_cargo(version: str) -> str:
     raise ReleaseError(f"no Cargo spelling for version {version}", code=2)
 
 
-def manifest_version(manifest: Path) -> str:
-    in_package = False
+def manifest_version(manifest: Path, table: str = "package") -> str:
+    """The ``version`` of ``[table]`` (``package`` in Cargo, ``project`` in pyproject)."""
+    in_table = False
     for line in manifest.read_text().splitlines():
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            in_package = stripped == "[package]"
+            in_table = stripped == f"[{table}]"
             continue
-        if in_package and stripped.startswith("version = "):
+        if in_table and stripped.startswith("version = "):
             return stripped.split('"')[1]
-    raise ReleaseError(f"package.version not found in {manifest.relative_to(ROOT)}")
+    raise ReleaseError(f"{table}.version not found in {manifest.relative_to(ROOT)}")
 
 
 def project_version() -> str:
+    if not PACKAGE.cargo:
+        return manifest_version(RPC_PYPROJECT, "project")
     return cargo_to_pep440(manifest_version(VERSION_MANIFEST))
+
+
+def rewrite_version_field(manifest: Path, table: str, new: str) -> None:
+    """Set the ``version`` of ``[table]`` in ``manifest`` to ``new`` as given."""
+    old_field = f'version = "{manifest_version(manifest, table)}"'
+    new_field = f'version = "{new}"'
+    out = []
+    in_table = False
+    replaced = False
+    for line in manifest.read_text().splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_table = stripped == f"[{table}]"
+        if in_table and not replaced and stripped.startswith("version = "):
+            line = line.replace(old_field, new_field, 1)
+            replaced = new_field in line
+        out.append(line)
+    if not replaced:
+        raise ReleaseError(
+            f"refusing to rewrite {manifest.relative_to(ROOT)} "
+            "(version field not updated)"
+        )
+    manifest.write_text("".join(out))
 
 
 def rewrite_cargo_manifests(new: str) -> None:
     """Set the [package] version of every workspace crate to ``new`` (PEP 440)."""
-    new_field = f'version = "{pep440_to_cargo(new)}"'
     for manifest in CARGO_MANIFESTS:
-        old_field = f'version = "{manifest_version(manifest)}"'
-        out = []
-        in_package = False
-        replaced = False
-        for line in manifest.read_text().splitlines(keepends=True):
-            stripped = line.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                in_package = stripped == "[package]"
-            if in_package and not replaced and stripped.startswith("version = "):
-                line = line.replace(old_field, new_field, 1)
-                replaced = new_field in line
-            out.append(line)
-        if not replaced:
-            raise ReleaseError(
-                f"refusing to rewrite {manifest.relative_to(ROOT)} "
-                "(version field not updated)"
-            )
-        manifest.write_text("".join(out))
+        rewrite_version_field(manifest, "package", pep440_to_cargo(new))
+
+
+def rewrite_version(new: str) -> None:
+    """Set the version of the package being released to ``new`` (PEP 440)."""
+    if PACKAGE.cargo:
+        rewrite_cargo_manifests(new)
+    else:
+        rewrite_version_field(RPC_PYPROJECT, "project", new)
 
 
 def normalize_version(text: str) -> str:
@@ -327,10 +403,11 @@ def pep440_rc_version(base: str, number: int) -> str:
 
 def next_rc_number(base: str) -> int:
     """One past the highest local tag for ``base``, or 1 when none exist."""
+    prefix = PACKAGE.tag_prefix
     listed = git(
-        "tag", "-l", f"v{base}-rc.*", f"v{base}rc*", capture=True
+        "tag", "-l", f"{prefix}{base}-rc.*", f"{prefix}{base}rc*", capture=True
     ).stdout.splitlines()
-    pattern = re.compile(rf"^v{re.escape(base)}(?:-rc\.|rc)([0-9]+)$")
+    pattern = re.compile(rf"^{re.escape(prefix)}{re.escape(base)}(?:-rc\.|rc)([0-9]+)$")
     highest = 0
     for tag in listed:
         match = pattern.match(tag.strip())
@@ -340,6 +417,9 @@ def next_rc_number(base: str) -> int:
 
 
 def manifest_paths() -> List[str]:
+    """The files a version bump of the package being released changes."""
+    if not PACKAGE.cargo:
+        return [str(RPC_PYPROJECT.relative_to(ROOT))]
     paths = [str(manifest.relative_to(ROOT)) for manifest in CARGO_MANIFESTS]
     if CARGO_LOCK.exists():
         paths.append(str(CARGO_LOCK.relative_to(ROOT)))
@@ -361,7 +441,7 @@ def commit_version_bump(branch: str, version: str) -> None:
             f"refusing to commit {version} on {current_branch()}; expected {branch}"
         )
     git("add", *manifest_paths())
-    git("commit", "-m", f"Release {version}.")
+    git("commit", "-m", PACKAGE.subject(version))
 
 
 def tag_branch_tip(branch: str, tag: str, version: str) -> None:
@@ -370,7 +450,7 @@ def tag_branch_tip(branch: str, tag: str, version: str) -> None:
         raise ReleaseError(
             f"refusing to tag {tag} on {current_branch()}; expected {branch}"
         )
-    git("tag", "-a", tag, "-m", f"klemmbrett {version}")
+    git("tag", "-a", tag, "-m", f"{PACKAGE.name} {version}")
 
 
 def current_branch() -> str:
@@ -412,8 +492,14 @@ def tag_exists(tag: str) -> bool:
 
 
 def release_tag_name(tag: str) -> Optional[str]:
-    """Return the version part of a release tag, or None if it is not one."""
-    name = tag[1:] if tag.startswith("v") else tag
+    """Return the version part of a release tag of the package being
+    released, or None if it is not one."""
+    if tag.startswith(PACKAGE.tag_prefix):
+        name = tag[len(PACKAGE.tag_prefix):]
+    elif PACKAGE.bare_tags:
+        name = tag
+    else:
+        return None
     if VERSION_RE.match(name) or RC_INPUT_RE.match(name):
         return name
     return None
@@ -428,21 +514,23 @@ def last_release_ref() -> Optional[tuple[str, str]]:
     version-sorted release tag.
     """
     current = project_version()
-    for tag in (f"v{current}", current):
+    candidates = [PACKAGE.tag(current)] + ([current] if PACKAGE.bare_tags else [])
+    for tag in candidates:
         if tag_exists(tag):
             return tag, tag
 
+    subject = PACKAGE.subject(current)
     result = git(
         "log",
         "-1",
         "--format=%H",
-        f"--grep=^Release {re.escape(current)}\\.$",
+        f"--grep=^{re.escape(subject)}$",
         capture=True,
         check=False,
     )
     commit = result.stdout.strip()
     if result.returncode == 0 and commit:
-        return commit, f"Release {current}"
+        return commit, subject[:-1]
 
     listed = git("tag", "-l", "--sort=-v:refname", capture=True).stdout.splitlines()
     for tag in listed:
@@ -493,23 +581,23 @@ def prompt_version(*, candidate: bool) -> str:
 
 
 def version_directory(name: str) -> Path:
-    """``dist/<name>``, refusing names that could escape that directory."""
+    """``<dist>/<name>``, refusing names that could escape that directory."""
     if (
         not name
-        or name in (".", "..", "latest", "stable", "rc")
+        or name in (".", "..", "latest", "stable", "rc", "rpc")
         or "/" in name
         or "\\" in name
     ):
         raise ReleaseError(f"refusing version directory {name!r}")
-    return DIST / name
+    return PACKAGE.dist / name
 
 
 def prepare_version_dir(name: str) -> Path:
-    """Replace ``dist/<name>`` with an empty directory. Other versions stay."""
+    """Replace ``<dist>/<name>`` with an empty directory. Other versions stay."""
     path = version_directory(name)
     if path.is_symlink():
         raise ReleaseError(f"{path} is a symlink")
-    DIST.mkdir(exist_ok=True)
+    PACKAGE.dist.mkdir(parents=True, exist_ok=True)
     if path.exists():
         shutil.rmtree(path)
     path.mkdir()
@@ -517,15 +605,15 @@ def prepare_version_dir(name: str) -> Path:
 
 
 def retarget(link_name: str, version_name: str) -> None:
-    """Point ``dist/<link_name>`` at ``dist/<version_name>``."""
+    """Point ``<dist>/<link_name>`` at ``<dist>/<version_name>``."""
     version_directory(version_name)
-    DIST.mkdir(exist_ok=True)
-    link = DIST / link_name
+    PACKAGE.dist.mkdir(parents=True, exist_ok=True)
+    link = PACKAGE.dist / link_name
     if link.is_symlink() or (link.exists() and not link.is_dir()):
         link.unlink()
     elif link.is_dir():
         raise ReleaseError(f"{link} is a directory; not replacing it with a symlink")
-    temporary = DIST / f".{link_name}.tmp"
+    temporary = PACKAGE.dist / f".{link_name}.tmp"
     if temporary.is_symlink() or temporary.exists():
         temporary.unlink()
     temporary.symlink_to(version_name)
@@ -533,7 +621,7 @@ def retarget(link_name: str, version_name: str) -> None:
 
 
 def publish(name: str, *, stable: bool = False, candidate: bool = False) -> None:
-    """Point dist/latest at this version.
+    """Point <dist>/latest at this version (dist/ or dist/rpc/).
 
     A final release also claims dist/stable. A release candidate claims
     dist/rc and leaves dist/stable on the last final release, so the default
@@ -547,8 +635,9 @@ def publish(name: str, *, stable: bool = False, candidate: bool = False) -> None
 
 
 def build(version_name: str) -> Path:
-    """Build the sdist and a PyPI-compatible wheel into ``dist/<version_name>/``.
+    """Build the sdist and a PyPI-compatible wheel into ``<dist>/<version_name>/``.
 
+    klemmbrett-rpc is pure Python and built with ``uv build``. For klemmbrett,
     ``--compatibility pypi`` makes maturin graft the non-manylinux system
     libraries (fontconfig, xkbcommon, ...) into the wheel with patchelf, or
     fail instead of producing a ``linux_*`` wheel PyPI would reject.
@@ -557,6 +646,9 @@ def build(version_name: str) -> Path:
         raise ReleaseError("uv is required to build the release artifacts")
     out = prepare_version_dir(version_name)
     print(f"Building sdist and wheel into {out.relative_to(ROOT)}/", flush=True)
+    if not PACKAGE.cargo:
+        run(["uv", "build", "--sdist", "--wheel", "--out-dir", str(out), str(RPC_ROOT)])
+        return out
     run(
         [
             "uv",
@@ -585,8 +677,15 @@ def show_artifacts(directory: Path) -> None:
 
 
 def upload_artifacts(directory: Path) -> None:
-    """Publish every file in ``directory`` with ``uv publish``."""
-    artifacts = sorted(path for path in directory.iterdir() if path.is_file())
+    """Publish the wheels and sdists in ``directory`` with ``uv publish``.
+
+    ``uv build`` also leaves a ``.gitignore`` there, which is not uploaded.
+    """
+    artifacts = sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.name.endswith((".whl", ".tar.gz"))
+    )
     if not artifacts:
         raise ReleaseError(f"no artifacts in {directory}")
     run(["uv", "publish", *(str(path) for path in artifacts)])
@@ -594,6 +693,8 @@ def upload_artifacts(directory: Path) -> None:
 
 def main(argv: Sequence[str]) -> int:
     args = parse_args(argv)
+    global PACKAGE
+    PACKAGE = PACKAGES[args.package]
 
     if args.rc and args.pre:
         raise ReleaseError("--rc and --pre cannot be combined", code=2)
@@ -602,7 +703,10 @@ def main(argv: Sequence[str]) -> int:
     if given is None and not args.pre:
         given = prompt_version(candidate=args.rc)
     if given is not None:
-        given = given[1:] if given.startswith("v") else given
+        for prefix in (PACKAGE.tag_prefix, "v"):
+            if given.startswith(prefix):
+                given = given[len(prefix):]
+                break
 
     current = project_version()
     candidate = False
@@ -632,7 +736,8 @@ def main(argv: Sequence[str]) -> int:
             raise ReleaseError(f"not a version: {given}", code=2)
         version = normalize_version(given)
         candidate = RC_PEP440_RE.match(version) is not None
-    tag = f"v{version}"
+    tag = PACKAGE.tag(version)
+    dist = PACKAGE.dist.relative_to(ROOT)
     if prerelease:
         branch = current_branch()
     else:
@@ -645,7 +750,8 @@ def main(argv: Sequence[str]) -> int:
             raise ReleaseError("working tree is not clean")
         print("working tree is not clean; a real run would stop here", file=sys.stderr)
 
-    wheels = f"would build an sdist and a manylinux wheel into dist/{version}/"
+    wheel = "manylinux wheel" if PACKAGE.cargo else "wheel"
+    wheels = f"would build an sdist and a {wheel} into {dist}/{version}/"
 
     need_commit = False
     need_tag = False
@@ -660,44 +766,43 @@ def main(argv: Sequence[str]) -> int:
 
     if args.dry_run:
         if need_commit:
-            print(
-                f"would commit version {current} -> {version} "
-                f"(Cargo {pep440_to_cargo(version)}) on {branch}"
-            )
+            spelled = f" (Cargo {pep440_to_cargo(version)})" if PACKAGE.cargo else ""
+            print(f"would commit {PACKAGE.name} {current} -> {version}{spelled} on {branch}")
         if need_tag:
             print(f"would tag {tag} on {branch}")
         else:
             print(f"tag {tag} already exists")
         print(wheels)
         if prerelease:
-            print(f"would point dist/latest at {version}")
-            print("would leave dist/stable and dist/rc unchanged")
+            print(f"would point {dist}/latest at {version}")
+            print(f"would leave {dist}/stable and {dist}/rc unchanged")
             print(f"would not push {branch} or {tag}")
             print(
                 f"{version} is a pre-release: pip and uv install it only for "
-                f"klemmbrett=={version} or when --pre is given"
+                f"{PACKAGE.name}=={version} or when --pre is given"
             )
         elif candidate:
-            print(f"would point dist/latest and dist/rc at {version}")
-            print("would leave dist/stable unchanged")
+            print(f"would point {dist}/latest and {dist}/rc at {version}")
+            print(f"would leave {dist}/stable unchanged")
             print(
                 f"{version} is a pre-release: pip and uv install it only for "
-                f"klemmbrett=={version} or when --pre is given"
+                f"{PACKAGE.name}=={version} or when --pre is given"
             )
         else:
-            print(f"would point dist/latest and dist/stable at {version}")
+            print(f"would point {dist}/latest and {dist}/stable at {version}")
             print(f"would push {branch} and {tag} to its upstream")
-        print(f"would upload dist/{version}/* with uv publish")
+        print(f"would upload {dist}/{version}/* with uv publish")
         return 0
 
     if need_commit:
-        rewrite_cargo_manifests(version)
-        refreshed = run(["cargo", "update", "--workspace"], capture=True, check=False)
-        if refreshed.returncode != 0:
-            restore_manifests()
-            raise ReleaseError(
-                "cargo update rejected the new version; Cargo manifests restored"
-            )
+        rewrite_version(version)
+        if PACKAGE.cargo:
+            refreshed = run(["cargo", "update", "--workspace"], capture=True, check=False)
+            if refreshed.returncode != 0:
+                restore_manifests()
+                raise ReleaseError(
+                    "cargo update rejected the new version; Cargo manifests restored"
+                )
         commit_version_bump(branch, version)
         print(f"committed {version} on {branch}")
     if need_tag:
@@ -709,13 +814,13 @@ def main(argv: Sequence[str]) -> int:
 
     show_artifacts(out)
     print()
-    print(f"dist/latest -> {version}")
+    print(f"{dist}/latest -> {version}")
     if prerelease:
-        print("dist/stable and dist/rc are unchanged")
+        print(f"{dist}/stable and {dist}/rc are unchanged")
     elif candidate:
-        print(f"dist/rc -> {version}")
+        print(f"{dist}/rc -> {version}")
     else:
-        print(f"dist/stable -> {version}")
+        print(f"{dist}/stable -> {version}")
     print()
     if prerelease:
         print(f"{branch} and {tag} are not pushed")
@@ -729,7 +834,7 @@ def main(argv: Sequence[str]) -> int:
     if prerelease or candidate:
         print(
             f"{version} is a pre-release. pip and uv will not install it unless "
-            f"the version is requested (klemmbrett=={version}) or --pre is given."
+            f"the version is requested ({PACKAGE.name}=={version}) or --pre is given."
         )
         print()
     upload_artifacts(out)

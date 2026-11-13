@@ -18,10 +18,16 @@ varlinkctl call $sock org.wontfix.klemmbrett.Widgets '{}'
 varlinkctl call --more $sock org.wontfix.klemmbrett.Subscribe '{}'
 ```
 
-From Python, `klemmbrett.rpc` needs only the standard library:
+From Python, the `klemmbrett-rpc` package is a client that needs only the
+standard library, so it installs where the full `klemmbrett` package is not
+wanted, such as the system Python a window manager runs on:
+
+```sh
+pip install klemmbrett-rpc
+```
 
 ```python
-from klemmbrett import rpc
+import klemmbrett_rpc as rpc
 
 with rpc.Client() as client:
     picked = client.prompt("snippets", ["one", {"value": "two", "data": {"n": 2}}])
@@ -33,7 +39,16 @@ with rpc.Client() as client:
 `rpc.AsyncClient` has the same methods as coroutines (`subscribe` is an
 async iterator); open it with `await rpc.AsyncClient.connect()`. Errors are
 raised as `rpc.VarlinkError` with `error`, `name`, and `parameters`, and a
-missing daemon as `ConnectionError`.
+missing daemon as `ConnectionError`. Inside a configuration, `klemmbrett.rpc`
+is the same client; `klemmbrett` depends on `klemmbrett-rpc`.
+
+`klemmbrett-rpc` is versioned on its own, following this interface: while it
+is 0.x, a minor bump (0.1 to 0.2) is an incompatible change to the interface
+or the client, and a patch bump is anything compatible, such as a new method.
+Each `klemmbrett` release requires the range it was built against, such as
+`klemmbrett-rpc>=0.1,<0.2`. It is released with
+`scripts/release --package rpc` (tags `klemmbrett-rpc-vX.Y.Z`), before the
+`klemmbrett` release that needs it.
 
 ## Methods
 
