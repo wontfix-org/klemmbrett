@@ -8,6 +8,7 @@
 use crate::events;
 use crate::journal;
 use crate::notifications::{NotificationCenter, NotifyRequest};
+use crate::secret::{AgentKind, AskError, Echo, Mode, SecretReply, SecretRequest};
 use crate::widget::{fetch_records, CallError, Handlers, Record, WidgetDef};
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
@@ -16,7 +17,8 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::Duration;
 
 pub const INTERFACE: &str = "org.wontfix.klemmbrett";
@@ -101,12 +103,16 @@ fn activated_listener() -> Option<UnixListener> {
     Some(unsafe { UnixListener::from_raw_fd(3) })
 }
 
+type Asker = Box<dyn Fn(SecretRequest) -> Result<SecretReply, AskError> + Send + Sync>;
+
 /// Answers Varlink calls. `show` hands requests to the UI; tests pass their own.
 pub struct Server {
     widgets: Vec<WidgetDef>,
     handlers: Arc<dyn Handlers>,
     notifications: Option<Arc<NotificationCenter>>,
     show: Box<dyn Fn(ShowRequest) -> Result<(), String> + Send + Sync>,
+    /// Set while a secret question is on screen, and how to ask one.
+    secrets: OnceLock<(Arc<AtomicBool>, Asker)>,
 }
 
 impl Server {
@@ -121,7 +127,20 @@ impl Server {
             handlers,
             notifications,
             show: Box::new(show),
+            secrets: OnceLock::new(),
         })
+    }
+
+    /// Enables `AskSecret`. While `open` is set, `Show` and `Prompt` answer
+    /// `Busy` instead of replacing the question on screen.
+    pub fn answer_secrets(
+        &self,
+        open: Arc<AtomicBool>,
+        ask: impl Fn(SecretRequest) -> Result<SecretReply, AskError> + Send + Sync + 'static,
+    ) {
+        if self.secrets.set((open, Box::new(ask))).is_err() {
+            journal::warn("secret questions are already answered here");
+        }
     }
 
     /// Accepts connections on a background thread, one thread per client.
@@ -242,6 +261,7 @@ impl Server {
             (INTERFACE, "Records") => self.records(&parameters),
             (INTERFACE, "StashList" | "StashMarkRead") => self.handlers.call(name, parameters),
             (INTERFACE, "Notify") => self.notify(&parameters),
+            (INTERFACE, "AskSecret") => self.ask_secret(&parameters),
             (SERVICE | INTERFACE, _) => {
                 Err(service_error("MethodNotFound", json!({ "method": method })))
             }
@@ -272,6 +292,13 @@ impl Server {
             .as_str()
             .ok_or_else(|| invalid("widget"))?;
         let def = self.widget(widget)?;
+        if self
+            .secrets
+            .get()
+            .is_some_and(|(open, _)| open.load(Ordering::Relaxed))
+        {
+            return Err(CallError::new("Busy", json!({})));
+        }
         let pointer = match &parameters["pointer"] {
             Value::Null => None,
             point => {
@@ -378,6 +405,66 @@ impl Server {
             ..NotifyRequest::default()
         });
         Ok(json!({ "id": id }))
+    }
+
+    /// A password or confirmation for `klemmbrett askpass` and `pinentry`.
+    /// The answer goes to this caller only.
+    fn ask_secret(&self, parameters: &Value) -> Result<Value, CallError> {
+        let kind = parameters["kind"]
+            .as_str()
+            .and_then(AgentKind::parse)
+            .filter(|kind| matches!(kind, AgentKind::Askpass | AgentKind::Pinentry))
+            .ok_or_else(|| invalid("kind"))?;
+        let Some((_, ask)) = self.secrets.get() else {
+            return Err(CallError::new("NoAgent", json!({ "kind": kind.name() })));
+        };
+        let text = |name: &str| -> Result<Option<String>, CallError> {
+            match &parameters[name] {
+                Value::Null => Ok(None),
+                Value::String(text) => Ok(Some(text.clone())),
+                _ => Err(invalid(name)),
+            }
+        };
+        let mut request = SecretRequest::new(kind);
+        request.widget = text("widget")?;
+        request.id = text("id")?.unwrap_or_default();
+        request.title = text("title")?.unwrap_or_default();
+        request.message = text("message")?.unwrap_or_default();
+        request.prompt = text("prompt")?;
+        request.error = text("error")?;
+        if let Some(echo) = text("echo")? {
+            request.echo = Echo::parse(&echo).ok_or_else(|| invalid("echo"))?;
+        }
+        request.mode = match text("mode")?.as_deref() {
+            None | Some("secret") => Mode::Secret,
+            Some("confirm") => Mode::Confirm,
+            Some("message") => Mode::Message,
+            Some(_) => return Err(invalid("mode")),
+        };
+        request.timeout = match &parameters["timeout"] {
+            Value::Null => None,
+            value => Some(Duration::from_secs(
+                value
+                    .as_u64()
+                    .filter(|seconds| *seconds > 0)
+                    .ok_or_else(|| invalid("timeout"))?,
+            )),
+        };
+        match ask(request) {
+            Ok(SecretReply::Secret(secret)) => {
+                Ok(json!({ "secret": secret.as_str(), "confirmed": true }))
+            }
+            Ok(SecretReply::Confirmed | SecretReply::Chose(_)) => Ok(json!({ "confirmed": true })),
+            Ok(SecretReply::Cancelled) => Err(CallError::new("Cancelled", json!({}))),
+            Err(AskError::NoAgent(kind)) => {
+                Err(CallError::new("NoAgent", json!({ "kind": kind.name() })))
+            }
+            Err(AskError::UnknownWidget(widget)) => Err(self
+                .widget(&widget)
+                .err()
+                .unwrap_or_else(|| CallError::failed(format!("unknown widget {widget:?}")))),
+            Err(AskError::Failed(message)) => Err(CallError::failed(message)),
+        }
     }
 
     fn subscribe(
@@ -576,6 +663,19 @@ impl std::fmt::Display for ClientError {
                         parameters["message"].as_str().unwrap_or_default()
                     ),
                     "Failed" => write!(f, "{}", parameters["message"].as_str().unwrap_or(error)),
+                    "Busy" => f.write_str("a password prompt is open"),
+                    "Cancelled" => f.write_str("cancelled"),
+                    "NoAgent" => write!(
+                        f,
+                        "no widget answers {} questions; configure one with secrets.{}()",
+                        parameters["kind"].as_str().unwrap_or("these"),
+                        match parameters["kind"].as_str() {
+                            Some("pinentry") => "Pinentry",
+                            Some("systemd") => "SystemdAgent",
+                            Some("polkit") => "Polkit",
+                            _ => "Askpass",
+                        }
+                    ),
                     _ if parameters.as_object().is_some_and(|map| !map.is_empty()) => {
                         write!(f, "{error} {parameters}")
                     }

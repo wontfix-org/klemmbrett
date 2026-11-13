@@ -16,11 +16,16 @@ use crate::events;
 use crate::history::shorten_label;
 use crate::journal;
 use crate::launch::{spawn_detached, ResolvedLaunch};
+use crate::layout::LayoutSpec;
 use crate::layout::{expand, expand_record, Layout, LayoutContext, Node, NodeKind};
 use crate::notifications::{
     self, CloseReason, Notification, NotificationCenter, NotifyRequest, ToastCmd,
 };
 use crate::rank::{self, Priors, Ranking};
+use crate::secret::{
+    self, AgentKind, AskError, Mode, SecretAsker, SecretReply, SecretRequest, SecretRoutes,
+    SecretTicket,
+};
 use crate::usage::{self, UsageStore};
 use crate::varlink::{self, ShowRequest};
 use crate::widget::{fetch_scored, Handlers, WidgetDef, Widgets};
@@ -39,9 +44,11 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use ksni::blocking::TrayMethods;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use zeroize::Zeroizing;
 
 const TRAY_ICON_NAME: &str = "edit-paste";
 const TRAY_ICON_SIZES: [i32; 4] = [16, 22, 24, 32];
@@ -62,7 +69,19 @@ pub(crate) enum UiCmd {
     Toast(ToastCmd),
     RecordHistory(String),
     SetTheme(ThemeSpec),
+    AskSecret(PendingSecret),
+    /// The asker no longer needs an answer; the question is cancelled.
+    WithdrawSecret(u64),
     Quit,
+}
+
+/// A secret question waiting for, or shown in, the popup.
+#[derive(Debug)]
+pub(crate) struct PendingSecret {
+    id: u64,
+    widget: String,
+    request: SecretRequest,
+    reply: mpsc::Sender<SecretReply>,
 }
 
 enum ClipCmd {
@@ -77,6 +96,8 @@ pub struct Runtime {
     clip: mpsc::Sender<ClipCmd>,
     launch: ResolvedLaunch,
     notifications: Option<Arc<NotificationCenter>>,
+    secrets: Arc<SecretRoutes>,
+    secret_ids: Arc<AtomicU64>,
 }
 
 impl Runtime {
@@ -170,6 +191,40 @@ impl Runtime {
             .ok_or_else(|| "notifications are not enabled".to_string())
     }
 
+    /// Whether a widget answers this kind of secret question.
+    pub fn serves(&self, kind: AgentKind) -> bool {
+        self.secrets.serves(kind)
+    }
+
+    /// Queues a secret question for the popup. Questions are shown one at a
+    /// time, in the order they came. Calls the config's `route`, so it must
+    /// not be called from the UI thread.
+    pub fn begin_secret(&self, request: SecretRequest) -> Result<SecretTicket, AskError> {
+        let widget = self.secrets.target(&request)?;
+        let id = self.secret_ids.fetch_add(1, Ordering::Relaxed);
+        let (reply, answer) = mpsc::channel();
+        self.send(UiCmd::AskSecret(PendingSecret {
+            id,
+            widget,
+            request,
+            reply,
+        }))
+        .map_err(AskError::Failed)?;
+        Ok(SecretTicket::new(id, answer))
+    }
+
+    /// Asks and waits for the answer.
+    pub fn ask_secret(&self, request: SecretRequest) -> Result<SecretReply, AskError> {
+        Ok(self.begin_secret(request)?.wait())
+    }
+
+    /// Cancels a question that is queued or shown.
+    pub fn withdraw_secret(&self, id: u64) {
+        if let Err(err) = self.send(UiCmd::WithdrawSecret(id)) {
+            journal::error(&format!("failed to withdraw a secret question: {err}"));
+        }
+    }
+
     pub fn quit(&self) -> Result<(), String> {
         self.send(UiCmd::Quit)
     }
@@ -178,6 +233,16 @@ impl Runtime {
         self.ui
             .send_blocking(cmd)
             .map_err(|_| "the popup thread is not running".to_string())
+    }
+}
+
+impl SecretAsker for Runtime {
+    fn begin(&self, request: SecretRequest) -> Result<SecretTicket, AskError> {
+        self.begin_secret(request)
+    }
+
+    fn withdraw(&self, id: u64) {
+        self.withdraw_secret(id);
     }
 }
 
@@ -208,8 +273,18 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
         notifications::serve(center.clone(), None);
         center
     });
+    let clip = spawn_clipboard(sync, tx.clone());
+    let runtime = Runtime {
+        ui: tx.clone(),
+        clip,
+        launch: launch.resolve(),
+        notifications: center.clone(),
+        secrets: Arc::new(SecretRoutes::new(widgets.defs(), handlers.clone())),
+        secret_ids: Arc::new(AtomicU64::new(1)),
+    };
+    let secret_open = Arc::new(AtomicBool::new(false));
     let show = tx.clone();
-    varlink::Server::new(
+    let server = varlink::Server::new(
         widgets.defs().to_vec(),
         handlers.clone(),
         center.clone(),
@@ -222,23 +297,31 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
             })
             .map_err(|err| format!("failed to request popup: {err}"))
         },
-    )
-    .serve(listener);
-    install_tray(widgets.names_with_provider(), tx.clone());
-    let clip = spawn_clipboard(sync, tx.clone());
-    on_ready(Runtime {
-        ui: tx,
-        clip,
-        launch: launch.resolve(),
-        notifications: center.clone(),
+    );
+    let asker = runtime.clone();
+    server.answer_secrets(secret_open.clone(), move |request| {
+        asker.ask_secret(request)
     });
+    server.serve(listener);
+    if runtime.serves(AgentKind::Systemd) {
+        crate::ask_password::spawn(Arc::new(runtime.clone()), crate::ask_password::user_dirs());
+    }
+    if runtime.serves(AgentKind::Polkit) {
+        crate::polkit::spawn(Arc::new(runtime.clone()), crate::polkit::Options::system());
+    }
+    install_tray(widgets.names_with_provider(), tx.clone());
+    on_ready(runtime);
     crate::systemd::notify_ready();
     let usage = open_usage(&widgets);
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(widgets, handlers, label_max, center, usage));
+            let app = cx.new(|_cx| {
+                let mut app = Klemmbrett::new(widgets, handlers, label_max, center, usage);
+                app.secret_open = secret_open;
+                app
+            });
             app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
@@ -255,6 +338,8 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
                         UiCmd::Toast(cmd) => this.toast(cmd, cx),
                         UiCmd::RecordHistory(text) => this.record_history(&text),
                         UiCmd::SetTheme(palette) => this.set_theme(palette, cx),
+                        UiCmd::AskSecret(pending) => this.ask_secret(pending, cx),
+                        UiCmd::WithdrawSecret(id) => this.withdraw_secret(id, cx),
                         UiCmd::Quit => cx.quit(),
                     });
                 }
@@ -330,6 +415,12 @@ struct Klemmbrett {
     toast_seq: u64,
     /// Past picks, when a widget ranks by them.
     usage: Option<Arc<Mutex<UsageStore>>>,
+    /// Secret questions not shown yet, oldest first.
+    secrets: VecDeque<PendingSecret>,
+    /// The question being shown, or whose popup is being prepared.
+    secret_active: Option<u64>,
+    /// Shared with the Varlink server, which turns `Show` away while set.
+    secret_open: Arc<AtomicBool>,
 }
 
 impl Klemmbrett {
@@ -350,7 +441,177 @@ impl Klemmbrett {
             toasts: None,
             toast_seq: 0,
             usage,
+            secrets: VecDeque::new(),
+            secret_active: None,
+            secret_open: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn ask_secret(&mut self, pending: PendingSecret, cx: &mut Context<Self>) {
+        let (id, timeout) = (pending.id, pending.request.timeout);
+        self.secrets.push_back(pending);
+        if let Some(timeout) = timeout {
+            let timer = cx.background_executor().timer(timeout);
+            cx.spawn(async move |this, cx| {
+                timer.await;
+                if let Err(err) = this.update(cx, |this, cx| this.withdraw_secret(id, cx)) {
+                    journal::error(&format!("failed to time out a secret question: {err}"));
+                }
+            })
+            .detach();
+        }
+        self.next_secret(cx);
+    }
+
+    /// Shows the oldest queued question unless one is shown already.
+    fn next_secret(&mut self, cx: &mut Context<Self>) {
+        if self.secret_active.is_some() {
+            return;
+        }
+        let Some(pending) = self.secrets.pop_front() else {
+            self.secret_open.store(false, Ordering::Relaxed);
+            return;
+        };
+        self.secret_active = Some(pending.id);
+        self.secret_open.store(true, Ordering::Relaxed);
+        self.show_seq += 1;
+        let def = self.widgets.get(&pending.widget).cloned();
+        let request = pending.request.clone();
+        let ctx = LayoutContext {
+            widget: pending.widget.clone(),
+            multi: false,
+            prompt: true,
+        };
+        let load = cx.background_executor().spawn(async move {
+            let custom = match def.as_ref().map(|def| &def.layout) {
+                None | Some(LayoutSpec::Default) => None,
+                Some(spec) => match spec.build(&ctx) {
+                    Ok(layout) => Some(layout),
+                    Err(err) => {
+                        journal::error(&format!("widget {:?}: invalid layout: {err}", ctx.widget));
+                        None
+                    }
+                },
+            };
+            custom
+                .filter(|layout| match request.mode {
+                    Mode::Choose(_) => layout.has_listview(),
+                    Mode::Secret | Mode::Confirm => layout.has_inputbar(),
+                    Mode::Message => true,
+                })
+                .unwrap_or_else(|| Arc::new(secret::default_layout(&request)))
+        });
+        cx.spawn(async move |this, cx| {
+            let layout = load.await;
+            if let Err(err) = this.update(cx, |this, cx| this.show_secret(pending, layout, cx)) {
+                journal::error(&format!("failed to show a secret question: {err}"));
+            }
+        })
+        .detach();
+    }
+
+    fn show_secret(&mut self, pending: PendingSecret, layout: Arc<Layout>, cx: &mut Context<Self>) {
+        let id = pending.id;
+        if self.secret_active != Some(id) {
+            let _ = pending.reply.send(SecretReply::Cancelled);
+            return;
+        }
+        let theme = self.theme_for(&pending.widget);
+        let location = self
+            .widgets
+            .get(&pending.widget)
+            .and_then(|def| def.location)
+            .or(layout.location())
+            .or(layout.window_style(&theme).location)
+            .unwrap_or(Location::Center);
+        let entries: Vec<Record> = match &pending.request.mode {
+            Mode::Choose(choices) => choices
+                .iter()
+                .enumerate()
+                .map(|(index, choice)| Record {
+                    key: index.to_string(),
+                    label: choice.clone(),
+                    value: choice.clone(),
+                    data: serde_json::Value::Null,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let Some(placement) = popup_placement(
+            cx,
+            None,
+            entries.len(),
+            self.label_max,
+            theme,
+            layout,
+            location,
+        ) else {
+            journal::error("Failed to place a secret prompt: no displays.");
+            drop(pending);
+            self.secret_closed(id, cx);
+            return;
+        };
+        let shown = Shown {
+            widget: pending.widget.clone(),
+            multi: None,
+            search: Vec::new(),
+            ranking: Ranking::default(),
+            priors: Priors::default(),
+            live: false,
+            reply: None,
+            secret: Some(SecretSession::new(pending)),
+        };
+        if let Some(shown) = self.reuse_popup(&entries, &placement, shown, cx) {
+            self.open_popup(entries, placement, Some(shown), cx);
+            if self.popup.is_none() {
+                self.secret_closed(id, cx);
+            }
+        }
+    }
+
+    /// The question `id` was answered or cancelled; show the next one.
+    fn secret_closed(&mut self, id: u64, cx: &mut Context<Self>) {
+        if self.secret_active == Some(id) {
+            self.secret_active = None;
+        }
+        self.next_secret(cx);
+    }
+
+    fn withdraw_secret(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(index) = self.secrets.iter().position(|pending| pending.id == id) {
+            if let Some(pending) = self.secrets.remove(index) {
+                let _ = pending.reply.send(SecretReply::Cancelled);
+            }
+            return;
+        }
+        if self.secret_active != Some(id) {
+            return;
+        }
+        let shown = self.popup.filter(|handle| {
+            handle
+                .update(cx, |view, _, _| {
+                    view.secret.as_ref().map(|session| session.id)
+                })
+                .ok()
+                .flatten()
+                == Some(id)
+        });
+        let Some(handle) = shown else {
+            // Its popup is still being prepared; `show_secret` will drop it.
+            self.secret_closed(id, cx);
+            return;
+        };
+        // Hiding the popup updates this entity, so it has to wait until
+        // the current update ends.
+        cx.defer(move |cx| {
+            if let Err(err) = handle.update(cx, |view, window, cx| {
+                if view.secret.as_ref().is_some_and(|session| session.id == id) {
+                    view.hide(window, cx);
+                }
+            }) {
+                journal::error(&format!("failed to withdraw a secret question: {err}"));
+            }
+        });
     }
 
     /// Notes the picked `keys` of `widget` for its rankers, off the UI thread.
@@ -647,6 +908,12 @@ impl Klemmbrett {
         reply: Option<Reply>,
         cx: &mut Context<Self>,
     ) {
+        if self.secret_active.is_some() {
+            let err = "a password prompt is open".to_string();
+            journal::info(&format!("not showing {widget:?}: {err}"));
+            finish_prompt(reply, Err(err));
+            return;
+        }
         let Some(def) = self.widgets.get(&widget).cloned() else {
             let err = format!("unknown widget {widget:?}");
             journal::error(&err);
@@ -744,6 +1011,7 @@ impl Klemmbrett {
             priors,
             live,
             reply,
+            secret: None,
         };
         if let Some(shown) = self.reuse_popup(&entries, &placement, shown, cx) {
             self.open_popup(entries, placement, Some(shown), cx);
@@ -833,6 +1101,40 @@ struct Shown {
     /// The rows come from the provider, so a refresh may reload them.
     live: bool,
     reply: Option<Reply>,
+    secret: Option<SecretSession>,
+}
+
+/// A secret question on screen and what has been typed for it.
+struct SecretSession {
+    id: u64,
+    request: SecretRequest,
+    reply: Option<mpsc::Sender<SecretReply>>,
+    typed: Zeroizing<String>,
+}
+
+impl SecretSession {
+    fn new(pending: PendingSecret) -> Self {
+        Self {
+            id: pending.id,
+            request: pending.request,
+            reply: Some(pending.reply),
+            typed: Zeroizing::new(String::with_capacity(256)),
+        }
+    }
+
+    fn answer(&mut self, reply: SecretReply) {
+        if let Some(sender) = self.reply.take() {
+            if sender.send(reply).is_err() {
+                journal::info("dropped a secret answer; the asker is gone");
+            }
+        }
+    }
+}
+
+impl Drop for SecretSession {
+    fn drop(&mut self) {
+        self.answer(SecretReply::Cancelled);
+    }
 }
 
 /// Opens the usage store when a widget ranks by past picks.
@@ -1017,6 +1319,8 @@ struct PopupView {
     /// Key of the row highlight handlers last ran for (or the row the popup opened on).
     highlighted: Option<String>,
     reply: Option<Reply>,
+    /// Set while the popup asks a secret question instead of showing rows.
+    secret: Option<SecretSession>,
 }
 
 impl PopupView {
@@ -1036,6 +1340,7 @@ impl PopupView {
             priors,
             live,
             reply,
+            secret,
         } = shown.unwrap_or(Shown {
             widget: String::new(),
             multi: None,
@@ -1044,6 +1349,7 @@ impl PopupView {
             priors: Priors::default(),
             live: false,
             reply: None,
+            secret: None,
         });
         let mut view = Self {
             focus_handle: cx.focus_handle(),
@@ -1071,6 +1377,7 @@ impl PopupView {
             checked: Vec::new(),
             highlighted: None,
             reply,
+            secret,
         };
         view.refilter();
         view.highlighted = view.first_key();
@@ -1099,6 +1406,7 @@ impl PopupView {
         self.ranking = shown.ranking;
         self.priors = shown.priors;
         self.live = shown.live;
+        self.secret = shown.secret;
         self.query.clear();
         self.refilter();
         self.highlighted = self.first_key();
@@ -1188,6 +1496,8 @@ impl PopupView {
             return;
         }
         self.finish_prompt(Ok(Vec::new()));
+        // Dropping the session cancels the question unless it was answered.
+        let secret = self.secret.take().map(|session| session.id);
         self.visible = false;
         self.seen_active = false;
         // Layer-shell remap after a null-buffer unmap is broken in GPUI-CE:
@@ -1201,11 +1511,66 @@ impl PopupView {
                 if klemmbrett.popup.is_none() {
                     klemmbrett.prewarm_popup(cx);
                 }
+                if let Some(id) = secret {
+                    klemmbrett.secret_closed(id, cx);
+                }
             });
         });
     }
 
+    /// Keys while a secret question is shown. Nothing typed here leaves the
+    /// session except as the answer.
+    fn on_secret_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        let mods = &event.keystroke.modifiers;
+        let chosen = self.order.get(self.selected).copied();
+        let Some(session) = self.secret.as_mut() else {
+            return;
+        };
+        cx.stop_propagation();
+        match key {
+            "escape" => self.hide(window, cx),
+            "enter" => {
+                let reply = match &session.request.mode {
+                    Mode::Secret => {
+                        SecretReply::Secret(Zeroizing::new(std::mem::take(&mut *session.typed)))
+                    }
+                    Mode::Confirm | Mode::Message => SecretReply::Confirmed,
+                    Mode::Choose(_) => match chosen {
+                        Some(index) => SecretReply::Chose(index),
+                        None => return,
+                    },
+                };
+                session.answer(reply);
+                self.hide(window, cx);
+            }
+            "up" => self.move_selection(-1, cx),
+            "down" => self.move_selection(1, cx),
+            "backspace" => {
+                session.typed.pop();
+                cx.notify();
+            }
+            "u" if mods.control => {
+                session.typed.clear();
+                cx.notify();
+            }
+            _ if session.request.mode == Mode::Secret
+                && !(mods.control || mods.alt || mods.platform) =>
+            {
+                if let Some(ch) = typed_filter_char(event) {
+                    session.typed.push(ch);
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.secret.is_some() {
+            self.on_secret_key(event, window, cx);
+            return;
+        }
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
         let filter = self.layout.has_inputbar();
@@ -1330,7 +1695,7 @@ impl PopupView {
             return;
         }
         self.highlighted = Some(record.key.clone());
-        if self.reply.is_some() {
+        if self.reply.is_some() || self.secret.is_some() {
             return;
         }
         let widget = self.widget_name.clone();
@@ -1399,6 +1764,14 @@ impl PopupView {
     }
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(session) = self.secret.as_mut() {
+            if let (Mode::Choose(_), Some(chosen)) = (&session.request.mode, self.order.get(index))
+            {
+                session.answer(SecretReply::Chose(*chosen));
+                self.hide(window, cx);
+            }
+            return;
+        }
         let Some(record) = self
             .visible_entries()
             .get(index)
@@ -1415,7 +1788,7 @@ impl PopupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if records.is_empty() {
+        if records.is_empty() || self.secret.is_some() {
             return;
         }
         if self.layout.has_listview() {
@@ -1530,16 +1903,23 @@ impl Render for PopupView {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
             &window_style,
         );
-        let count = visible.len().to_string();
+        let mut owned = vec![
+            ("widget".to_owned(), self.widget_name.clone()),
+            ("query".to_owned(), self.query.clone()),
+            ("count".to_owned(), visible.len().to_string()),
+        ];
+        if let Some(session) = &self.secret {
+            owned.extend(session.request.fields());
+        }
         let chrome = Chrome {
             theme: &theme,
-            fields: [
-                ("widget", self.widget_name.as_str()),
-                ("query", self.query.as_str()),
-                ("count", count.as_str()),
-            ],
+            fields: owned
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect(),
             widget: &self.widget_name,
             query: &self.query,
+            secret: self.secret.as_ref(),
         };
         for child in &layout.root().children {
             if let Some(element) = chrome.render(child, &window_style, &mut rows) {
@@ -1571,9 +1951,10 @@ fn typed_filter_char(event: &KeyDownEvent) -> Option<char> {
 /// Draws the nodes outside the rows: the input bar and window-level text.
 struct Chrome<'a> {
     theme: &'a Theme,
-    fields: [(&'static str, &'a str); 3],
+    fields: Vec<(&'a str, &'a str)>,
     widget: &'a str,
     query: &'a str,
+    secret: Option<&'a SecretSession>,
 }
 
 impl Chrome<'_> {
@@ -1604,23 +1985,39 @@ impl Chrome<'_> {
             }
             NodeKind::Prompt => {
                 let style = self.theme.prompt().with(&node.style);
-                let text = style.text.clone().unwrap_or_else(|| self.widget.to_owned());
+                let text = self
+                    .secret
+                    .and_then(|session| session.request.prompt.clone())
+                    .or_else(|| style.text.clone())
+                    .unwrap_or_else(|| self.widget.to_owned());
                 apply_box(div().flex_none().whitespace_nowrap().child(text), &style).into_any()
             }
-            NodeKind::Entry => apply_box(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(format!("{}│", self.query)),
-                &self.theme.entry().with(&node.style),
-            )
-            .into_any(),
+            NodeKind::Entry => {
+                let style = self.theme.entry().with(&node.style);
+                let text = match self.secret {
+                    Some(session) => {
+                        let shown = secret::entry_text(
+                            &session.request,
+                            &session.typed,
+                            style.text.as_deref(),
+                        );
+                        if session.request.mode == Mode::Secret {
+                            format!("{shown}│")
+                        } else {
+                            shown
+                        }
+                    }
+                    None => format!("{}│", self.query),
+                };
+                apply_box(div().flex_1().min_w_0().truncate().child(text), &style).into_any()
+            }
             NodeKind::Text(template) => {
                 let style = Style::plain(parent, Orientation::Vertical).with(&node.style);
-                text_box(&style)
-                    .child(expand(template, &self.fields))
-                    .into_any()
+                let text = expand(template, &self.fields);
+                if self.secret.is_some() && text.trim().is_empty() {
+                    return None;
+                }
+                text_box(&style).child(text).into_any()
             }
             NodeKind::Spacer => spacer(&node.style.width, &node.style.height),
             NodeKind::Row | NodeKind::Column => {

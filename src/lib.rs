@@ -192,6 +192,8 @@ impl<B: Backend> ClipboardSync<B> {
     }
 }
 
+pub mod ask_password;
+pub mod askpass;
 pub mod cli;
 mod clipboard_history;
 pub mod config;
@@ -204,8 +206,11 @@ mod launch;
 pub mod layout;
 pub mod notifications;
 mod outputs;
+pub mod pinentry;
+pub mod polkit;
 mod popup;
 pub mod rank;
+pub mod secret;
 pub mod systemd;
 pub mod theme;
 mod toast_plate;

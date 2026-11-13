@@ -154,10 +154,18 @@ class Prompt(Node):
 
 
 class Entry(Node):
-    """The text being typed."""
+    """The text being typed. In password prompts, `mask` is shown once per
+    typed character (default "•")."""
 
     kind = "entry"
     leaf = True
+
+    def __init__(self, *, mask: str | None = None, **kwargs: Any) -> None:
+        if mask is not None:
+            if not isinstance(mask, str) or not mask:
+                raise TypeError(f"Entry: mask must be a non-empty string, got {mask!r}")
+            kwargs["text"] = mask
+        super().__init__(**kwargs)
 
 
 class Marker(Node):

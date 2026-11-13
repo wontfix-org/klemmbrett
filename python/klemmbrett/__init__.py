@@ -12,7 +12,7 @@ The daemon reads `$XDG_CONFIG_HOME/klemmbrett/config.py`::
 
 from __future__ import annotations
 
-from . import layouts, notifications, providers, ranking, rpc, themes, ui
+from . import layouts, notifications, providers, ranking, rpc, secrets, themes, ui
 from ._record import Record
 from ._registry import Widget, configure, widget
 from ._schema import SchemaError
@@ -52,6 +52,7 @@ __all__ = [
     "quit",
     "rgb",
     "rpc",
+    "secrets",
     "set_theme",
     "show",
     "themes",

@@ -65,6 +65,7 @@ parameters may be left out or `null`.
 | `StashList` | `stash`, `unread_only?` | `records`: newest first |
 | `StashMarkRead` | `stash`, `keys?` | `marked`: how many were unread |
 | `Notify` | `app_name`, `summary`, `body?`, `urgency?`, `timeout?` | `id` |
+| `AskSecret` | `kind`, `widget?`, `id?`, `title?`, `message?`, `prompt?`, `error?`, `echo?`, `mode?`, `timeout?` | `secret?`, `confirmed` |
 
 A record is `{"key"?, "label"?, "value", "data"?}`; `key` and `label`
 default to the value, and `data` is any JSON value. Unknown fields are an
@@ -83,6 +84,14 @@ Cancelling, or opening another popup, returns no values.
 
 `Notify` sends a notification through the configured routing, like
 `notify-send` would; `urgency` is 0–2 and `timeout` is in milliseconds.
+
+`AskSecret` asks a password question in the widget serving `kind`
+(`askpass` or `pinentry`), or in `widget`, and waits for the answer; it is
+what `klemmbrett-askpass` and `klemmbrett-pinentry` call. `echo` is `no`,
+`masked` (the default), or `yes`; `mode` is `secret` (the default, replying
+with `secret`), `confirm`, or `message`; `timeout` is in seconds. The
+answer goes to the caller only: no event carries it. Cancelling is the
+`Cancelled` error. See [`secrets.md`](secrets.md).
 
 ## Events
 
@@ -106,6 +115,9 @@ event, then one reply per event, until the client disconnects. With
 | `org.wontfix.klemmbrett.InvalidRecord` | `path` (`records[2]`), `message` |
 | `org.wontfix.klemmbrett.UnknownStash` | `stash`, `known` |
 | `org.wontfix.klemmbrett.NotificationsDisabled` | |
+| `org.wontfix.klemmbrett.Busy` | (a password prompt is open) |
+| `org.wontfix.klemmbrett.Cancelled` | |
+| `org.wontfix.klemmbrett.NoAgent` | `kind` |
 | `org.wontfix.klemmbrett.Failed` | `message` |
 | `org.varlink.service.InvalidParameter` | `parameter` |
 | `org.varlink.service.MethodNotFound` | `method` |

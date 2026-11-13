@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .ui import Element, Entry, Index, InputBar, ListView, Marker, Prompt, Text, Window
 
-__all__ = ["LayoutContext", "menu", "filter", "prompt", "rows"]
+__all__ = ["LayoutContext", "menu", "filter", "prompt", "rows", "secret"]
 
 
 @dataclass(frozen=True)
@@ -38,3 +38,17 @@ def filter(ctx: LayoutContext) -> Window:  # noqa: A001
 def prompt(ctx: LayoutContext) -> Window:
     """An input bar only; Enter submits the typed text as the record."""
     return Window(InputBar(Prompt(), Entry()), location="center")
+
+
+def secret(ctx: LayoutContext, *, mask: str = "•") -> Window:
+    """A password card for `secrets` agents: the question's title, message,
+    and last error (lines that are empty are left out), then the masked
+    input bar. Agent widgets without a layout get the same card, which
+    also handles confirmations and choices."""
+    return Window(
+        Text("{title}"),
+        Text("{message}"),
+        Text("{error}"),
+        InputBar(Prompt(), Entry(mask=mask)),
+        location="center",
+    )

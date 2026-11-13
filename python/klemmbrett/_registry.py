@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime, notifications, providers
+from . import _core, _runtime, notifications, providers, secrets
 from . import ranking as rk
 from ._record import Record, from_wire, to_record
 from .layouts import LayoutContext
@@ -115,6 +115,26 @@ class Widget:
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("widget name must be a non-empty string")
+        self.agent: secrets.Agent | None = None
+        if isinstance(provider, secrets.Agent):
+            unsupported = [
+                what
+                for what, given in (
+                    ("on_select", on_select is not None),
+                    ("on_highlight", on_highlight is not None),
+                    ("multi", bool(multi or select or deselect)),
+                    ("search", bool(search)),
+                    ("match", match is not _PROVIDER_DEFAULT),
+                    ("rank", rank is not _PROVIDER_DEFAULT),
+                )
+                if given
+            ]
+            if unsupported:
+                raise TypeError(
+                    f"widget {name!r}: {', '.join(unsupported)} cannot be used with "
+                    f"{provider!r}; answers go to the asker only"
+                )
+            self.agent, provider, rank = provider, None, None
         if isinstance(search, str):
             search = [search]
         if search is not None and not all(isinstance(path, str) and path for path in search):
@@ -219,6 +239,7 @@ class Widget:
             "highlight": self._on_highlight is not None,
             "search": self.search,
             "ranking": rk.wire(self.match, self.rank, self.prefer),
+            "agent": None if self.agent is None else self.agent._wire(),
         }
 
 
@@ -264,6 +285,13 @@ def widget(
     """
     if name in registry.widgets:
         raise ValueError(f"widget {name!r} is configured more than once")
+    if isinstance(provider, secrets.Agent) and not provider.shared:
+        for other in registry.widgets.values():
+            if other.agent is not None and other.agent.kind == provider.kind:
+                raise ValueError(
+                    f"widget {name!r}: widget {other.name!r} already answers "
+                    f"{provider.kind} questions; use route= to send some elsewhere"
+                )
     created = Widget(
         name,
         provider,
@@ -365,6 +393,18 @@ class Dispatcher:
 
     def notification(self, wire: dict[str, Any]) -> None:
         _guard("notification routing", notifications._dispatch, wire)
+
+    def route_secret(self, name: str, wire: dict[str, Any]) -> str | None:
+        """Where the agent widget `name` sends a question; `None` keeps it."""
+        agent = self.widgets[name].agent
+        if agent is None:
+            return None
+        try:
+            return agent._route(secrets.Question._from_wire(wire))
+        except Exception:
+            print(f"klemmbrett: widget {name!r}: route failed:", file=sys.stderr)
+            traceback.print_exc()
+            return None
 
     def call(self, method: str, parameters: dict[str, Any]) -> dict[str, Any]:
         try:
