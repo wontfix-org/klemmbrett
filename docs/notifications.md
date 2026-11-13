@@ -96,7 +96,8 @@ the `NotificationClosed` and `ActionInvoked` signals.
 
 Toasts look like the popup window of the configured theme unless the theme
 styles the `toast`, `toast_summary`, and `toast_body` elements
-([theming](theming.md#toast-toast_summary-toast_body)).
+([theming](theming.md#toast-toast_summary-toast_body)). `toast.margin`
+is how far the stack sits from the screen edges.
 
 ## Stashes
 
