@@ -29,6 +29,7 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 zbus = "5"
+nucleo-matcher = "0.3.1"
 
 [dev-dependencies]
 tempfile = "3"

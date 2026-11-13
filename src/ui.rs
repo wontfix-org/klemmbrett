@@ -18,11 +18,13 @@ use crate::journal;
 use crate::launch::{spawn_detached, ResolvedLaunch};
 use crate::layout::{expand, expand_record, Layout, LayoutContext, Node, NodeKind};
 use crate::notifications::{self, CloseReason, Notification, NotificationCenter, ToastCmd};
+use crate::rank::{self, Priors, Ranking};
+use crate::usage::{self, UsageStore};
 use crate::varlink::{self, ShowRequest};
-use crate::widget::{fetch_records, Handlers, Widgets};
+use crate::widget::{fetch_scored, Handlers, WidgetDef, Widgets};
 use crate::windows::WindowList;
 use crate::{
-    accelerator_for, activation_records, filter_records, focused_display_index, history_candidate,
+    accelerator_for, activation_records, focused_display_index, history_candidate,
     index_for_accelerator, output_layout, place_at_location, resize_at_location, toggle_record,
     ArboardBackend, Backend, ClipboardSync, Edges, Location, Orientation, OutputGeom, Record,
     Selection, Style, Theme, ThemeSpec, POLL_INTERVAL,
@@ -35,8 +37,9 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use ksni::blocking::TrayMethods;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const TRAY_ICON_NAME: &str = "edit-paste";
 const TRAY_ICON_SIZES: [i32; 4] = [16, 22, 24, 32];
@@ -205,11 +208,12 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
         notifications: center.clone(),
     });
     crate::systemd::notify_ready();
+    let usage = open_usage(&widgets);
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
-            let app = cx.new(|_cx| Klemmbrett::new(widgets, handlers, label_max, center));
+            let app = cx.new(|_cx| Klemmbrett::new(widgets, handlers, label_max, center, usage));
             app.update(cx, |this, cx| this.prewarm_popup(cx));
 
             let dispatcher = app.clone();
@@ -299,6 +303,8 @@ struct Klemmbrett {
     toasts: Option<WindowHandle<ToastView>>,
     /// Bumped whenever a toast is shown or updated, so stale timers do nothing.
     toast_seq: u64,
+    /// Past picks, when a widget ranks by them.
+    usage: Option<Arc<Mutex<UsageStore>>>,
 }
 
 impl Klemmbrett {
@@ -307,6 +313,7 @@ impl Klemmbrett {
         handlers: Arc<dyn Handlers>,
         label_max: usize,
         center: Option<Arc<NotificationCenter>>,
+        usage: Option<Arc<Mutex<UsageStore>>>,
     ) -> Self {
         Self {
             widgets,
@@ -317,7 +324,35 @@ impl Klemmbrett {
             center,
             toasts: None,
             toast_seq: 0,
+            usage,
         }
+    }
+
+    /// Notes the picked `keys` of `widget` for its rankers, off the UI thread.
+    fn record_usage(&self, widget: &str, keys: Vec<String>, query: String, cx: &mut Context<Self>) {
+        let (Some(store), Some(def)) = (self.usage.clone(), self.widgets.get(widget)) else {
+            return;
+        };
+        let namespaces = def.ranking.usage_namespaces(widget);
+        if namespaces.is_empty() || keys.is_empty() {
+            return;
+        }
+        cx.background_executor()
+            .spawn(async move {
+                let mut store = store
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let now = usage::now_secs();
+                for namespace in &namespaces {
+                    for key in &keys {
+                        if let Err(err) = store.record(namespace, key, &query, now) {
+                            journal::error(&format!("failed to record usage: {err}"));
+                            return;
+                        }
+                    }
+                }
+            })
+            .detach();
     }
 
     fn record_history(&mut self, text: &str) {
@@ -362,9 +397,10 @@ impl Klemmbrett {
             return;
         };
         let seq = self.show_seq;
+        let usage = self.usage.clone();
         let load = cx
             .background_executor()
-            .spawn(async move { fetch_records(&def) });
+            .spawn(async move { load_entries(&def, None, usage.as_deref()) });
         let label = name.clone();
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
@@ -372,8 +408,8 @@ impl Klemmbrett {
                 if seq != this.show_seq {
                     return;
                 }
-                let entries = match loaded {
-                    Ok(entries) => entries,
+                let (entries, priors) = match loaded {
+                    Ok(loaded) => loaded,
                     Err(err) => {
                         journal::error(&format!("Failed to refresh widget {name:?}: {err}"));
                         return;
@@ -382,7 +418,7 @@ impl Klemmbrett {
                 if let Some(handle) = this.popup {
                     if let Err(err) = handle.update(cx, |view, _window, cx| {
                         if view.visible && view.widget_name == name {
-                            view.replace_entries(entries, cx);
+                            view.replace_entries(entries, priors, cx);
                         }
                     }) {
                         journal::error(&format!("failed to replace popup entries: {err}"));
@@ -606,19 +642,18 @@ impl Klemmbrett {
             multi: def.multi.is_some(),
             prompt: reply.is_some(),
         };
+        let usage = self.usage.clone();
         let load = cx.background_executor().spawn(async move {
             let layout = def
                 .layout
                 .build(&ctx)
                 .map_err(|err| format!("widget {:?}: invalid layout: {err}", def.name))?;
-            let entries = if !layout.has_listview() {
-                Vec::new()
-            } else if let Some(records) = records {
-                records
+            let (entries, priors) = if layout.has_listview() {
+                load_entries(&def, records, usage.as_deref())?
             } else {
-                fetch_records(&def)?
+                (Vec::new(), Priors::default())
             };
-            Ok::<_, String>((layout, entries))
+            Ok::<_, String>((layout, entries, priors))
         });
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
@@ -638,7 +673,7 @@ impl Klemmbrett {
         seq: u64,
         widget: String,
         pointer: Option<(i32, i32)>,
-        loaded: Result<(Arc<Layout>, Vec<Record>), String>,
+        loaded: Result<(Arc<Layout>, Vec<Record>, Priors), String>,
         live: bool,
         reply: Option<Reply>,
         cx: &mut Context<Self>,
@@ -647,7 +682,7 @@ impl Klemmbrett {
             finish_prompt(reply, Ok(Vec::new()));
             return;
         }
-        let (layout, entries) = match loaded {
+        let (layout, entries, priors) = match loaded {
             Ok(loaded) => loaded,
             Err(err) => {
                 journal::error(&format!("Failed to read widget {widget:?}: {err}"));
@@ -680,6 +715,8 @@ impl Klemmbrett {
             widget,
             multi: def.and_then(|def| def.multi.clone()),
             search: def.map(|def| def.search.clone()).unwrap_or_default(),
+            ranking: def.map(|def| def.ranking.clone()).unwrap_or_default(),
+            priors,
             live,
             reply,
         };
@@ -766,9 +803,43 @@ struct Shown {
     widget: String,
     multi: Option<MultiSelect>,
     search: Vec<DataPath>,
+    ranking: Ranking,
+    priors: Priors,
     /// The rows come from the provider, so a refresh may reload them.
     live: bool,
     reply: Option<Reply>,
+}
+
+/// Opens the usage store when a widget ranks by past picks.
+fn open_usage(widgets: &Widgets) -> Option<Arc<Mutex<UsageStore>>> {
+    if !widgets.uses_usage() {
+        return None;
+    }
+    let path = usage::default_usage_path();
+    match UsageStore::open(&path) {
+        Ok(store) => Some(Arc::new(Mutex::new(store))),
+        Err(err) => {
+            journal::error(&format!(
+                "failed to open {}: {err}; rows are not ranked by past picks",
+                path.display()
+            ));
+            None
+        }
+    }
+}
+
+/// The rows to show (`records`, or the provider's) and their rank scores.
+fn load_entries(
+    def: &WidgetDef,
+    records: Option<Vec<Record>>,
+    usage: Option<&Mutex<UsageStore>>,
+) -> Result<(Vec<Record>, Priors), String> {
+    let (entries, python) = match records {
+        Some(records) => (records, HashMap::new()),
+        None => fetch_scored(def)?,
+    };
+    let priors = Priors::load(&def.ranking, &def.name, &python, usage, usage::now_secs());
+    Ok((entries, priors))
 }
 
 fn finish_prompt(reply: Option<Reply>, result: Result<Vec<String>, String>) {
@@ -904,6 +975,10 @@ struct PopupView {
     widget_name: String,
     multi: Option<MultiSelect>,
     search: Vec<DataPath>,
+    ranking: Ranking,
+    priors: Priors,
+    /// Indices into `entries` that match `query`, in the order shown.
+    order: Vec<usize>,
     live: bool,
     query: String,
     display_id: DisplayId,
@@ -927,22 +1002,25 @@ impl PopupView {
         shown: Option<Shown>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let highlighted = entries.first().map(|record| record.key.clone());
         let visible = shown.is_some();
         let Shown {
             widget,
             multi,
             search,
+            ranking,
+            priors,
             live,
             reply,
         } = shown.unwrap_or(Shown {
             widget: String::new(),
             multi: None,
             search: Vec::new(),
+            ranking: Ranking::default(),
+            priors: Priors::default(),
             live: false,
             reply: None,
         });
-        Self {
+        let mut view = Self {
             focus_handle: cx.focus_handle(),
             app,
             entries,
@@ -953,6 +1031,9 @@ impl PopupView {
             widget_name: widget,
             multi,
             search,
+            ranking,
+            priors,
+            order: Vec::new(),
             live,
             query: String::new(),
             display_id: placement.display_id,
@@ -963,9 +1044,12 @@ impl PopupView {
             seen_active: false,
             scroll: UniformListScrollHandle::new(),
             checked: Vec::new(),
-            highlighted,
+            highlighted: None,
             reply,
-        }
+        };
+        view.refilter();
+        view.highlighted = view.first_key();
+        view
     }
 
     fn reload(
@@ -977,7 +1061,6 @@ impl PopupView {
     ) {
         self.finish_prompt(Ok(Vec::new()));
         self.reply = shown.reply;
-        self.highlighted = entries.first().map(|record| record.key.clone());
         self.entries = entries;
         self.card = placement.card;
         self.location = placement.location;
@@ -988,26 +1071,48 @@ impl PopupView {
         self.widget_name = shown.widget;
         self.multi = shown.multi;
         self.search = shown.search;
+        self.ranking = shown.ranking;
+        self.priors = shown.priors;
         self.live = shown.live;
         self.query.clear();
+        self.refilter();
+        self.highlighted = self.first_key();
         self.selected = 0;
         self.checked.clear();
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
+    /// The rows matching the query, in the order they are shown.
     fn visible_entries(&self) -> Vec<&Record> {
-        if self.layout.has_inputbar() {
-            filter_records(&self.entries, &self.query, &self.search)
-        } else {
-            self.entries.iter().collect()
-        }
+        self.order
+            .iter()
+            .map(|index| &self.entries[*index])
+            .collect()
+    }
+
+    /// Matches and orders the rows again; call after the query, the rows,
+    /// or the priors change. Without an input bar the query stays empty.
+    fn refilter(&mut self) {
+        self.order = rank::order(
+            &self.entries,
+            &self.query,
+            &self.ranking,
+            &self.search,
+            &self.priors,
+        );
+    }
+
+    fn first_key(&self) -> Option<String> {
+        self.order
+            .first()
+            .map(|index| self.entries[*index].key.clone())
     }
 
     /// New rows from the provider while the popup is open. The row under the
     /// cursor stays selected when it still exists, and marks on rows that
     /// still exist are kept (with their new contents).
-    fn replace_entries(&mut self, entries: Vec<Record>, cx: &mut Context<Self>) {
+    fn replace_entries(&mut self, entries: Vec<Record>, priors: Priors, cx: &mut Context<Self>) {
         let current = self
             .visible_entries()
             .get(self.selected)
@@ -1019,6 +1124,8 @@ impl PopupView {
             .cloned()
             .collect();
         self.entries = entries;
+        self.priors = priors;
+        self.refilter();
         if let Some(index) = current.and_then(|key| {
             self.visible_entries()
                 .iter()
@@ -1125,6 +1232,7 @@ impl PopupView {
             }
             "backspace" if filter => {
                 self.query.pop();
+                self.refilter();
                 self.clamp_selection();
                 self.sync_highlight(cx);
                 cx.notify();
@@ -1140,6 +1248,7 @@ impl PopupView {
         if filter {
             if let Some(ch) = typed_filter_char(event) {
                 self.query.push(ch);
+                self.refilter();
                 self.clamp_selection();
                 self.sync_highlight(cx);
                 cx.notify();
@@ -1283,6 +1392,13 @@ impl PopupView {
     ) {
         if records.is_empty() {
             return;
+        }
+        if self.layout.has_listview() {
+            let widget = self.widget_name.clone();
+            let keys = records.iter().map(|record| record.key.clone()).collect();
+            let query = self.query.clone();
+            self.app
+                .update(cx, |app, cx| app.record_usage(&widget, keys, query, cx));
         }
         if self.reply.is_some() {
             let values = records.iter().map(|record| record.value.clone()).collect();
