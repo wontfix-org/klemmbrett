@@ -85,8 +85,10 @@ restarts waits instead of failing, and the first call starts the daemon if
 it is not running. A D-Bus service file left by an earlier version is
 removed. If this process can see `WAYLAND_DISPLAY`, that value is imported
 into the systemd user manager. `ExecStart` is the `klemmbrett` script you
-ran (or `python -m klemmbrett` with the same interpreter). Pass `--config`
-as well to pin that file in `ExecStart`.
+ran (or `python -m klemmbrett` with the same interpreter). A path under
+your home directory is written with systemd's `%h` specifier. Pass
+`--config` as well to pin that file in `ExecStart`; the same specifier is
+used when that file is under your home directory.
 
 To open a configured widget:
 

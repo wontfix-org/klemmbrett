@@ -101,7 +101,16 @@ fn xdg_dir(xdg: Option<&OsStr>, home: Option<&OsStr>, home_fallback: &str) -> Pa
 }
 
 pub fn unit_file(exec: &[String], config: Option<&Path>) -> Result<String, String> {
-    let exec_start = exec_start(exec, config)?;
+    let home = std::env::var_os("HOME");
+    unit_file_for(exec, config, home.as_deref())
+}
+
+fn unit_file_for(
+    exec: &[String],
+    config: Option<&Path>,
+    home: Option<&OsStr>,
+) -> Result<String, String> {
+    let exec_start = exec_start(exec, config, home)?;
     Ok(format!(
         "[Unit]\n\
          Description=Keep Wayland clipboard selections in sync and offer history\n\
@@ -142,23 +151,56 @@ pub fn socket_file() -> String {
     )
 }
 
-fn exec_start(exec: &[String], config: Option<&Path>) -> Result<String, String> {
+fn exec_start(
+    exec: &[String],
+    config: Option<&Path>,
+    home: Option<&OsStr>,
+) -> Result<String, String> {
     let mut parts = exec
         .iter()
-        .map(|part| format_exec_arg(part))
+        .map(|part| format_exec_arg(&with_home_prefix(part, home)))
         .collect::<Vec<_>>();
     if let Some(config) = config {
         let text = config
             .to_str()
             .ok_or_else(|| format!("path {} is not valid UTF-8", config.display()))?;
         parts.push("--config".into());
-        parts.push(format_exec_arg(text));
+        parts.push(format_exec_arg(&with_home_prefix(text, home)));
     }
     Ok(parts.join(" "))
 }
 
+/// An absolute path inside `home` is written as `%h/...` so a user unit
+/// follows the home directory systemd expands at load time. Anything else
+/// is left as given.
+fn with_home_prefix(text: &str, home: Option<&OsStr>) -> String {
+    let Some(home) = home
+        .and_then(|home| home.to_str())
+        .filter(|home| !home.is_empty())
+    else {
+        return text.to_owned();
+    };
+    match Path::new(text).strip_prefix(Path::new(home)) {
+        Ok(rest) => match rest.to_str() {
+            Some("") => "%h".to_owned(),
+            Some(rest) => format!("%h/{rest}"),
+            None => text.to_owned(),
+        },
+        Err(_) => text.to_owned(),
+    }
+}
+
 fn format_exec_arg(text: &str) -> String {
-    if text
+    // `%h` is the specifier inserted above. It must stay unquoted when the
+    // rest of the argument has nothing for systemd's splitter to trip on;
+    // quoting would still expand, but the socket unit already writes `%t`
+    // bare and ExecStart should match that.
+    let inspect = if text == "%h" || text.starts_with("%h/") {
+        &text[2..]
+    } else {
+        text
+    };
+    if inspect
         .chars()
         .any(|ch| ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '\\' | '$' | '%'))
     {
@@ -269,8 +311,9 @@ mod tests {
 
     #[test]
     fn module_invocations_keep_every_argument() {
-        let unit = unit_file(
+        let unit = unit_file_for(
             &["/usr/bin/python3".into(), "-m".into(), "klemmbrett".into()],
+            None,
             None,
         )
         .unwrap();
@@ -303,7 +346,7 @@ mod tests {
 
     #[test]
     fn unit_is_a_notify_service_bound_to_the_session_and_its_socket() {
-        let unit = unit_file(&exec("/usr/bin/klemmbrett"), None).unwrap();
+        let unit = unit_file_for(&exec("/usr/bin/klemmbrett"), None, None).unwrap();
         assert!(unit.contains("PartOf=graphical-session.target"));
         assert!(unit.contains("After=graphical-session-pre.target klemmbrett.socket\n"));
         assert!(unit.contains("Requires=klemmbrett.socket\n"));
@@ -336,9 +379,10 @@ mod tests {
 
     #[test]
     fn unit_can_pin_a_config_file() {
-        let unit = unit_file(
+        let unit = unit_file_for(
             &exec("/usr/bin/klemmbrett"),
             Some(Path::new("/etc/klemmbrett.py")),
+            None,
         )
         .unwrap();
         assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
@@ -346,8 +390,59 @@ mod tests {
 
     #[test]
     fn exec_paths_with_spaces_are_quoted() {
-        let unit = unit_file(&exec("/opt/my apps/klemmbrett"), None).unwrap();
+        let unit = unit_file_for(&exec("/opt/my apps/klemmbrett"), None, None).unwrap();
         assert!(unit.contains("ExecStart=\"/opt/my apps/klemmbrett\"\n"));
+    }
+
+    #[test]
+    fn paths_under_home_use_the_home_specifier() {
+        let home = Some(OsStr::new("/home/me"));
+        let unit = unit_file_for(
+            &[
+                "/home/me/.venv/bin/python".into(),
+                "-m".into(),
+                "klemmbrett".into(),
+            ],
+            Some(Path::new("/home/me/.config/klemmbrett/config.py")),
+            home,
+        )
+        .unwrap();
+        assert!(unit.contains(
+            "ExecStart=%h/.venv/bin/python -m klemmbrett --config %h/.config/klemmbrett/config.py\n"
+        ));
+    }
+
+    #[test]
+    fn a_longer_directory_name_is_not_treated_as_home() {
+        let unit = unit_file_for(
+            &exec("/home/me2/bin/klemmbrett"),
+            None,
+            Some(OsStr::new("/home/me")),
+        )
+        .unwrap();
+        assert!(unit.contains("ExecStart=/home/me2/bin/klemmbrett\n"));
+    }
+
+    #[test]
+    fn paths_outside_home_stay_absolute() {
+        let unit = unit_file_for(
+            &exec("/usr/bin/klemmbrett"),
+            Some(Path::new("/etc/klemmbrett.py")),
+            Some(OsStr::new("/home/me")),
+        )
+        .unwrap();
+        assert!(unit.contains("ExecStart=/usr/bin/klemmbrett --config /etc/klemmbrett.py\n"));
+    }
+
+    #[test]
+    fn a_home_path_with_spaces_stays_one_argument() {
+        let unit = unit_file_for(
+            &exec("/home/me/my apps/klemmbrett"),
+            None,
+            Some(OsStr::new("/home/me")),
+        )
+        .unwrap();
+        assert!(unit.contains("ExecStart=\"%h/my apps/klemmbrett\"\n"));
     }
 
     #[test]
