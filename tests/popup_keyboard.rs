@@ -178,7 +178,7 @@ impl Session {
             .env("DBUS_SESSION_BUS_ADDRESS", &self.bus_address)
             .env_remove("DISPLAY");
         let app = app
-            .arg("--config")
+            .args(["run", "--config"])
             .arg(config)
             .stdout(log.try_clone().expect("clone log handle"))
             .stderr(log)

@@ -53,20 +53,20 @@ For development, `just dev` builds the extension into `.venv` with
 `maturin develop`, and `just test` runs `cargo test` and `pytest`.
 `cargo test` also runs end-to-end tests against private headless
 compositors when they are installed. Those tests build `klemmbrett-py` and
-run the package with `python3 -m klemmbrett`; set `KLEMMBRETT_BIN` to test an
+run the package with `python3 -m klemmbrett run`; set `KLEMMBRETT_BIN` to test an
 installed `kb` instead. To check where the popup lands on several
 compositors and distros, see [`docs/ui-tests.md`](docs/ui-tests.md).
 
 ## Run
 
 ```sh
-kb
+kb run
 ```
 
 To use a different configuration file:
 
 ```sh
-kb --config /path/to/config.py
+kb run --config /path/to/config.py
 ```
 
 Install a systemd user unit bound to `graphical-session.target` so the
@@ -84,7 +84,8 @@ history is recorded from login. The socket unit holds the control socket,
 restarts waits instead of failing, and the first call starts the daemon if
 it is not running. If this process can see `WAYLAND_DISPLAY`, that value is imported
 into the systemd user manager. `ExecStart` is the `kb` script you
-ran (or `python -m klemmbrett` with the same interpreter). A path under
+ran, followed by `run` (or `python -m klemmbrett run` with the same
+interpreter). A path under
 your home directory is written with systemd's `%h` specifier. Pass
 `--config` to pin that file in `ExecStart`
 (`kb install-systemd --config /path/to/config.py`); the same specifier is
@@ -360,5 +361,5 @@ keys = [
 ]
 ```
 
-Autostart the daemon from the same config (`kb` in `spawn`) or with
+Autostart the daemon from the same config (`kb run` in `spawn`) or with
 the systemd units, so the socket is there when the binding runs.
