@@ -13,8 +13,8 @@ const IMPORT_VARS: &[&str] = &[
     "XDG_CURRENT_DESKTOP",
 ];
 
-/// `exec` is the command that starts klemmbrett, such as the console
-/// script path or `python -m klemmbrett`.
+/// `exec` is the command that starts klemmbrett, such as the `kb` script
+/// path or `python -m klemmbrett`.
 pub fn install(exec: &[String], config: Option<&Path>) -> Result<(), String> {
     if exec.is_empty() {
         return Err("no command to start klemmbrett with".into());

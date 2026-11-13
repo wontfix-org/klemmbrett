@@ -58,7 +58,7 @@ jobs:
         run: python -m pip install dist/*.whl pytest
       - name: The command starts and the extension loads
         run: |
-          klemmbrett --help
+          kb --help
           python -c "import klemmbrett, klemmbrett._core; print(klemmbrett.themes.names())"
       - name: Python tests against the installed wheel
         run: |

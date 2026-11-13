@@ -15,7 +15,7 @@ A provider may also define:
 
 Call `changed()` on a provider when its records change: every open popup
 showing it, directly or through a `View` or `Merge`, reloads, and
-`klemmbrett watch` subscribers hear about it. A `Store` does this itself.
+`kb watch` subscribers hear about it. A `Store` does this itself.
 """
 
 from __future__ import annotations

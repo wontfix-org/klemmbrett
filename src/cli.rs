@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "klemmbrett",
+    name = "kb",
     about = "Keep Wayland selections in sync and copy values from configurable popup widgets."
 )]
 struct Args {
@@ -302,11 +302,11 @@ mod tests {
 
     #[test]
     fn no_subcommand_starts_the_daemon() {
-        match invocation(&["klemmbrett"]) {
+        match invocation(&["kb"]) {
             Invocation::Daemon { config } => assert!(config.is_none()),
             other => panic!("expected daemon, got {other:?}"),
         }
-        match invocation(&["klemmbrett", "--config", "/c.py"]) {
+        match invocation(&["kb", "--config", "/c.py"]) {
             Invocation::Daemon { config } => {
                 assert_eq!(config.as_deref(), Some(std::path::Path::new("/c.py")))
             }
@@ -317,22 +317,22 @@ mod tests {
     #[test]
     fn install_systemd_still_parses_without_a_subcommand() {
         assert!(matches!(
-            invocation(&["klemmbrett", "--install-systemd"]),
+            invocation(&["kb", "--install-systemd"]),
             Invocation::InstallSystemd { config: None }
         ));
     }
 
     #[test]
     fn socket_is_global() {
-        let parsed = parse(&argv(&["klemmbrett", "show", "run", "--socket", "/s"])).unwrap();
+        let parsed = parse(&argv(&["kb", "show", "run", "--socket", "/s"])).unwrap();
         assert_eq!(parsed.socket.as_deref(), Some(Path::new("/s")));
-        let parsed = parse(&argv(&["klemmbrett", "--socket", "/d"])).unwrap();
+        let parsed = parse(&argv(&["kb", "--socket", "/d"])).unwrap();
         assert_eq!(parsed.socket.as_deref(), Some(Path::new("/d")));
     }
 
     #[test]
     fn show_accepts_pointer_coordinates_and_input() {
-        match invocation(&["klemmbrett", "show", "run", "-x", "120", "-y", "-40"]) {
+        match invocation(&["kb", "show", "run", "-x", "120", "-y", "-40"]) {
             Invocation::Show(popup) => {
                 assert_eq!(
                     (popup.widget.as_str(), popup.x, popup.y, popup.input),
@@ -341,7 +341,7 @@ mod tests {
             }
             other => panic!("expected show, got {other:?}"),
         }
-        match invocation(&["klemmbrett", "prompt", "pick", "-", "--format", "json"]) {
+        match invocation(&["kb", "prompt", "pick", "-", "--format", "json"]) {
             Invocation::Prompt(popup) => {
                 assert_eq!(popup.input.as_deref(), Some("-"));
                 assert_eq!(popup.format.as_deref(), Some("json"));
@@ -352,11 +352,11 @@ mod tests {
 
     #[test]
     fn watch_and_stash_parse() {
-        match invocation(&["klemmbrett", "watch", "inbox", "history"]) {
+        match invocation(&["kb", "watch", "inbox", "history"]) {
             Invocation::Watch(watch) => assert_eq!(watch.widgets, ["inbox", "history"]),
             other => panic!("expected watch, got {other:?}"),
         }
-        match invocation(&["klemmbrett", "stash", "inbox", "--mark-read", "3", "4"]) {
+        match invocation(&["kb", "stash", "inbox", "--mark-read", "3", "4"]) {
             Invocation::Stash(stash) => {
                 assert_eq!(stash.name, "inbox");
                 assert_eq!(stash.mark_read, ["3", "4"]);
@@ -364,7 +364,7 @@ mod tests {
             other => panic!("expected stash, got {other:?}"),
         }
         assert!(parse(&argv(&[
-            "klemmbrett",
+            "kb",
             "stash",
             "inbox",
             "--all",
@@ -376,18 +376,18 @@ mod tests {
 
     #[test]
     fn askpass_and_pinentry_take_what_their_callers_pass() {
-        match invocation(&["klemmbrett", "askpass", "[sudo] password for me: "]) {
+        match invocation(&["kb", "askpass", "[sudo] password for me: "]) {
             Invocation::Askpass(args) => {
                 assert_eq!(args.prompt.as_deref(), Some("[sudo] password for me: "))
             }
             other => panic!("expected askpass, got {other:?}"),
         }
         assert!(matches!(
-            invocation(&["klemmbrett", "askpass", "-not-a-flag"]),
+            invocation(&["kb", "askpass", "-not-a-flag"]),
             Invocation::Askpass(AskpassArgs { prompt: Some(_) })
         ));
         match invocation(&[
-            "klemmbrett",
+            "kb",
             "pinentry",
             "--display",
             ":0",
@@ -401,9 +401,9 @@ mod tests {
 
     #[test]
     fn positional_coordinates_and_long_flags_are_rejected() {
-        assert!(parse(&argv(&["klemmbrett", "show", "run", "120", "-40"])).is_err());
+        assert!(parse(&argv(&["kb", "show", "run", "120", "-40"])).is_err());
         assert!(parse(&argv(&[
-            "klemmbrett",
+            "kb",
             "show",
             "run",
             "--x",
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn help_is_an_error_with_exit_code_zero() {
-        let error = parse(&argv(&["klemmbrett", "--help"])).unwrap_err();
+        let error = parse(&argv(&["kb", "--help"])).unwrap_err();
         assert_eq!(error.exit_code(), 0);
     }
 

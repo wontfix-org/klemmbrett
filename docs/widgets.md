@@ -113,7 +113,7 @@ under systemd) and ends that handler; the daemon keeps running. Handlers
 run one at a time on a dedicated thread, in the order the events
 happened, so a slow handler never freezes the popup.
 
-`klemmbrett prompt` and the Varlink `Prompt` method return the selected
+`kb prompt` and the Varlink `Prompt` method return the selected
 values and do not call any handlers.
 
 ### Operations
@@ -216,7 +216,7 @@ Objects may carry data in a `data` field, or as any keys besides `key`,
   tags: [docs, work]
 ```
 
-`klemmbrett show` and `klemmbrett prompt` read the same formats from a
+`kb show` and `kb prompt` read the same formats from a
 positional path, and `-` reads stdin. Over Varlink each record is an object
 with `value`, optional `key` and `label`, and optional `data`. An empty
 record list keeps the widget's own provider, and a widget with no provider
@@ -267,7 +267,7 @@ them changes.
 
 Any provider can call `self.changed()` when its records change; popups
 showing it, directly or through views and merges, reload, and
-`klemmbrett watch` prints a `changed` event. `widget.changed()` reloads one
+`kb watch` prints a `changed` event. `widget.changed()` reloads one
 widget. Outside the daemon both do nothing.
 
 ### Your own
@@ -352,8 +352,8 @@ def decode(record):
     kb.copy(result.stdout)
 ```
 
-Paste-style pickers that print instead of acting are `klemmbrett prompt`:
+Paste-style pickers that print instead of acting are `kb prompt`:
 
 ```sh
-printf '%s\n' one two | klemmbrett prompt pick -
+printf '%s\n' one two | kb prompt pick -
 ```

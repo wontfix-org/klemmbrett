@@ -1,4 +1,4 @@
-//! `klemmbrett pinentry`: a pinentry for gpg-agent that asks the daemon.
+//! `kb pinentry`: a pinentry for gpg-agent that asks the daemon.
 //!
 //! gpg-agent talks the Assuan protocol on stdin and stdout: it sets the
 //! texts with `SET*` commands, then sends `GETPIN`, `CONFIRM`, or `MESSAGE`.
@@ -257,7 +257,7 @@ fn chunks(text: &str) -> Vec<&str> {
     out
 }
 
-/// Runs `klemmbrett pinentry` on stdin and stdout; gpg-agent's options
+/// Runs `kb pinentry` on stdin and stdout; gpg-agent's options
 /// (`--display`, `--ttyname`, ...) are ignored.
 pub fn run(socket: &Path) -> i32 {
     let stdin = io::stdin();
@@ -268,7 +268,7 @@ pub fn run(socket: &Path) -> i32 {
     match serve(&mut reader, &mut writer, widget_from_env(), &mut ask) {
         Ok(()) => 0,
         Err(err) => {
-            eprintln!("klemmbrett pinentry: {err}");
+            eprintln!("kb pinentry: {err}");
             1
         }
     }

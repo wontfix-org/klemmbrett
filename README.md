@@ -43,7 +43,7 @@ sudo apt install \
     pkg-config
 ```
 
-Install the `klemmbrett` command from a checkout:
+Install the `kb` command from a checkout:
 
 ```sh
 uv tool install .        # or: pipx install .
@@ -54,26 +54,26 @@ For development, `just dev` builds the extension into `.venv` with
 `cargo test` also runs end-to-end tests against private headless
 compositors when they are installed. Those tests build `klemmbrett-py` and
 run the package with `python3 -m klemmbrett`; set `KLEMMBRETT_BIN` to test an
-installed `klemmbrett` instead. To check where the popup lands on several
+installed `kb` instead. To check where the popup lands on several
 compositors and distros, see [`docs/ui-tests.md`](docs/ui-tests.md).
 
 ## Run
 
 ```sh
-klemmbrett
+kb
 ```
 
 To use a different configuration file:
 
 ```sh
-klemmbrett --config /path/to/config.py
+kb --config /path/to/config.py
 ```
 
 Install a systemd user unit bound to `graphical-session.target` so the
 daemon starts with the compositor and stops when the session ends:
 
 ```sh
-klemmbrett --install-systemd
+kb --install-systemd
 ```
 
 That writes `klemmbrett.service` and `klemmbrett.socket` to
@@ -83,7 +83,7 @@ history is recorded from login. The socket unit holds the control socket,
 `$XDG_RUNTIME_DIR/klemmbrett/varlink.sock`: a call made while the daemon
 restarts waits instead of failing, and the first call starts the daemon if
 it is not running. If this process can see `WAYLAND_DISPLAY`, that value is imported
-into the systemd user manager. `ExecStart` is the `klemmbrett` script you
+into the systemd user manager. `ExecStart` is the `kb` script you
 ran (or `python -m klemmbrett` with the same interpreter). A path under
 your home directory is written with systemd's `%h` specifier. Pass
 `--config` as well to pin that file in `ExecStart`; the same specifier is
@@ -92,11 +92,11 @@ used when that file is under your home directory.
 To open a configured widget:
 
 ```sh
-klemmbrett show history
-klemmbrett show history -x 120 -y 80
-klemmbrett show snippets snippets.yaml --format yaml
-klemmbrett prompt history
-printf '%s\n' one two | klemmbrett prompt snippets -
+kb show history
+kb show history -x 120 -y 80
+kb show snippets snippets.yaml --format yaml
+kb prompt history
+printf '%s\n' one two | kb prompt snippets -
 ```
 
 `-x` and `-y` are compositor global coordinates. Omit both when there is
@@ -115,10 +115,10 @@ no records of its own, so `show` and `prompt` must pass a path or `-`.
 each selected value on its own line. Cancelling prints nothing and exits 1.
 
 ```sh
-klemmbrett watch inbox          # JSON lines: changed, selected, notification
-klemmbrett stash notifications --unread
-klemmbrett stash notifications --mark-read 12 13
-klemmbrett stash notifications --all
+kb watch inbox          # JSON lines: changed, selected, notification
+kb stash notifications --unread
+kb stash notifications --mark-read 12 13
+kb stash notifications --all
 ```
 
 `watch` prints an event per line as it happens, optionally only for some
@@ -149,7 +149,7 @@ def snippets(record):
 ```
 
 `pick` has no provider. Open it with records, for example
-`printf '%s\n' one two | klemmbrett show pick -`.
+`printf '%s\n' one two | kb show pick -`.
 
 Selecting a row calls the widget's `on_select` with the `Record`. Without
 one, the provider decides (`Executables` launches, `WaylandWindows` focuses
@@ -246,7 +246,7 @@ The daemon answers [Varlink](https://varlink.org) calls on
 data and all. Only the user running the daemon may connect.
 
 ```sh
-klemmbrett show history -x 120 -y 80
+kb show history -x 120 -y 80
 ```
 
 That is the same call as:
@@ -309,7 +309,7 @@ def coords():
 
 
 x, y = coords()
-subprocess.check_call(["klemmbrett", "show", "history", "-x", str(x), "-y", str(y)])
+subprocess.check_call(["kb", "show", "history", "-x", str(x), "-y", str(y)])
 ```
 
 ```sh
@@ -325,13 +325,13 @@ bindsym $mod+v exec ~/.config/sway/clip-history.py
 Without pointer coordinates the popup opens on the focused window's output:
 
 ```
-bindsym $mod+v exec klemmbrett show history
+bindsym $mod+v exec kb show history
 ```
 
 ## Qtile key binding
 
 Qtile's Wayland backend exposes the pointer directly. `lazy.spawn` can run
-`klemmbrett show history`, or the example below uses `klemmbrett_rpc` on
+`kb show history`, or the example below uses `klemmbrett_rpc` on
 Qtile's asyncio loop (`libqtile.utils.create_task`) so the binding does not
 fork a helper. Install `klemmbrett-rpc` for the interpreter Qtile runs on; it
 needs only the standard library, not the full `klemmbrett` package.
@@ -359,5 +359,5 @@ keys = [
 ]
 ```
 
-Autostart the daemon from the same config (`klemmbrett` in `spawn`) or with
+Autostart the daemon from the same config (`kb` in `spawn`) or with
 the systemd units, so the socket is there when the binding runs.

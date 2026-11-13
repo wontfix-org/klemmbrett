@@ -1,4 +1,4 @@
-"""The `klemmbrett` command."""
+"""The `kb` command."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from . import _core, _registry
 
 
 def _self_command() -> list[str]:
-    """How systemd should start klemmbrett again: the console script when it
+    """How systemd should start klemmbrett again: the `kb` script when it
     is on PATH as invoked, else this interpreter running the module."""
     script = sys.argv[0] if sys.argv else ""
-    if script and os.path.basename(script) == "klemmbrett":
+    if script and os.path.basename(script) == "kb":
         resolved = shutil.which(script) if os.sep not in script else script
         if resolved:
             return [os.path.abspath(resolved)]
@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     # The daemon runs in Rust; let Ctrl-C end it like any other program.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    return _core.main(["klemmbrett", *args], _registry.load, _self_command())
+    return _core.main(["kb", *args], _registry.load, _self_command())
 
 
 def askpass() -> int:

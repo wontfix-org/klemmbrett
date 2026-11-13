@@ -1,5 +1,5 @@
 //! Secret questions end to end: `AskSecret` over a real Varlink socket, as
-//! `klemmbrett askpass` and `pinentry` ask it, and the systemd password
+//! `kb askpass` and `pinentry` ask it, and the systemd password
 //! agent answering `ask.*` files. A fake asker stands in for the popup.
 
 use klemmbrett::secret::{
