@@ -73,7 +73,7 @@ Install a systemd user unit bound to `graphical-session.target` so the
 daemon starts with the compositor and stops when the session ends:
 
 ```sh
-kb --install-systemd
+kb install-systemd
 ```
 
 That writes `klemmbrett.service` and `klemmbrett.socket` to
@@ -86,7 +86,8 @@ it is not running. If this process can see `WAYLAND_DISPLAY`, that value is impo
 into the systemd user manager. `ExecStart` is the `kb` script you
 ran (or `python -m klemmbrett` with the same interpreter). A path under
 your home directory is written with systemd's `%h` specifier. Pass
-`--config` as well to pin that file in `ExecStart`; the same specifier is
+`--config` to pin that file in `ExecStart`
+(`kb install-systemd --config /path/to/config.py`); the same specifier is
 used when that file is under your home directory.
 
 To open a configured widget:

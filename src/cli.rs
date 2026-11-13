@@ -1,5 +1,5 @@
-//! Command line: the daemon, `show`, `prompt`, `watch`, `stash`, and
-//! `--install-systemd`. Everything but the daemon talks Varlink to it.
+//! Command line: the daemon, `install-systemd`, `show`, `prompt`, `watch`,
+//! and `stash`. Everything but the daemon talks Varlink to it.
 
 use crate::varlink::{records_json, socket_path, Client, ClientError};
 use crate::widget::{parse_records, validate_records, FileFormat, Record};
@@ -17,10 +17,6 @@ struct Args {
     /// Python configuration file (defaults to $XDG_CONFIG_HOME/klemmbrett/config.py)
     #[arg(long)]
     config: Option<PathBuf>,
-
-    /// Install systemd user units bound to graphical-session.target and enable them
-    #[arg(long)]
-    install_systemd: bool,
 
     /// Varlink socket (defaults to $KLEMMBRETT_SOCKET, then $XDG_RUNTIME_DIR/klemmbrett/varlink.sock)
     #[arg(long, global = true, value_name = "PATH")]
@@ -44,6 +40,12 @@ enum Sub {
     Askpass(AskpassArgs),
     /// A pinentry for gpg-agent (pinentry-program) that asks in the popup
     Pinentry(PinentryArgs),
+    /// Install systemd user units bound to graphical-session.target and enable them
+    InstallSystemd {
+        /// Configuration file to pin in ExecStart
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -130,8 +132,8 @@ pub fn parse(argv: &[String]) -> Result<Parsed, clap::Error> {
         Some(Sub::Stash(stash)) => Invocation::Stash(stash),
         Some(Sub::Askpass(askpass)) => Invocation::Askpass(askpass),
         Some(Sub::Pinentry(pinentry)) => Invocation::Pinentry(pinentry),
-        None if args.install_systemd => Invocation::InstallSystemd {
-            config: args.config,
+        Some(Sub::InstallSystemd { config }) => Invocation::InstallSystemd {
+            config: config.or(args.config),
         },
         None => Invocation::Daemon {
             config: args.config,
@@ -315,11 +317,24 @@ mod tests {
     }
 
     #[test]
-    fn install_systemd_still_parses_without_a_subcommand() {
+    fn install_systemd_is_a_subcommand() {
         assert!(matches!(
-            invocation(&["kb", "--install-systemd"]),
+            invocation(&["kb", "install-systemd"]),
             Invocation::InstallSystemd { config: None }
         ));
+        match invocation(&["kb", "install-systemd", "--config", "/c.py"]) {
+            Invocation::InstallSystemd { config } => {
+                assert_eq!(config.as_deref(), Some(Path::new("/c.py")))
+            }
+            other => panic!("expected install-systemd, got {other:?}"),
+        }
+        match invocation(&["kb", "--config", "/c.py", "install-systemd"]) {
+            Invocation::InstallSystemd { config } => {
+                assert_eq!(config.as_deref(), Some(Path::new("/c.py")))
+            }
+            other => panic!("expected install-systemd, got {other:?}"),
+        }
+        assert!(parse(&argv(&["kb", "--install-systemd"])).is_err());
     }
 
     #[test]
