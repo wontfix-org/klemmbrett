@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from klemmbrett import _registry, _runtime
+from klemmbrett import _registry, _runtime, notifications
 
 
 class FakeBackend:
@@ -58,3 +58,9 @@ def daemon(monkeypatch: pytest.MonkeyPatch) -> FakeBackend:
 @pytest.fixture(autouse=True)
 def fresh_registry() -> None:
     _registry.reset()
+
+
+@pytest.fixture(autouse=True)
+def isolated_stash(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stashes persist in SQLite. Tests must not write the real data directory."""
+    monkeypatch.setattr(notifications, "default_stash_path", lambda: tmp_path / "notifications.sqlite")

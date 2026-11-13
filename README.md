@@ -184,7 +184,7 @@ kb.widget("inbox", inbox.unread, layout=layouts.filter, search=["summary", "body
 dunst, or whatever else runs (or pass `replace=True`). Shown notifications
 are toasts that never take the keyboard: left click runs the default action,
 right click dismisses. Stashed ones wait as unread, and picking one in the
-`inbox` widget marks it read. See [`docs/notifications.md`](docs/notifications.md).
+`inbox` widget removes it. See [`docs/notifications.md`](docs/notifications.md).
 
 ## Password prompts
 
