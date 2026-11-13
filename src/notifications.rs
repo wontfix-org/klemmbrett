@@ -347,6 +347,48 @@ pub fn serve(center: Arc<NotificationCenter>, address: Option<String>) {
         .expect("spawn notification thread");
 }
 
+/// Sends a notification to whichever server owns the name, the way
+/// `notify-send` does, and returns its id. `address` selects a bus for tests;
+/// `None` is the session bus.
+pub fn send(
+    address: Option<&str>,
+    app_name: &str,
+    summary: &str,
+    body: &str,
+    urgency: u8,
+    expire_timeout: i32,
+) -> Result<u32, String> {
+    let conn = match address {
+        Some(address) => zbus::blocking::connection::Builder::address(address),
+        None => zbus::blocking::connection::Builder::session(),
+    }
+    .and_then(|builder| builder.build())
+    .map_err(|err| format!("no session bus: {err}"))?;
+    let hints = HashMap::from([("urgency", Variant::U8(urgency))]);
+    let reply = conn
+        .call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some(INTERFACE),
+            "Notify",
+            &(
+                app_name,
+                0u32,
+                "",
+                summary,
+                body,
+                Vec::<&str>::new(),
+                hints,
+                expire_timeout,
+            ),
+        )
+        .map_err(|err| format!("failed to send a notification: {err}"))?;
+    reply
+        .body()
+        .deserialize::<u32>()
+        .map_err(|err| format!("unexpected Notify reply: {err}"))
+}
+
 fn claim(center: &Arc<NotificationCenter>, address: Option<&str>) -> Result<(), String> {
     let builder = match address {
         Some(address) => zbus::blocking::connection::Builder::address(address),

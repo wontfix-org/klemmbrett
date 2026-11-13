@@ -133,8 +133,6 @@ The configuration is a Python file, `$XDG_CONFIG_HOME/klemmbrett/config.py`
 primary sync still run, but there are no popup widgets or history.
 
 ```python
-import subprocess
-
 import klemmbrett as kb
 from klemmbrett import layouts, providers, themes
 
@@ -148,7 +146,7 @@ kb.widget("pick", layout=layouts.filter)
 @kb.widget("snippets", providers.File("snippets.yaml"))
 def snippets(record):
     kb.copy(record.value)
-    subprocess.run(["notify-send", "Copied", record.label])
+    kb.notify("Copied", record.label)
 ```
 
 `pick` has no provider. Open it with records, for example

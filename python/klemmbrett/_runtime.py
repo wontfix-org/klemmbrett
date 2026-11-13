@@ -31,6 +31,34 @@ def activate_window(key: str) -> None:
     backend.activate_window(key)
 
 
+_URGENCIES = {"low": 0, "normal": 1, "critical": 2}
+
+
+def notify(
+    summary: str,
+    body: str = "",
+    *,
+    urgency: int | str = "normal",
+    timeout: int | None = None,
+    app_name: str = "klemmbrett",
+) -> int:
+    """Sends a notification, like `notify-send summary body`, and returns its
+    id. When `notifications.serve` is on, it is routed like any other;
+    otherwise it goes to the session's notification server.
+
+    `urgency` is `"low"`, `"normal"`, `"critical"`, or 0–2; `timeout` is in
+    milliseconds, 0 for never, and `None` for the server's default."""
+    for name, value in (("summary", summary), ("body", body), ("app_name", app_name)):
+        if not isinstance(value, str):
+            raise TypeError(f"notify: {name} must be a string, got {value!r}")
+    level = _URGENCIES.get(urgency, urgency) if isinstance(urgency, str) else urgency
+    if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 2:
+        raise ValueError(f"notify: urgency must be low, normal, critical, or 0–2, got {urgency!r}")
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 0):
+        raise ValueError(f"notify: timeout must be milliseconds or None, got {timeout!r}")
+    return int(backend.notify(app_name, summary, body, level, -1 if timeout is None else timeout))
+
+
 def theme_wire(theme: Any) -> dict[str, Any] | None:
     from . import themes
     from .style import Theme

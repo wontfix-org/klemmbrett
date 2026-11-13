@@ -129,7 +129,13 @@ them outside the daemon raises `RuntimeError`.
 | `kb.activate_window(key)` | Focuses a `WaylandWindows` record's window |
 | `kb.set_theme(theme)` | Switches the palette: a name, `"default"`, or a `Theme` |
 | `kb.show(widget, records=None, pointer=None)` | Opens a widget |
+| `kb.notify(summary, body="", urgency="normal", timeout=None, app_name="klemmbrett")` | Sends a notification and returns its id |
 | `kb.quit()` | Stops the daemon |
+
+`kb.notify` replaces `notify-send`. When `notifications.serve` is on, the
+notification goes through your routing like any other; otherwise it goes to
+the session's notification server. `urgency` is `"low"`, `"normal"`,
+`"critical"`, or 0–2, and `timeout` is in milliseconds (0 never expires).
 
 `kb.copy` goes through the sync thread, so the copied text is not copied
 back as a new selection. Prefer it over `wl-copy`.
@@ -310,7 +316,7 @@ Copy and notify (several actions):
 @kb.widget("links", providers.File("links.yaml"))
 def links(record):
     kb.copy(record.value)
-    subprocess.run(["notify-send", record.label, record.value])
+    kb.notify(record.label, record.value)
 ```
 
 Open a URL, or start any detached program (`launch`, `xdg-open`):

@@ -143,6 +143,8 @@ fn senders_get_ids_toasts_and_close_signals() {
     let replaced = notify(&proxy, id, "hello again", HashMap::new());
     assert_eq!(replaced, id);
     assert!(notify(&proxy, 0, "next", HashMap::new()) > id);
+    let sent = notifications::send(Some(&bus.1), "kb", "sent", "from send", 0, 1000).unwrap();
+    assert!(sent > id);
     {
         let toasts = toasts.lock().unwrap();
         let ToastCmd::Show(first) = &toasts[0] else {
@@ -166,6 +168,18 @@ fn senders_get_ids_toasts_and_close_signals() {
             panic!("expected a replacing toast");
         };
         assert!(second.replaces);
+        let ToastCmd::Show(sent) = &toasts[3] else {
+            panic!("expected the sent toast, got {toasts:?}");
+        };
+        assert_eq!(
+            (
+                sent.app_name.as_str(),
+                sent.body.as_str(),
+                sent.urgency,
+                sent.expire_timeout
+            ),
+            ("kb", "from send", 0, 1000)
+        );
     }
 
     let _: () = proxy.call("CloseNotification", &(id,)).unwrap();
