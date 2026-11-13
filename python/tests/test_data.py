@@ -196,6 +196,46 @@ def test_routes_show_drop_and_stash(daemon, capsys):
     assert inbox.unread_count == 1
 
 
+def _reopen_stash(name, path, **kwargs):
+    notifications._stashes.pop(name, None)
+    return notifications.Stash(name, path=path, **kwargs)
+
+
+def test_a_stash_is_still_there_after_a_restart(tmp_path):
+    path = tmp_path / "kept.sqlite"
+    inbox = notifications.Stash("notifications", path=path)
+    work = notifications.Stash("work", path=path)
+    inbox.stash(notifications.Notification._from_wire(note(1, summary="one", body="a")))
+    inbox.stash(notifications.Notification._from_wire(note(2, summary="two", body="b")))
+    inbox.stash(notifications.Notification._from_wire(note(3, summary="three", body="c")))
+    assert inbox.mark_read("1") == 1
+    assert inbox.get("1") is None
+    inbox.stash(notifications.Notification._from_wire(note(2, summary="two again", body="b2")))
+    inbox.dismiss("3")
+    work.stash(notifications.Notification._from_wire(note(9, app="job", summary="ping")))
+
+    inbox = _reopen_stash("notifications", path)
+    work = _reopen_stash("work", path)
+    assert [record.key for record in inbox] == ["2"]
+    kept = inbox.get("2")
+    assert kept is not None
+    assert kept.data.summary == "two again"
+    assert kept.data.read is False
+    assert kept.value == "b2"
+    assert inbox.get("1") is None
+    assert [record.key for record in work] == ["9"]
+    assert work.get("9") is not None and work.get("9").label == "job: ping"
+
+
+def test_stash_limit_drops_the_oldest_from_the_database(tmp_path):
+    path = tmp_path / "kept.sqlite"
+    inbox = notifications.Stash("notifications", limit=2, path=path)
+    for notification_id in (1, 2, 3):
+        inbox.stash(notifications.Notification._from_wire(note(notification_id)))
+    inbox = _reopen_stash("notifications", path, limit=2)
+    assert [record.key for record in inbox] == ["3", "2"]
+
+
 def test_stashes_mark_read_and_answer_varlink_calls(daemon):
     inbox = notifications.serve()
     assert _registry.wire()["route_notifications"] is False
@@ -207,6 +247,7 @@ def test_stashes_mark_read_and_answer_varlink_calls(daemon):
     assert [r["key"] for r in listed["ok"]["records"]] == ["8", "7"]
     assert listed["ok"]["records"][0]["data"]["summary"] == "two"
     d.select("inbox", [("8", "mail: two", "two", None)])
+    assert [r.key for r in inbox] == ["7"]
     assert [r.key for r in inbox.unread.records()] == ["7"]
     assert d.call("StashMarkRead", {"stash": "notifications", "keys": None}) == {"ok": {"marked": 1}}
     assert d.call("StashList", {"stash": "nope"})["error"] == "UnknownStash"

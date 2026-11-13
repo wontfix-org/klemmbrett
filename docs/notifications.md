@@ -103,11 +103,16 @@ is how far the stack sits from the screen edges.
 ## Stashes
 
 ```python
-notify.Stash(name="notifications", *, limit=500)
+notify.Stash(name="notifications", *, limit=500, path=None)
 ```
 
 A `Stash` is a `providers.Store` of notifications, newest first, keyed by
-notification id. Past `limit`, the oldest fall off. Each record's label is
+notification id, stored in SQLite. `path` defaults to
+`$XDG_DATA_HOME/klemmbrett/notifications.sqlite` (normally
+`~/.local/share/klemmbrett/notifications.sqlite`), and every stash shares
+that file. Only unread notifications are kept: marking one read removes it
+from the stash and from the database. What remains is still there after a
+restart. Past `limit`, the oldest fall off. Each record's label is
 `app_name: summary`, its value the body (or the summary), and its data a
 `notify.Stashed` with `id`, `app_name`, `summary`, `body`, `app_icon`,
 `urgency`, `category`, `received` (a Unix time), and `read`. A notification
@@ -115,15 +120,15 @@ that replaces a stashed one takes its place and is unread again.
 
 | | |
 | --- | --- |
-| `stash.unread` | A view of the unread ones, for a widget |
-| `stash` itself | All of them, read or not |
-| `stash.mark_read(*records_or_keys)` | Returns how many were unread |
+| `stash.unread` | The unread notifications, for a widget |
+| `stash` itself | The same notifications |
+| `stash.mark_read(*records_or_keys)` | Removes them. Returns how many were there |
 | `stash.mark_all_read()` | |
 | `stash.dismiss(*records_or_keys)` | Removes them |
 | `stash.unread_count` | |
 | `stash.stash(notification)` | Stashes by hand, for example from a `SHOW` route |
 
-Picking a row in a widget showing a stash (or `stash.unread`) marks it read,
+Picking a row in a widget showing a stash (or `stash.unread`) removes it,
 unless the widget has its own `on_select`. Because a stash is a store,
 widgets showing it reload as notifications arrive and are read, and
 `stash.subscribe(callback)` can update a status bar.

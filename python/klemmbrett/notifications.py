@@ -22,21 +22,24 @@ A route may return a `Stash` to keep it there instead, or a list such as
 `[notify.SHOW, inbox]` to do both. Without a route, or when the route
 raises, the notification is shown.
 
-Picking a stashed notification in a widget marks it read.
+Picking a stashed notification removes it from the stash.
 """
 
 from __future__ import annotations
 
+import os
+import sqlite3
 import sys
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Union
 
 from . import _runtime
 from ._record import Record
-from .providers import Store, View
+from .providers import Store, View, _resolve
 
 __all__ = [
     "CRITICAL",
@@ -132,21 +135,61 @@ class Stashed:
 
 _stashes: dict[str, Stash] = {}
 
+_STASH_TABLE = """
+CREATE TABLE IF NOT EXISTS stash (
+    name TEXT NOT NULL,
+    key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    value TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    id INTEGER NOT NULL,
+    app_name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    body TEXT NOT NULL,
+    app_icon TEXT NOT NULL,
+    urgency INTEGER NOT NULL,
+    category TEXT,
+    received REAL NOT NULL,
+    is_read INTEGER NOT NULL,
+    PRIMARY KEY (name, key)
+)
+"""
+
+
+def default_stash_path() -> Path:
+    """`$XDG_DATA_HOME/klemmbrett/notifications.sqlite`, next to the clipboard history."""
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if data_home:
+        root = Path(data_home)
+    else:
+        home = os.environ.get("HOME")
+        root = Path(home) / ".local" / "share" if home else Path("/tmp")
+    return root / "klemmbrett" / "notifications.sqlite"
+
 
 class Stash(Store):
     """Stashed notifications, newest first, keyed by notification id.
 
-    Use `stash.unread` as a widget provider for what is still unread, or the
-    stash itself for everything. Picking a row marks it read.
+    The stash holds only unread notifications. Picking a row removes it.
+    What remains is kept in SQLite, so it is still there after a restart.
     """
 
-    def __init__(self, name: str = "notifications", *, limit: int | None = 500) -> None:
+    def __init__(
+        self,
+        name: str = "notifications",
+        *,
+        limit: int | None = 500,
+        path: str | os.PathLike[str] | None = None,
+    ) -> None:
         if not isinstance(name, str) or not name:
             raise ValueError("Stash: the name must be a non-empty string")
         if name in _stashes:
             raise ValueError(f"a stash named {name!r} already exists")
         super().__init__(schema=Stashed, limit=limit)
         self.name = name
+        self.path = _resolve(path) if path is not None else default_stash_path()
+        with self._lock:
+            self._load()
         self.unread = View(self, filter=lambda record: not record.data.read)
         _stashes[name] = self
 
@@ -168,8 +211,8 @@ class Stash(Store):
         return self.add(record, first=True)
 
     def mark_read(self, *records: Record | str) -> int:
-        """Marks notifications read, given as records or keys. Returns how
-        many were unread."""
+        """Removes notifications, given as records or keys. Returns how many
+        were still in the stash."""
         return self._set_read([record.key if isinstance(record, Record) else str(record) for record in records])
 
     def mark_all_read(self) -> int:
@@ -181,7 +224,7 @@ class Stash(Store):
             for key in list(self._records) if keys is None else keys:
                 record = self._records.get(key)
                 if record is not None and not record.data.read:
-                    self._records[key] = replace(record, data=replace(record.data, read=True))
+                    del self._records[key]
                     marked += 1
         if marked:
             self._notify()
@@ -198,6 +241,102 @@ class Stash(Store):
 
     def select(self, record: Record) -> None:
         self.mark_read(record)
+
+    def _notify(self) -> None:
+        with self._lock:
+            self._write()
+        super()._notify()
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            conn = sqlite3.connect(self.path, timeout=5)
+        except sqlite3.Error as err:
+            raise RuntimeError(f"Stash {self.name!r}: failed to open {self.path}: {err}") from err
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute(_STASH_TABLE)
+            conn.commit()
+        except sqlite3.Error as err:
+            conn.close()
+            raise RuntimeError(f"Stash {self.name!r}: failed to open {self.path}: {err}") from err
+        return conn
+
+    def _load(self) -> None:
+        """Reads this stash's rows. The caller holds `_lock`."""
+        if not self.path.exists():
+            return
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT key, label, value, id, app_name, summary, body, app_icon, urgency, "
+                "category, received, is_read FROM stash WHERE name = ? ORDER BY position",
+                (self.name,),
+            ).fetchall()
+        finally:
+            conn.close()
+        dropped_read = False
+        for row in rows:
+            data = Stashed(
+                id=row["id"],
+                app_name=row["app_name"],
+                summary=row["summary"],
+                body=row["body"],
+                app_icon=row["app_icon"],
+                urgency=row["urgency"],
+                category=row["category"],
+                received=row["received"],
+                read=bool(row["is_read"]),
+            )
+            if data.read:
+                dropped_read = True
+                continue
+            self._records[row["key"]] = Record(row["value"], label=row["label"], key=row["key"], data=data)
+        trimmed = False
+        while self.limit is not None and len(self._records) > self.limit:
+            del self._records[next(reversed(self._records))]
+            trimmed = True
+        if dropped_read or trimmed:
+            self._write()
+
+    def _write(self) -> None:
+        """Rewrites this stash's unread rows. The caller holds `_lock`."""
+        rows = [
+            (
+                self.name,
+                record.key,
+                record.label,
+                record.value,
+                position,
+                record.data.id,
+                record.data.app_name,
+                record.data.summary,
+                record.data.body,
+                record.data.app_icon,
+                record.data.urgency,
+                record.data.category,
+                record.data.received,
+                0,
+            )
+            for position, record in enumerate(
+                record for record in self._records.values() if not record.data.read
+            )
+        ]
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM stash WHERE name = ?", (self.name,))
+            conn.executemany(
+                "INSERT INTO stash (name, key, label, value, position, id, app_name, summary, "
+                "body, app_icon, urgency, category, received, is_read) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
+        except sqlite3.Error as err:
+            conn.rollback()
+            raise RuntimeError(f"Stash {self.name!r}: failed to write {self.path}: {err}") from err
+        finally:
+            conn.close()
 
     def __repr__(self) -> str:
         return f"Stash({self.name!r}, {len(self)} notifications, {self.unread_count} unread)"

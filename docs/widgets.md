@@ -105,7 +105,7 @@ The first of these that applies runs:
 | `Store(records=(), schema=None, limit=None)` | copy | Kept in memory, changed at any time |
 | `provider.view(...)` | the source's | Another provider filtered, sorted, mapped |
 | `Merge(*providers, prefix_keys=False)` | the source's | Several providers, one after another |
-| `notifications.Stash()` | mark read | Stashed notifications ([docs](notifications.md)) |
+| `notifications.Stash()` | mark read | Stashed notifications, kept in SQLite ([docs](notifications.md)) |
 | none | copy | No records of its own; each open must pass them |
 
 An exception in a handler is printed with its traceback (to the journal
