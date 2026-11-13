@@ -6,6 +6,7 @@
 //! call keeps streaming. The interface is `org.wontfix.klemmbrett.varlink`.
 
 use crate::events;
+use crate::journal;
 use crate::notifications::{NotificationCenter, NotifyRequest};
 use crate::widget::{fetch_records, CallError, Handlers, Record, WidgetDef};
 use serde_json::{json, Map, Value};
@@ -130,24 +131,36 @@ impl Server {
             .name("klemmbrett-varlink".into())
             .spawn(move || {
                 for stream in listener.incoming() {
-                    let Ok(stream) = stream else {
-                        continue;
+                    let stream = match stream {
+                        Ok(stream) => stream,
+                        Err(err) => {
+                            journal::warn(&format!("failed to accept a Varlink connection: {err}"));
+                            continue;
+                        }
                     };
                     if !same_user(&stream) {
+                        journal::info("turned away a Varlink connection from another user");
                         continue;
                     }
                     let server = self.clone();
-                    let _ = std::thread::Builder::new()
+                    if let Err(err) = std::thread::Builder::new()
                         .name("klemmbrett-varlink-client".into())
-                        .spawn(move || server.connection(stream));
+                        .spawn(move || server.connection(stream))
+                    {
+                        journal::warn(&format!("failed to spawn a Varlink client thread: {err}"));
+                    }
                 }
             })
             .expect("spawn Varlink thread");
     }
 
     fn connection(&self, stream: UnixStream) {
-        let Ok(read) = stream.try_clone() else {
-            return;
+        let read = match stream.try_clone() {
+            Ok(read) => read,
+            Err(err) => {
+                journal::warn(&format!("failed to clone a Varlink connection: {err}"));
+                return;
+            }
         };
         let mut reader = BufReader::new(read);
         let mut out = stream;
@@ -155,7 +168,11 @@ impl Server {
         loop {
             buffer.clear();
             match reader.read_until(0, &mut buffer) {
-                Ok(0) | Err(_) => return,
+                Ok(0) => return,
+                Err(err) => {
+                    journal::warn(&format!("Varlink read failed: {err}"));
+                    return;
+                }
                 Ok(_) => {}
             }
             if buffer.last() == Some(&0) {
@@ -163,14 +180,23 @@ impl Server {
             }
             let call: Value = match serde_json::from_slice(&buffer) {
                 Ok(call) => call,
-                Err(_) => return,
+                Err(err) => {
+                    journal::warn(&format!("malformed Varlink message: {err}"));
+                    return;
+                }
             };
             let oneway = call["oneway"].as_bool().unwrap_or(false);
             let mut send = |reply: Value| -> bool {
                 if oneway {
                     return true;
                 }
-                write_message(&mut out, &reply).is_ok()
+                match write_message(&mut out, &reply) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        journal::warn(&format!("failed to write a Varlink reply: {err}"));
+                        false
+                    }
+                }
             };
             if !self.dispatch(&call, &mut send) {
                 return;

@@ -14,6 +14,7 @@ use crate::config::{AppConfig, MultiSelect};
 use crate::data::DataPath;
 use crate::events;
 use crate::history::shorten_label;
+use crate::journal;
 use crate::launch::{spawn_detached, ResolvedLaunch};
 use crate::layout::{expand, expand_record, Layout, LayoutContext, Node, NodeKind};
 use crate::notifications::{self, CloseReason, Notification, NotificationCenter, ToastCmd};
@@ -174,7 +175,7 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
     let center = notification_config.map(|config| {
         let toasts = tx.clone();
         let center = NotificationCenter::new(config, handlers.clone(), move |cmd| {
-            let _ = toasts.send_blocking(UiCmd::Toast(cmd));
+            send_ui(&toasts, UiCmd::Toast(cmd), "deliver a notification");
         });
         notifications::serve(center.clone(), None);
         center
@@ -234,6 +235,12 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
     Ok(())
 }
 
+fn send_ui(tx: &async_channel::Sender<UiCmd>, cmd: UiCmd, what: &str) {
+    if let Err(err) = tx.send_blocking(cmd) {
+        journal::error(&format!("failed to {what}: {err}"));
+    }
+}
+
 fn spawn_clipboard(
     mut sync: ClipboardSync<ArboardBackend>,
     ui: async_channel::Sender<UiCmd>,
@@ -243,26 +250,34 @@ fn spawn_clipboard(
         .name("klemmbrett-clipboard".into())
         .spawn(move || {
             let seed = sync.last_text().to_owned();
-            let _ = ui.send_blocking(UiCmd::RecordHistory(seed));
+            send_ui(&ui, UiCmd::RecordHistory(seed), "send clipboard history");
             loop {
                 match rx.recv_timeout(POLL_INTERVAL) {
                     Ok(ClipCmd::Restore(text)) => {
                         if let Err(err) = sync.backend_mut().write(Selection::Clipboard, &text) {
-                            eprintln!("Failed to restore the clipboard: {err}");
+                            journal::error(&format!("Failed to restore the clipboard: {err}"));
                             continue;
                         }
-                        let _ = ui.send_blocking(UiCmd::RecordHistory(text));
+                        send_ui(&ui, UiCmd::RecordHistory(text), "send clipboard history");
                         let action = sync.tick();
                         let last = sync.last_text().to_owned();
                         if let Some(text) = history_candidate(&action, &last) {
-                            let _ = ui.send_blocking(UiCmd::RecordHistory(text.to_owned()));
+                            send_ui(
+                                &ui,
+                                UiCmd::RecordHistory(text.to_owned()),
+                                "send clipboard history",
+                            );
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         let action = sync.tick();
                         let last = sync.last_text().to_owned();
                         if let Some(text) = history_candidate(&action, &last) {
-                            let _ = ui.send_blocking(UiCmd::RecordHistory(text.to_owned()));
+                            send_ui(
+                                &ui,
+                                UiCmd::RecordHistory(text.to_owned()),
+                                "send clipboard history",
+                            );
                         }
                     }
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -307,7 +322,7 @@ impl Klemmbrett {
 
     fn record_history(&mut self, text: &str) {
         if let Err(err) = self.widgets.record_history(text) {
-            eprintln!("Failed to record clipboard history: {err}");
+            journal::error(&format!("Failed to record clipboard history: {err}"));
         }
         self.handlers.clipboard(text);
     }
@@ -330,10 +345,15 @@ impl Klemmbrett {
         let Some(handle) = self.popup else {
             return;
         };
-        let Ok(Some(name)) = handle.update(cx, |view, _, _| {
+        let name = match handle.update(cx, |view, _, _| {
             (view.visible && view.live).then(|| view.widget_name.clone())
-        }) else {
-            return;
+        }) {
+            Ok(Some(name)) => name,
+            Ok(None) => return,
+            Err(err) => {
+                journal::error(&format!("failed to refresh the popup: {err}"));
+                return;
+            }
         };
         if !widgets.contains(&name) {
             return;
@@ -345,27 +365,32 @@ impl Klemmbrett {
         let load = cx
             .background_executor()
             .spawn(async move { fetch_records(&def) });
+        let label = name.clone();
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
-            let _ = this.update(cx, |this, cx| {
+            if let Err(err) = this.update(cx, |this, cx| {
                 if seq != this.show_seq {
                     return;
                 }
                 let entries = match loaded {
                     Ok(entries) => entries,
                     Err(err) => {
-                        eprintln!("Failed to refresh widget {name:?}: {err}");
+                        journal::error(&format!("Failed to refresh widget {name:?}: {err}"));
                         return;
                     }
                 };
                 if let Some(handle) = this.popup {
-                    let _ = handle.update(cx, |view, _window, cx| {
+                    if let Err(err) = handle.update(cx, |view, _window, cx| {
                         if view.visible && view.widget_name == name {
                             view.replace_entries(entries, cx);
                         }
-                    });
+                    }) {
+                        journal::error(&format!("failed to replace popup entries: {err}"));
+                    }
                 }
-            });
+            }) {
+                journal::error(&format!("failed to refresh {label:?}: {err}"));
+            }
         })
         .detach();
     }
@@ -388,16 +413,22 @@ impl Klemmbrett {
         let toast = Toast { notification, seq };
         let theme = self.widgets.default_theme().clone();
         let config = center.config().clone();
-        let updated = self.toasts.and_then(|handle| {
-            handle
-                .update(cx, |view, window, cx| {
-                    view.theme = theme.clone();
-                    view.upsert(toast.clone());
-                    window.resize(view.size());
-                    cx.notify();
-                })
-                .ok()
-        });
+        let updated = if let Some(handle) = self.toasts {
+            match handle.update(cx, |view, window, cx| {
+                view.theme = theme.clone();
+                view.upsert(toast.clone());
+                window.resize(view.size());
+                cx.notify();
+            }) {
+                Ok(()) => Some(()),
+                Err(err) => {
+                    journal::error(&format!("failed to update the toast window: {err}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         if updated.is_none() {
             let app = cx.entity();
             let view = ToastView {
@@ -411,7 +442,7 @@ impl Klemmbrett {
             match cx.open_window(options, move |_window, cx| cx.new(|_cx| view)) {
                 Ok(handle) => self.toasts = Some(handle),
                 Err(err) => {
-                    eprintln!("Failed to show a notification: {err}");
+                    journal::error(&format!("Failed to show a notification: {err}"));
                     self.toasts = None;
                 }
             }
@@ -422,7 +453,9 @@ impl Klemmbrett {
                 .timer(std::time::Duration::from_millis(u64::from(ms)));
             cx.spawn(async move |this, cx| {
                 timer.await;
-                let _ = this.update(cx, |this, cx| this.expire_toast(id, seq, cx));
+                if let Err(err) = this.update(cx, |this, cx| this.expire_toast(id, seq, cx)) {
+                    journal::error(&format!("failed to expire toast {id}: {err}"));
+                }
             })
             .detach();
         }
@@ -432,13 +465,17 @@ impl Klemmbrett {
         let Some(handle) = self.toasts else {
             return;
         };
-        let current = handle
-            .update(cx, |view, _, _| {
-                view.toasts
-                    .iter()
-                    .any(|toast| toast.notification.id == id && toast.seq == seq)
-            })
-            .unwrap_or(false);
+        let current = match handle.update(cx, |view, _, _| {
+            view.toasts
+                .iter()
+                .any(|toast| toast.notification.id == id && toast.seq == seq)
+        }) {
+            Ok(current) => current,
+            Err(err) => {
+                journal::error(&format!("failed to expire toast {id}: {err}"));
+                false
+            }
+        };
         if current {
             self.close_toast(id, Some(CloseReason::Expired), cx);
         }
@@ -459,6 +496,9 @@ impl Klemmbrett {
                     false
                 }
             });
+            if let Err(err) = &emptied {
+                journal::error(&format!("failed to close toast {id}: {err}"));
+            }
             if !matches!(emptied, Ok(false)) {
                 self.toasts = None;
             }
@@ -473,7 +513,14 @@ impl Klemmbrett {
         if let (Some(action), Some(center)) = (action, &self.center) {
             center.invoke(id, &action);
         }
-        self.close_toast(id, Some(CloseReason::Dismissed), cx);
+        // The click is dispatched while this toast window is borrowed, so
+        // closing it here cannot re-enter that window. Run once the update ends.
+        let this = cx.entity();
+        cx.defer(move |cx| {
+            this.update(cx, |this, cx| {
+                this.close_toast(id, Some(CloseReason::Dismissed), cx);
+            });
+        });
     }
 
     fn highlight(&self, widget: &str, record: Record) {
@@ -494,14 +541,20 @@ impl Klemmbrett {
         let Some(handle) = self.popup else {
             return;
         };
-        let Ok(name) = handle.update(cx, |view, _, _| view.widget_name.clone()) else {
-            return;
+        let name = match handle.update(cx, |view, _, _| view.widget_name.clone()) {
+            Ok(name) => name,
+            Err(err) => {
+                journal::error(&format!("failed to read the open popup: {err}"));
+                return;
+            }
         };
         let theme = self.theme_for(&name);
-        let _ = handle.update(cx, |view, _, cx| {
+        if let Err(err) = handle.update(cx, |view, _, cx| {
             view.restyle(theme);
             cx.notify();
-        });
+        }) {
+            journal::error(&format!("failed to restyle the popup: {err}"));
+        }
     }
 
     fn drop_popup_handle(&mut self) {
@@ -535,13 +588,13 @@ impl Klemmbrett {
     ) {
         let Some(def) = self.widgets.get(&widget).cloned() else {
             let err = format!("unknown widget {widget:?}");
-            eprintln!("{err}");
+            journal::error(&err);
             finish_prompt(reply, Err(err));
             return;
         };
         if records.is_none() && def.source.is_none() {
             let err = format!("widget {widget:?} has no provider; pass records");
-            eprintln!("Failed to read widget {widget:?}: {err}");
+            journal::error(&format!("Failed to read widget {widget:?}: {err}"));
             finish_prompt(reply, Err(err));
             return;
         }
@@ -569,9 +622,12 @@ impl Klemmbrett {
         });
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
-            let _ = this.update(cx, |this, cx| {
+            let name = widget.clone();
+            if let Err(err) = this.update(cx, |this, cx| {
                 this.finish_show(seq, widget, pointer, loaded, live, reply, cx)
-            });
+            }) {
+                journal::error(&format!("failed to show {name:?}: {err}"));
+            }
         })
         .detach();
     }
@@ -594,7 +650,7 @@ impl Klemmbrett {
         let (layout, entries) = match loaded {
             Ok(loaded) => loaded,
             Err(err) => {
-                eprintln!("Failed to read widget {widget:?}: {err}");
+                journal::error(&format!("Failed to read widget {widget:?}: {err}"));
                 finish_prompt(reply, Err(err));
                 return;
             }
@@ -616,7 +672,7 @@ impl Klemmbrett {
             location,
         ) else {
             let err = "Failed to place the popup: no displays.".to_string();
-            eprintln!("{err}");
+            journal::error(&err);
             finish_prompt(reply, Err(err));
             return;
         };
@@ -662,11 +718,14 @@ impl Klemmbrett {
         }) {
             Ok(true) => None,
             Ok(false) => {
-                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                if let Err(err) = handle.update(cx, |_, window, _| window.remove_window()) {
+                    journal::error(&format!("failed to remove the popup window: {err}"));
+                }
                 self.popup = None;
                 shown
             }
-            Err(_) => {
+            Err(err) => {
+                journal::error(&format!("failed to reuse the popup: {err}"));
                 self.popup = None;
                 shown
             }
@@ -694,7 +753,7 @@ impl Klemmbrett {
         }) {
             Ok(handle) => self.popup = Some(handle),
             Err(err) => {
-                eprintln!("Failed to open the popup: {err}");
+                journal::error(&format!("Failed to open the popup: {err}"));
                 // The closure, and its reply sender, are dropped with the
                 // failed open. `Prompt` then fails instead of waiting.
             }
@@ -714,7 +773,9 @@ struct Shown {
 
 fn finish_prompt(reply: Option<Reply>, result: Result<Vec<String>, String>) {
     if let Some(reply) = reply {
-        let _ = reply.send(result);
+        if reply.send(result).is_err() {
+            journal::info("dropped a prompt reply; the waiter is gone");
+        }
     }
 }
 
@@ -984,7 +1045,9 @@ impl PopupView {
 
     fn finish_prompt(&mut self, result: Result<Vec<String>, String>) {
         if let Some(reply) = self.reply.take() {
-            let _ = reply.send(result);
+            if reply.send(result).is_err() {
+                journal::info("dropped a prompt reply; the waiter is gone");
+            }
         }
     }
 
@@ -1446,7 +1509,9 @@ fn activate_row(
     index: usize,
 ) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
     move |_, window, cx| {
-        let _ = view.update(cx, |this, cx| this.activate(index, window, cx));
+        if let Err(err) = view.update(cx, |this, cx| this.activate(index, window, cx)) {
+            journal::error(&format!("failed to activate popup row {index}: {err}"));
+        }
     }
 }
 
@@ -1910,7 +1975,9 @@ fn install_tray(widgets: Vec<String>, tx: async_channel::Sender<UiCmd>) {
             // The tray lives for the whole session; dropping it would remove the icon.
             std::mem::forget(handle);
         }
-        Err(err) => eprintln!("Failed to install the StatusNotifierItem tray: {err}"),
+        Err(err) => journal::error(&format!(
+            "Failed to install the StatusNotifierItem tray: {err}"
+        )),
     }
 }
 
@@ -1967,12 +2034,16 @@ impl ksni::Tray for TrayIcon {
                             StandardItem {
                                 label: name.clone(),
                                 activate: Box::new(move |this: &mut Self| {
-                                    let _ = this.tx.send_blocking(UiCmd::Show {
-                                        widget: name.clone(),
-                                        pointer: None,
-                                        records: None,
-                                        reply: None,
-                                    });
+                                    send_ui(
+                                        &this.tx,
+                                        UiCmd::Show {
+                                            widget: name.clone(),
+                                            pointer: None,
+                                            records: None,
+                                            reply: None,
+                                        },
+                                        "open a widget from the tray",
+                                    );
                                 }),
                                 ..Default::default()
                             }
@@ -1989,7 +2060,7 @@ impl ksni::Tray for TrayIcon {
             StandardItem {
                 label: "Quit".into(),
                 activate: Box::new(|this: &mut Self| {
-                    let _ = this.tx.send_blocking(UiCmd::Quit);
+                    send_ui(&this.tx, UiCmd::Quit, "quit from the tray");
                 }),
                 ..Default::default()
             }

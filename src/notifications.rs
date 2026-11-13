@@ -7,6 +7,7 @@
 //! through a [`ToastCmd`] sink.
 
 use crate::events;
+use crate::journal;
 use crate::theme::Location;
 use crate::widget::Handlers;
 use serde_json::{json, Map, Number, Value};
@@ -270,7 +271,7 @@ impl NotificationCenter {
     {
         if let Some(conn) = self.conn.get() {
             if let Err(err) = conn.emit_signal(None::<&str>, OBJECT_PATH, INTERFACE, signal, body) {
-                eprintln!("klemmbrett: failed to emit {signal}: {err}");
+                journal::error(&format!("klemmbrett: failed to emit {signal}: {err}"));
             }
         }
     }
@@ -338,7 +339,7 @@ pub fn serve(center: Arc<NotificationCenter>, address: Option<String>) {
         .name("klemmbrett-notifications".into())
         .spawn(move || {
             if let Err(err) = claim(&center, address.as_deref()) {
-                eprintln!("klemmbrett: notifications are off: {err}");
+                journal::error(&format!("klemmbrett: notifications are off: {err}"));
                 return;
             }
             std::thread::park();

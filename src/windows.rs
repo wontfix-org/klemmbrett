@@ -1,5 +1,6 @@
 //! Live Wayland toplevel list via `zwlr_foreign_toplevel_manager_v1`.
 
+use crate::journal;
 use crate::Record;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -85,18 +86,21 @@ impl State {
             .map(|window| window_record(&window.key, &window.title, &window.app_id))
             .collect();
         records.sort_by(|left, right| left.label.cmp(&right.label));
-        if let Ok(mut slot) = self.snapshot.lock() {
-            *slot = Ok(records);
+        match self.snapshot.lock() {
+            Ok(mut slot) => *slot = Ok(records),
+            Err(_) => journal::warn("window list lock is poisoned"),
         }
     }
 
     fn activate(&self, key: &str) {
         let Some(seat) = &self.seat else {
-            eprintln!("klemmbrett: no wl_seat; cannot activate window {key}");
+            journal::error(&format!(
+                "klemmbrett: no wl_seat; cannot activate window {key}"
+            ));
             return;
         };
         let Some(window) = self.windows.values().find(|window| window.key == key) else {
-            eprintln!("klemmbrett: unknown window {key}");
+            journal::error(&format!("klemmbrett: unknown window {key}"));
             return;
         };
         window.handle.activate(seat);
@@ -160,7 +164,16 @@ fn run(
             .dispatch_pending(&mut state)
             .map_err(|err| format!("failed to dispatch Wayland events: {err}"))?;
         if let Some(guard) = connection.prepare_read() {
-            let _ = guard.read();
+            if let Err(err) = guard.read() {
+                let blocked = matches!(
+                    &err,
+                    wayland_client::backend::WaylandError::Io(io)
+                        if io.kind() == std::io::ErrorKind::WouldBlock
+                );
+                if !blocked {
+                    journal::warn(&format!("Wayland read failed: {err}"));
+                }
+            }
         }
         queue
             .dispatch_pending(&mut state)

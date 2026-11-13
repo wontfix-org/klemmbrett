@@ -117,7 +117,7 @@ impl<B: Backend> ClipboardSync<B> {
     /// the previous value and mistake it for a user edit.
     fn write_and_settle(&mut self, target: Selection, text: &str) -> bool {
         if let Err(err) = self.backend.write(target, text) {
-            eprintln!("Failed to write the {}: {err}", target.name());
+            journal::error(&format!("Failed to write the {}: {err}", target.name()));
             return false;
         }
 
@@ -129,7 +129,10 @@ impl<B: Backend> ClipboardSync<B> {
             self.backend.sleep(interval);
         }
 
-        eprintln!("The {} did not take the new value in time.", target.name());
+        journal::error(&format!(
+            "The {} did not take the new value in time.",
+            target.name()
+        ));
         false
     }
 
@@ -196,6 +199,7 @@ pub mod data;
 mod events;
 mod executables;
 mod history;
+pub mod journal;
 mod launch;
 pub mod layout;
 pub mod notifications;
