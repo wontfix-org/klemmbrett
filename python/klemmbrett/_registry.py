@@ -333,12 +333,13 @@ class Widget:
     def select(self, record: Record) -> None:
         """What picking `record` does: `on_select`, else the provider's
         `select`, else copying the value."""
-        if self._on_select is not None:
-            self._on_select(record)
-        elif callable(select := getattr(self.provider, "select", None)):
-            select(record)
-        else:
-            _runtime.copy(record.value)
+        with _runtime.handling(self.name):
+            if self._on_select is not None:
+                self._on_select(record)
+            elif callable(select := getattr(self.provider, "select", None)):
+                select(record)
+            else:
+                _runtime.copy(record.value)
 
     def highlight(self, record: Record) -> None:
         if self._on_highlight is not None:

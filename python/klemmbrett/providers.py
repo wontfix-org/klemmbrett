@@ -29,7 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime, desktop
+from . import _core, _runtime, desktop, directory
 from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
 
@@ -39,6 +39,7 @@ __all__ = [
     "File",
     "Executables",
     "Applications",
+    "Directory",
     "WaylandWindows",
     "Static",
     "Store",
@@ -228,6 +229,73 @@ class Applications(Provider):
             activate=_runtime.activate_desktop,
             start=_runtime.launch,
         )
+
+
+class Directory:
+    """A directory tree. `flat()` and `browse()` are two views of one walk.
+
+    `flat()` lists every file. The label is the path relative to `path`, and
+    selecting a row opens it with `xdg-open`. `browse()` lists one folder.
+    Selecting a folder replaces the popup with that folder, `..` goes back,
+    and selecting a file opens it the same way. Symlinks are listed and not
+    followed. Hidden names are included.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = _resolve(path)
+
+    def flat(self) -> _DirectoryFlat:
+        """Every file, labeled with its relative path."""
+        return _DirectoryFlat(self)
+
+    def browse(self) -> _DirectoryBrowse:
+        """One folder, starting at `path`. Selecting a folder steps into it."""
+        return _DirectoryBrowse(self)
+
+    def __repr__(self) -> str:
+        return f"Directory({str(self.path)!r})"
+
+
+class _DirectoryFlat(Provider):
+    """Files under a `Directory`, labeled with their relative paths."""
+
+    default_match = rk.fuzzy()
+
+    def __init__(self, tree: Directory) -> None:
+        self.tree = tree
+
+    def records(self) -> list[Record]:
+        return directory.scan(self.tree.path).flat()
+
+    def select(self, record: Record) -> None:
+        _runtime.launch(["xdg-open", record.value])
+
+    def __repr__(self) -> str:
+        return f"{self.tree!r}.flat()"
+
+
+class _DirectoryBrowse(Provider):
+    """One folder of a `Directory`. Selecting a folder shows that folder."""
+
+    default_match = rk.fuzzy()
+
+    def __init__(self, tree: Directory) -> None:
+        self.tree = tree
+
+    def records(self) -> list[Record]:
+        return directory.scan(self.tree.path).browse()
+
+    def select(self, record: Record) -> None:
+        data = record.data if isinstance(record.data, dict) else {}
+        relative = data.get("relative")
+        index = directory.scan(self.tree.path)
+        if isinstance(relative, str) and index.is_dir(relative):
+            _runtime.show(_runtime.current_widget(), index.browse(relative))
+            return
+        _runtime.launch(["xdg-open", record.value])
+
+    def __repr__(self) -> str:
+        return f"{self.tree!r}.browse()"
 
 
 class WaylandWindows(_Native):

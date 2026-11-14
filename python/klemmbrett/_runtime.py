@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import shlex
 import subprocess
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 from . import _core
@@ -23,6 +25,26 @@ if not logger.handlers:
     # This logger writes its own lines. Propagating would print them twice
     # once the root logger has a handler.
     logger.propagate = False
+
+_current_widget: contextvars.ContextVar[str | None] = contextvars.ContextVar("widget", default=None)
+
+
+@contextmanager
+def handling(widget: str) -> Iterator[None]:
+    """Marks `widget` as the one whose row was just picked."""
+    token = _current_widget.set(widget)
+    try:
+        yield
+    finally:
+        _current_widget.reset(token)
+
+
+def current_widget() -> str:
+    """The widget whose row was just picked."""
+    widget = _current_widget.get()
+    if widget is None:
+        raise RuntimeError("no widget is handling a selection")
+    return widget
 
 
 def copy(text: str) -> None:

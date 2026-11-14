@@ -100,6 +100,8 @@ The first of these that applies runs:
 | `File(path, format=None, schema=None)` | copy | Reloaded each time the popup opens |
 | `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
 | `Applications()` | launch the desktop entry | Desktop files; `Terminal=true` needs `kb.configure(terminal=...)` |
+| `Directory(path).flat()` | `xdg-open` the file | Every file under `path`, labeled with its relative path |
+| `Directory(path).browse()` | step into a folder, or `xdg-open` a file | One folder, plus `..` below the root |
 | `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
 | `Themes()` | `kb.set_theme(value)` | `default`, then every shipped palette |
 | `Widgets()` | `kb.show(value)` | Configured widgets that can be opened; agent widgets are left out |
@@ -217,6 +219,21 @@ and `keywords` sit on `data` for `search`. Selecting activates a
 `$XDG_CURRENT_DESKTOP` leave the entry out. `Terminal=true` entries are
 listed only when `terminal` is set; that command is placed in front of
 `Exec`.
+
+### Directory
+
+```python
+tree = providers.Directory("~/notes")
+kb.widget("files", tree.flat(), layout=layouts.filter)
+kb.widget("browse", tree.browse(), layout=layouts.menu)
+```
+
+Both widgets walk `~/notes` the same way. `flat` has one row per file, and
+the label is the relative path, so a filter searches it. `browse` has the
+entries of one folder. Picking a folder replaces the popup with that
+folder; `..` goes back, and Escape closes. Picking a file in either widget
+runs `xdg-open` on it. `data` has `name` and `relative`. Symlinks are
+listed and not followed, and hidden names are included.
 
 ### ClipboardHistory
 

@@ -2,11 +2,11 @@
 
 A Wayland session helper configured in Python. Popup widgets list values to
 copy, open, or run, including clipboard history, text/JSON/YAML files,
-executables on `PATH`, desktop applications, and Wayland windows to switch
-to. The daemon keeps
-the clipboard and primary selection holding the same text. It can be the
-desktop notification server, and it can answer password prompts from systemd
-user services, ssh, sudo, git, gpg-agent, and polkit.
+executables on `PATH`, desktop applications, a directory as searchable paths
+or as folders you can step through, and Wayland windows to switch to. The
+daemon keeps the clipboard and primary selection holding the same text. It
+can be the desktop notification server, and it can answer password prompts
+from systemd user services, ssh, sudo, git, gpg-agent, and polkit.
 
 A GPUI popup lists a configured widget. Entries longer than a configurable
 length are shown shortened. A widget can pack either today's accelerator
