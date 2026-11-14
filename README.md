@@ -335,43 +335,15 @@ needs only the standard library; inside a configuration it is also
 
 ## Sway key binding
 
-Sway's stable IPC does not report the pointer. A small shell helper can still
-pass coordinates, and it starts quickly on a key binding: it tries
-`swaymsg -t get_cursor` (available on some builds), and otherwise reads the
-pointer from a seat if the compositor includes it, falling back to the focused
-output only if neither is present. `jq` parses the replies.
-
-Put this next to your Sway config, for example as `~/.config/sway/clip-history.sh`:
-
-```sh
-#!/bin/sh
-# Show history at the pointer. Kept in the shell so a key binding starts quickly.
-set -eu
-
-pair=$(
-    swaymsg -t get_cursor -r 2>/dev/null |
-        jq -er 'select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)"' 2>/dev/null
-) || pair=$(
-    swaymsg -t get_seats -r 2>/dev/null |
-        jq -er 'first(.[] | .cursor // empty | select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)")' 2>/dev/null
-) || pair=$(
-    swaymsg -t get_outputs -r 2>/dev/null |
-        jq -er 'first(.[] | select(.focused) | .rect // empty | select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)")' 2>/dev/null
-) || {
-    echo "could not determine pointer coordinates" >&2
-    exit 1
-}
-exec kb show history -x "${pair%% *}" -y "${pair##* }"
-```
-
-```sh
-chmod +x ~/.config/sway/clip-history.sh
-```
-
-In `~/.config/sway/config`:
+Sway's stable IPC does not report the pointer. `klemmbrett-sway` is installed
+next to `kb`. It is a shell script, so a key binding starts it quickly. It
+tries `swaymsg -t get_cursor` (available on some builds), then the pointer on
+a seat if the compositor includes it, then the focused output. `jq` parses
+the replies. The argument is the widget to open at that position:
 
 ```
-bindsym $mod+v exec ~/.config/sway/clip-history.sh
+bindsym $mod+v exec klemmbrett-sway history
+bindsym $mod+r exec klemmbrett-sway run
 ```
 
 Without pointer coordinates the popup opens on the focused window's output:

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Show a widget at the Sway pointer. A key binding runs this directly.
+set -eu
+
+if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+    echo "usage: klemmbrett-sway WIDGET" >&2
+    exit 2
+fi
+
+pair=$(
+    swaymsg -t get_cursor -r 2>/dev/null |
+        jq -er 'select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)"' 2>/dev/null
+) || pair=$(
+    swaymsg -t get_seats -r 2>/dev/null |
+        jq -er 'first(.[] | .cursor // empty | select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)")' 2>/dev/null
+) || pair=$(
+    swaymsg -t get_outputs -r 2>/dev/null |
+        jq -er 'first(.[] | select(.focused) | .rect // empty | select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)")' 2>/dev/null
+) || {
+    echo "could not determine pointer coordinates" >&2
+    exit 1
+}
+
+exec kb show "$1" -x "${pair%% *}" -y "${pair##* }"

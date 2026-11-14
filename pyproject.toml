@@ -27,6 +27,7 @@ manifest-path = "crates/klemmbrett-py/Cargo.toml"
 python-source = "python"
 module-name = "klemmbrett._core"
 features = ["extension-module"]
+data = "klemmbrett.data"
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
