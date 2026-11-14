@@ -211,6 +211,11 @@ as a systemd unit, and a POSIX double fork otherwise. `"posix"`,
 `"systemd-run"`, or a wrapper list such as `["uwsm", "app", "--"]` override
 it.
 
+The logind session is probed at startup (`active`, `idle`, `locked`, and its
+state). When logind has no session, klemmbrett logs a warning and continues.
+`kb.configure(session=True)` makes a missing session a startup error.
+`session=False` does not subscribe.
+
 Widgets, providers, record data, live stores, handlers, and recipes are
 documented in [`docs/widgets.md`](docs/widgets.md). Fuzzy matching and
 ordering by past picks (`match=rk.fuzzy()`, `rank=rk.frecency()`) are

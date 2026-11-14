@@ -28,6 +28,9 @@ pub struct AppConfig {
     pub socket: Option<PathBuf>,
     /// The picker `kb` opens when it is given no subcommand.
     pub picker: PickerConfig,
+    /// `Some(true)` requires the logind session, `Some(false)` skips it, and
+    /// `None` probes and warns when logind has no session.
+    pub session: Option<bool>,
 }
 
 /// How the ad-hoc picker looks and matches. `prompt` replaces the label in
@@ -58,6 +61,7 @@ impl Default for AppConfig {
             notifications: None,
             socket: None,
             picker: PickerConfig::default(),
+            session: None,
         }
     }
 }

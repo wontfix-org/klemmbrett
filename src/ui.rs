@@ -253,6 +253,7 @@ impl SecretAsker for Runtime {
 ///
 /// `on_ready` receives the [`Runtime`] before the first event is handled.
 pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), String> {
+    crate::session::start(config.session)?;
     let AppConfig {
         label_max,
         launch,
@@ -261,6 +262,7 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
         notifications: notification_config,
         socket,
         picker,
+        session: _,
     } = config;
     let listener = varlink::bind(&varlink::socket_path(socket.as_deref()))?;
     let backend = ArboardBackend::new()

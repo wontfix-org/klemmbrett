@@ -157,6 +157,16 @@ def test_layouts_are_static_or_called_per_open():
         wire_widget("broken")["layout"]("broken", False, False)
 
 
+def test_session_tracking_is_probed_unless_configured():
+    assert _registry.wire()["session"] is None
+    kb.configure(session=True)
+    assert _registry.wire()["session"] is True
+    kb.configure(session=False)
+    assert _registry.wire()["session"] is False
+    with pytest.raises(TypeError, match="session"):
+        kb.configure(session="yes")  # type: ignore[arg-type]
+
+
 def test_configure_validates_and_themes_by_name():
     kb.configure(label_max=10, launch=["uwsm", "app", "--"], theme="nord")
     config = _registry.wire()
