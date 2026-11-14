@@ -149,6 +149,13 @@ fn exec_start(
 /// follows the home directory systemd expands at load time. Anything else
 /// is left as given.
 fn with_home_prefix(text: &str, home: Option<&OsStr>) -> String {
+    with_home_token(text, home, "%h")
+}
+
+/// Rewrites a path under `home` as `{token}/...`. `token` is `%h` in a unit,
+/// `${HOME}` in an `environment.d` file, or `~` in `gpg-agent.conf`. A path
+/// outside `home`, or a home that is not valid UTF-8, is returned unchanged.
+pub(crate) fn with_home_token(text: &str, home: Option<&OsStr>, token: &str) -> String {
     let Some(home) = home
         .and_then(|home| home.to_str())
         .filter(|home| !home.is_empty())
@@ -157,8 +164,8 @@ fn with_home_prefix(text: &str, home: Option<&OsStr>) -> String {
     };
     match Path::new(text).strip_prefix(Path::new(home)) {
         Ok(rest) => match rest.to_str() {
-            Some("") => "%h".to_owned(),
-            Some(rest) => format!("%h/{rest}"),
+            Some("") => token.to_owned(),
+            Some(rest) => format!("{token}/{rest}"),
             None => text.to_owned(),
         },
         Err(_) => text.to_owned(),

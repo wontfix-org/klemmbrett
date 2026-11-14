@@ -69,27 +69,37 @@ To use a different configuration file:
 kb run --config /path/to/config.py
 ```
 
-Install a systemd user unit bound to `graphical-session.target` so the
-daemon starts with the compositor and stops when the session ends:
+Set up desktop integrations with `kb provision`:
 
 ```sh
-kb install-systemd
+kb provision systemd
+kb provision askpass
+kb provision pinentry
 ```
 
-That writes `klemmbrett.service` and `klemmbrett.socket` to
-`$XDG_CONFIG_HOME/systemd/user/` (normally `~/.config/systemd/user/`). The
-service is a `Type=notify` unit pulled in by `graphical-session.target`, so
-history is recorded from login. The socket unit holds the control socket,
+`systemd` writes `klemmbrett.service` and `klemmbrett.socket` to
+`$XDG_CONFIG_HOME/systemd/user/` (normally `~/.config/systemd/user/`) and
+enables them for `graphical-session.target`, so the daemon starts with the
+compositor and stops when the session ends. The service is `Type=notify`.
+The socket unit holds the control socket,
 `$XDG_RUNTIME_DIR/klemmbrett/varlink.sock`: a call made while the daemon
 restarts waits instead of failing, and the first call starts the daemon if
-it is not running. If this process can see `WAYLAND_DISPLAY`, that value is imported
-into the systemd user manager. `ExecStart` is the `kb` script you
+it is not running. If this process can see `WAYLAND_DISPLAY`, that value is
+imported into the systemd user manager. `ExecStart` is the `kb` script you
 ran, followed by `run` (or `python -m klemmbrett run` with the same
-interpreter). A path under
-your home directory is written with systemd's `%h` specifier. Pass
-`--config` to pin that file in `ExecStart`
-(`kb install-systemd --config /path/to/config.py`); the same specifier is
+interpreter). A path under your home directory is written with systemd's
+`%h` specifier. Pass `--config` to pin that file in `ExecStart`
+(`kb provision systemd --config /path/to/config.py`); the same specifier is
 used when that file is under your home directory.
+
+`askpass` writes `$XDG_CONFIG_HOME/environment.d/askpass.conf` so
+`SSH_ASKPASS`, `SUDO_ASKPASS`, and `GIT_ASKPASS` run `klemmbrett-askpass`.
+A path under your home directory is written as `${HOME}/...`. Those
+variables apply at the next login. `pinentry` sets `pinentry-program` in
+`$GNUPGHOME/gpg-agent.conf` (normally `~/.gnupg/gpg-agent.conf`) to
+`klemmbrett-pinentry`. A path under your home directory is written as
+`~/...`, which gpg-agent expands. The rest of that file stays in place, and
+gpg-agent is restarted. See [`docs/secrets.md`](docs/secrets.md).
 
 With no subcommand, `kb` is a picker. Choices come from stdin when it is not
 a terminal, or from a file. Each picked value is printed on its own line.
@@ -233,8 +243,8 @@ reaches Python, handlers, history, or `watch`:
 from klemmbrett import secrets
 
 kb.widget("unlock", secrets.SystemdAgent())  # systemd-ask-password --user
-kb.widget("ssh", secrets.Askpass())           # SSH_ASKPASS=klemmbrett-askpass
-kb.widget("gpg", secrets.Pinentry())          # pinentry-program klemmbrett-pinentry
+kb.widget("ssh", secrets.Askpass())           # kb provision askpass
+kb.widget("gpg", secrets.Pinentry())          # kb provision pinentry
 kb.widget("admin", secrets.Polkit())          # pkexec, systemctl, udisksctl
 ```
 

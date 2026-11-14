@@ -6,8 +6,8 @@ so a minimal session needs no separate askpass, pinentry, or polkit agent:
 | Agent | Answers | Set up with |
 | --- | --- | --- |
 | `secrets.SystemdAgent()` | `systemd-ask-password --user`: user services decrypting a key, `systemd-creds --user` | nothing else |
-| `secrets.Askpass()` | ssh, sudo, and git asking through `klemmbrett-askpass` | `SSH_ASKPASS`, `SUDO_ASKPASS`, `GIT_ASKPASS` |
-| `secrets.Pinentry()` | gpg-agent, through `klemmbrett-pinentry` | `pinentry-program` |
+| `secrets.Askpass()` | ssh, sudo, and git asking through `klemmbrett-askpass` | `kb provision askpass` |
+| `secrets.Pinentry()` | gpg-agent, through `klemmbrett-pinentry` | `kb provision pinentry` |
 | `secrets.Polkit()` | `pkexec`, `systemctl`, `udisksctl`, and other actions needing authentication | nothing else; stop other polkit agents |
 
 An agent goes where a widget's provider would. That widget asks the
@@ -134,14 +134,16 @@ git config --global core.askPass 'env KLEMMBRETT_WIDGET=git klemmbrett-askpass'
 
 ### Askpass for ssh, sudo, and git
 
-`~/.config/environment.d/askpass.conf`:
-
-```ini
-SSH_ASKPASS=klemmbrett-askpass
-SSH_ASKPASS_REQUIRE=prefer
-SUDO_ASKPASS=klemmbrett-askpass
-GIT_ASKPASS=klemmbrett-askpass
+```sh
+kb provision askpass
 ```
+
+This writes `$XDG_CONFIG_HOME/environment.d/askpass.conf` (normally
+`~/.config/environment.d/askpass.conf`). `SSH_ASKPASS`, `SUDO_ASKPASS`, and
+`GIT_ASKPASS` are set to the `klemmbrett-askpass` next to `kb`. A path under
+your home directory is written as `${HOME}/...`. `SSH_ASKPASS_REQUIRE=prefer`
+is added when that line is not already there. Other lines in the file stay.
+The variables apply at the next login.
 
 Then `sudo -A`, or `alias sudo='sudo -A'`. ssh's host key question and
 git's user name question are shown as you type them; passwords are masked.
@@ -150,15 +152,15 @@ Escape. `kb askpass PROMPT` is the same program.
 
 ### gpg-agent
 
-`~/.gnupg/gpg-agent.conf`:
-
-```text
-pinentry-program /home/me/.local/bin/klemmbrett-pinentry
+```sh
+kb provision pinentry
 ```
 
-Use the full path from `command -v klemmbrett-pinentry`, then
-`gpgconf --kill gpg-agent`. Without a running daemon, or without a
-`Pinentry` widget, every request is cancelled.
+This sets `pinentry-program` in `$GNUPGHOME/gpg-agent.conf` (normally
+`~/.gnupg/gpg-agent.conf`) to `klemmbrett-pinentry` and restarts gpg-agent.
+A path under your home directory is written as `~/...`, which gpg-agent
+expands. Other settings in the file stay. Without a running daemon, or
+without a `Pinentry` widget, every request is cancelled.
 
 ### A user service that needs a key
 
