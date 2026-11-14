@@ -124,6 +124,7 @@ A widget that sets no `match=` or `rank=` takes them from its provider:
 | --- | --- | --- |
 | `Executables` | `rk.fuzzy()` | `rk.frecency() + rk.learned()` |
 | `Applications` | `rk.fuzzy()` | `rk.frecency() + rk.learned()` |
+| `Directory.flat`, `Directory.browse` | `rk.fuzzy()` | none |
 | `WaylandWindows` | `rk.fuzzy()` | `rk.recent()` |
 | `ClipboardHistory` | `rk.fuzzy(scheme="history")` | none, it is newest first already |
 | `File` | `rk.fuzzy()` | none |
