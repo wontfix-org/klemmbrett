@@ -1,23 +1,27 @@
 # klemmbrett
 
-Keeps the Wayland clipboard and primary selection holding the same text. Named
-popup widgets can provide values to copy, open, or run, including optional
-SQLite clipboard history, text/JSON/YAML files, executables on `PATH`, and
-Wayland windows to switch to.
+A Wayland session helper configured in Python. Popup widgets list values to
+copy, open, or run, including clipboard history, text/JSON/YAML files,
+executables on `PATH`, and Wayland windows to switch to. The daemon keeps
+the clipboard and primary selection holding the same text. It can be the
+desktop notification server, and it can answer password prompts from systemd
+user services, ssh, sudo, git, gpg-agent, and polkit.
 
-A GPUI popup lists a configured widget. Entries longer than a configurable length are
-shown shortened. A widget can pack either today's accelerator menu or a
-filter: `layout=layouts.filter` adds an input bar that filters the labels,
-fuzzily for programs, windows, and files; without that, the first 35 items can be chosen with accelerator keys
-(`1`–`9`, then `a`–`z`). `Up`/`Down` and `Enter` also work, and `Escape`
-closes the popup. A StatusNotifierItem tray icon has a Widgets submenu.
+A GPUI popup lists a configured widget. Entries longer than a configurable
+length are shown shortened. A widget can pack either today's accelerator
+menu or a filter: `layout=layouts.filter` adds an input bar that filters
+the labels, fuzzily for programs, windows, and files; without that, the
+first 35 items can be chosen with accelerator keys (`1`–`9`, then `a`–`z`).
+`Up`/`Down` and `Enter` also work, and `Escape` closes the popup. A
+StatusNotifierItem tray icon has a Widgets submenu.
 
 Records can carry nested data that layouts and filters reach into, and
 providers can be live: a `Store` changed from a handler, thread, or timer
-reloads the open popup. klemmbrett can also be the desktop notification
-server: a Python function decides whether each notification is shown as a
-toast, dropped, or stashed as unread for a widget to list
-([`docs/notifications.md`](docs/notifications.md)).
+reloads the open popup. As a notification server, a Python function decides
+whether each notification is shown as a toast, dropped, or stashed as unread
+for a widget to list ([`docs/notifications.md`](docs/notifications.md)).
+The same popup answers password prompts
+([`docs/secrets.md`](docs/secrets.md)).
 
 The popup takes keyboard focus as soon as it appears, without needing the
 pointer. It is a `wlr-layer-shell` surface that requests exclusive keyboard
