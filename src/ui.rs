@@ -10,7 +10,7 @@
 //! protocol's supported way to focus a surface that was not opened from user
 //! input, so the rows and their key handling live here instead.
 
-use crate::config::{AppConfig, MultiSelect};
+use crate::config::{AppConfig, MultiSelect, PICKER_PROMPT};
 use crate::data::DataPath;
 use crate::events;
 use crate::history::shorten_label;
@@ -27,7 +27,7 @@ use crate::secret::{
     SecretTicket,
 };
 use crate::usage::{self, UsageStore};
-use crate::varlink::{self, ShowRequest};
+use crate::varlink::{self, PickOptions, ShowRequest};
 use crate::widget::{fetch_scored, Handlers, WidgetDef, Widgets};
 use crate::windows::WindowList;
 use crate::{
@@ -63,6 +63,8 @@ pub(crate) enum UiCmd {
         pointer: Option<(i32, i32)>,
         records: Option<Vec<Record>>,
         reply: Option<Reply>,
+        /// Set when this open is the ad-hoc picker rather than a named widget.
+        pick: Option<PickOptions>,
     },
     /// These widgets' records changed; an open popup showing one reloads.
     Refresh(Vec<String>),
@@ -137,6 +139,7 @@ impl Runtime {
             pointer,
             records,
             reply: None,
+            pick: None,
         })
     }
 
@@ -257,6 +260,7 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
         handlers,
         notifications: notification_config,
         socket,
+        picker,
     } = config;
     let listener = varlink::bind(&varlink::socket_path(socket.as_deref()))?;
     let backend = ArboardBackend::new()
@@ -294,6 +298,7 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
                 pointer: request.pointer,
                 records: request.records,
                 reply: request.reply,
+                pick: request.pick,
             })
             .map_err(|err| format!("failed to request popup: {err}"))
         },
@@ -312,13 +317,21 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
     install_tray(widgets.names_with_provider(), tx.clone());
     on_ready(runtime);
     crate::systemd::notify_ready();
-    let usage = open_usage(&widgets);
+    let usage = open_usage(&widgets, &picker.def);
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             let app = cx.new(|_cx| {
-                let mut app = Klemmbrett::new(widgets, handlers, label_max, center, usage);
+                let mut app = Klemmbrett::new(
+                    widgets,
+                    handlers,
+                    label_max,
+                    center,
+                    usage,
+                    picker.def,
+                    picker.prompt,
+                );
                 app.secret_open = secret_open;
                 app
             });
@@ -333,7 +346,8 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
                             pointer,
                             records,
                             reply,
-                        } => this.show_widget_menu(widget, pointer, records, reply, cx),
+                            pick,
+                        } => this.show_widget_menu(widget, pointer, records, reply, pick, cx),
                         UiCmd::Refresh(widgets) => this.refresh(widgets, cx),
                         UiCmd::Toast(cmd) => this.toast(cmd, cx),
                         UiCmd::RecordHistory(text) => this.record_history(&text),
@@ -421,6 +435,9 @@ struct Klemmbrett {
     secret_active: Option<u64>,
     /// Shared with the Varlink server, which turns `Show` away while set.
     secret_open: Arc<AtomicBool>,
+    /// The ad-hoc picker. It is not one of `widgets`.
+    picker: WidgetDef,
+    picker_prompt: Option<String>,
 }
 
 impl Klemmbrett {
@@ -430,6 +447,8 @@ impl Klemmbrett {
         label_max: usize,
         center: Option<Arc<NotificationCenter>>,
         usage: Option<Arc<Mutex<UsageStore>>>,
+        picker: WidgetDef,
+        picker_prompt: Option<String>,
     ) -> Self {
         Self {
             widgets,
@@ -444,6 +463,8 @@ impl Klemmbrett {
             secrets: VecDeque::new(),
             secret_active: None,
             secret_open: Arc::new(AtomicBool::new(false)),
+            picker,
+            picker_prompt,
         }
     }
 
@@ -556,6 +577,7 @@ impl Klemmbrett {
             multi: None,
             search: Vec::new(),
             ranking: Ranking::default(),
+            query: String::new(),
             priors: Priors::default(),
             live: false,
             reply: None,
@@ -615,11 +637,18 @@ impl Klemmbrett {
     }
 
     /// Notes the picked `keys` of `widget` for its rankers, off the UI thread.
-    fn record_usage(&self, widget: &str, keys: Vec<String>, query: String, cx: &mut Context<Self>) {
-        let (Some(store), Some(def)) = (self.usage.clone(), self.widgets.get(widget)) else {
+    fn record_usage(
+        &self,
+        widget: &str,
+        ranking: Ranking,
+        keys: Vec<String>,
+        query: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(store) = self.usage.clone() else {
             return;
         };
-        let namespaces = def.ranking.usage_namespaces(widget);
+        let namespaces = ranking.usage_namespaces(widget);
         if namespaces.is_empty() || keys.is_empty() {
             return;
         }
@@ -906,6 +935,7 @@ impl Klemmbrett {
         pointer: Option<(i32, i32)>,
         records: Option<Vec<Record>>,
         reply: Option<Reply>,
+        pick: Option<PickOptions>,
         cx: &mut Context<Self>,
     ) {
         if self.secret_active.is_some() {
@@ -914,32 +944,55 @@ impl Klemmbrett {
             finish_prompt(reply, Err(err));
             return;
         }
-        let Some(def) = self.widgets.get(&widget).cloned() else {
-            let err = format!("unknown widget {widget:?}");
-            journal::error(&err);
-            finish_prompt(reply, Err(err));
-            return;
+        let (def, query, prompt) = match pick {
+            Some(options) => {
+                let mut def = self.picker.clone();
+                def.multi = MultiSelect::resolve(def.multi.take(), options.multi);
+                let prompt = options.prompt.or_else(|| self.picker_prompt.clone());
+                (def, options.query, Some(prompt))
+            }
+            None => {
+                let Some(def) = self.widgets.get(&widget).cloned() else {
+                    let err = format!("unknown widget {widget:?}");
+                    journal::error(&err);
+                    finish_prompt(reply, Err(err));
+                    return;
+                };
+                if records.is_none() && def.source.is_none() {
+                    let err = format!("widget {widget:?} has no provider; pass records");
+                    journal::error(&format!("Failed to read widget {widget:?}: {err}"));
+                    finish_prompt(reply, Err(err));
+                    return;
+                }
+                (def, String::new(), None)
+            }
         };
-        if records.is_none() && def.source.is_none() {
-            let err = format!("widget {widget:?} has no provider; pass records");
-            journal::error(&format!("Failed to read widget {widget:?}: {err}"));
-            finish_prompt(reply, Err(err));
-            return;
-        }
         self.show_seq += 1;
         let seq = self.show_seq;
         let live = records.is_none();
+        let face = ShowFace {
+            widget: def.name.clone(),
+            multi: def.multi.clone(),
+            search: def.search.clone(),
+            ranking: def.ranking.clone(),
+            query,
+            own_theme: def.theme.clone(),
+            location: def.location,
+        };
         let ctx = LayoutContext {
-            widget: widget.clone(),
-            multi: def.multi.is_some(),
+            widget: face.widget.clone(),
+            multi: face.multi.is_some(),
             prompt: reply.is_some(),
         };
         let usage = self.usage.clone();
         let load = cx.background_executor().spawn(async move {
-            let layout = def
+            let mut layout = def
                 .layout
                 .build(&ctx)
                 .map_err(|err| format!("widget {:?}: invalid layout: {err}", def.name))?;
+            if let Some(prompt) = prompt {
+                Arc::make_mut(&mut layout).apply_prompt(prompt.as_deref(), PICKER_PROMPT);
+            }
             let (entries, priors) = if layout.has_listview() {
                 load_entries(&def, records, usage.as_deref())?
             } else {
@@ -949,9 +1002,9 @@ impl Klemmbrett {
         });
         cx.spawn(async move |this, cx| {
             let loaded = load.await;
-            let name = widget.clone();
+            let name = face.widget.clone();
             if let Err(err) = this.update(cx, |this, cx| {
-                this.finish_show(seq, widget, pointer, loaded, live, reply, cx)
+                this.finish_show(seq, pointer, loaded, live, reply, face, cx)
             }) {
                 journal::error(&format!("failed to show {name:?}: {err}"));
             }
@@ -959,15 +1012,14 @@ impl Klemmbrett {
         .detach();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn finish_show(
         &mut self,
         seq: u64,
-        widget: String,
         pointer: Option<(i32, i32)>,
         loaded: Result<(Arc<Layout>, Vec<Record>, Priors), String>,
         live: bool,
         reply: Option<Reply>,
+        face: ShowFace,
         cx: &mut Context<Self>,
     ) {
         if seq != self.show_seq {
@@ -977,15 +1029,14 @@ impl Klemmbrett {
         let (layout, entries, priors) = match loaded {
             Ok(loaded) => loaded,
             Err(err) => {
-                journal::error(&format!("Failed to read widget {widget:?}: {err}"));
+                journal::error(&format!("Failed to read widget {:?}: {err}", face.widget));
                 finish_prompt(reply, Err(err));
                 return;
             }
         };
-        let theme = self.theme_for(&widget);
-        let def = self.widgets.get(&widget);
-        let location = def
-            .and_then(|def| def.location)
+        let theme = self.widgets.theme_of(face.own_theme.as_ref());
+        let location = face
+            .location
             .or(layout.location())
             .or(layout.window_style(&theme).location)
             .unwrap_or(Location::Pointer);
@@ -1004,10 +1055,11 @@ impl Klemmbrett {
             return;
         };
         let shown = Shown {
-            widget,
-            multi: def.and_then(|def| def.multi.clone()),
-            search: def.map(|def| def.search.clone()).unwrap_or_default(),
-            ranking: def.map(|def| def.ranking.clone()).unwrap_or_default(),
+            widget: face.widget,
+            multi: face.multi,
+            search: face.search,
+            ranking: face.ranking,
+            query: face.query,
             priors,
             live,
             reply,
@@ -1091,12 +1143,24 @@ impl Klemmbrett {
     }
 }
 
+/// What an open needs after its records have been read.
+struct ShowFace {
+    widget: String,
+    multi: Option<MultiSelect>,
+    search: Vec<DataPath>,
+    ranking: Ranking,
+    query: String,
+    own_theme: Option<ThemeSpec>,
+    location: Option<Location>,
+}
+
 /// What a visible popup was opened for.
 struct Shown {
     widget: String,
     multi: Option<MultiSelect>,
     search: Vec<DataPath>,
     ranking: Ranking,
+    query: String,
     priors: Priors,
     /// The rows come from the provider, so a refresh may reload them.
     live: bool,
@@ -1138,8 +1202,8 @@ impl Drop for SecretSession {
 }
 
 /// Opens the usage store when a widget ranks by past picks.
-fn open_usage(widgets: &Widgets) -> Option<Arc<Mutex<UsageStore>>> {
-    if !widgets.uses_usage() {
+fn open_usage(widgets: &Widgets, picker: &WidgetDef) -> Option<Arc<Mutex<UsageStore>>> {
+    if !widgets.uses_usage() && !picker.ranking.uses_usage() {
         return None;
     }
     let path = usage::default_usage_path();
@@ -1337,6 +1401,7 @@ impl PopupView {
             multi,
             search,
             ranking,
+            query,
             priors,
             live,
             reply,
@@ -1346,6 +1411,7 @@ impl PopupView {
             multi: None,
             search: Vec::new(),
             ranking: Ranking::default(),
+            query: String::new(),
             priors: Priors::default(),
             live: false,
             reply: None,
@@ -1366,7 +1432,7 @@ impl PopupView {
             priors,
             order: Vec::new(),
             live,
-            query: String::new(),
+            query,
             display_id: placement.display_id,
             card: placement.card,
             location: placement.location,
@@ -1407,7 +1473,7 @@ impl PopupView {
         self.priors = shown.priors;
         self.live = shown.live;
         self.secret = shown.secret;
-        self.query.clear();
+        self.query = shown.query;
         self.refilter();
         self.highlighted = self.first_key();
         self.selected = 0;
@@ -1795,8 +1861,10 @@ impl PopupView {
             let widget = self.widget_name.clone();
             let keys = records.iter().map(|record| record.key.clone()).collect();
             let query = self.query.clone();
-            self.app
-                .update(cx, |app, cx| app.record_usage(&widget, keys, query, cx));
+            let ranking = self.ranking.clone();
+            self.app.update(cx, |app, cx| {
+                app.record_usage(&widget, ranking, keys, query, cx)
+            });
         }
         if self.reply.is_some() {
             let values = records.iter().map(|record| record.value.clone()).collect();
@@ -2579,6 +2647,7 @@ impl ksni::Tray for TrayIcon {
                                             pointer: None,
                                             records: None,
                                             reply: None,
+                                            pick: None,
                                         },
                                         "open a widget from the tray",
                                     );

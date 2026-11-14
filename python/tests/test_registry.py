@@ -199,6 +199,29 @@ def test_without_a_daemon_operations_raise():
         kb.copy("x")
 
 
+def test_picker_defaults_to_a_fuzzy_filter_and_can_be_replaced():
+    from klemmbrett import ranking as rk
+
+    default = _registry.wire()["picker"]
+    assert default["prompt"] is None
+    assert default["multi"] is None
+    assert default["ranking"]["match"]["kind"] == "fuzzy"
+    assert callable(default["layout"])
+    window = default["layout"]("picker", True, True)
+    assert window["kind"] == "window"
+    assert any(child["kind"] == "inputbar" for child in window["children"])
+    assert "marker" in json.dumps(window)
+
+    kb.picker(multi=True, prompt="pick> ", match=rk.substring(), search=["label", "value"])
+    configured = _registry.wire()["picker"]
+    assert configured["prompt"] == "pick> "
+    assert configured["multi"] == ("tab", "shift-tab")
+    assert configured["search"] == ["label", "value"]
+    assert configured["ranking"]["match"] == {"kind": "substring"}
+    with pytest.raises(ValueError, match="more than once"):
+        kb.picker()
+
+
 def test_load_runs_config_files_relative_to_their_directory(tmp_path):
     (tmp_path / "links.json").write_text(json.dumps([{"label": "Docs", "value": "https://docs"}]))
     (tmp_path / "helpers.py").write_text("PREFIX = '>'\n")
@@ -241,5 +264,5 @@ def test_cli_help_exits_zero(capfd):
     from klemmbrett.__main__ import main
 
     assert main(["--help"]) == 0
-    assert "Usage: klemmbrett" in capfd.readouterr().out
+    assert "Usage: kb" in capfd.readouterr().out
     assert main(["show"]) == 2

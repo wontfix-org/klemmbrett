@@ -178,8 +178,9 @@ width otherwise. They are plain numbers, so arithmetic works:
 
 A layout is a `ui.Window`, or a function of a `LayoutContext` returning
 one. The function runs every time the widget opens, so it can depend on
-`ctx.widget`, `ctx.multi`, and `ctx.prompt` (`True` for `kb
-prompt`). Shipped layouts:
+`ctx.widget`, `ctx.multi`, and `ctx.prompt` (`True` for `kb` with no
+subcommand and for `kb prompt`). The ad-hoc picker reports
+`ctx.widget == "picker"`. Shipped layouts:
 
 | Layout | Location | Contents |
 | --- | --- | --- |

@@ -68,6 +68,7 @@ def test_stands_alone():
 def test_client_calls_streams_and_raises(varlink_server):
     path, received, replies = varlink_server
     replies["Prompt"] = [{"parameters": {"values": ["a"]}}]
+    replies["Pick"] = [{"parameters": {"values": ["b"]}}]
     replies["Subscribe"] = [
         {"parameters": {"event": {"kind": "ready"}}, "continues": True},
         {"parameters": {"event": {"kind": "changed", "widget": "w"}}, "continues": True},
@@ -76,6 +77,7 @@ def test_client_calls_streams_and_raises(varlink_server):
     replies["Show"] = [{"error": "org.wontfix.klemmbrett.UnknownWidget", "parameters": {"widget": "x", "known": []}}]
     with rpc.Client(path) as client:
         assert client.prompt("w", ["a", {"value": "b", "n": 1}], pointer=(1, 2)) == ["a"]
+        assert client.pick(["a", "b"], query="b", multi=True, prompt="> ") == ["b"]
         assert [e["widget"] for e in client.subscribe(["w"])] == ["w", "v"]
         with pytest.raises(rpc.VarlinkError) as err:
             client.show("x")
@@ -91,7 +93,12 @@ def test_client_calls_streams_and_raises(varlink_server):
             ],
         },
     }
-    assert received[1]["more"] is True
+    assert received[1]["method"] == "org.wontfix.klemmbrett.Pick"
+    assert "widget" not in received[1]["parameters"]
+    assert received[1]["parameters"]["query"] == "b"
+    assert received[1]["parameters"]["multi"] is True
+    assert [row["value"] for row in received[1]["parameters"]["records"]] == ["a", "b"]
+    assert received[2]["more"] is True
 
 
 def test_async_client_calls_and_streams(varlink_server):

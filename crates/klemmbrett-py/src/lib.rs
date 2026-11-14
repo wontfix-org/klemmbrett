@@ -890,7 +890,55 @@ fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
             return Err(value_error("label_max must be greater than zero"));
         }
     }
+    if let Some(picker) = item(dict, "picker")? {
+        app.picker = picker_config(&picker)?;
+    }
     Ok(app)
+}
+
+fn picker_config(value: &Bound<'_, PyAny>) -> PyResult<klemmbrett::config::PickerConfig> {
+    let dict = value
+        .cast::<PyDict>()
+        .map_err(|_| value_error("picker: expected a dict"))?;
+    let context = |err: PyErr| {
+        Python::attach(|py| {
+            let message = format!("picker: {}", err.value(py));
+            PyErr::from_type(err.get_type(py), message)
+        })
+    };
+    let mut def = WidgetDef::new(klemmbrett::config::PICKER_NAME, None);
+    def.layout = layout_spec(item(dict, "layout")?.as_ref()).map_err(context)?;
+    def.theme = optional_spec(item(dict, "theme")?.as_ref()).map_err(context)?;
+    def.location = match item(dict, "location")? {
+        Some(value) => Some(
+            location(&value.extract::<String>()?)
+                .map_err(value_error)
+                .map_err(context)?,
+        ),
+        None => None,
+    };
+    def.multi = multi(item(dict, "multi")?, "picker")?;
+    if let Some(search) = item(dict, "search")? {
+        def.search = search
+            .extract::<Vec<String>>()?
+            .iter()
+            .map(|path| DataPath::parse(path))
+            .collect::<Result<_, _>>()
+            .map_err(|err| value_error(format!("picker: search: {err}")))?;
+    }
+    if let Some(ranking) = item(dict, "ranking")? {
+        def.ranking = Ranking::from_json(&to_json(&ranking)?)
+            .map_err(|err| value_error(format!("picker: {err}")))?;
+    }
+    let prompt = match item(dict, "prompt")? {
+        Some(value) => Some(
+            value
+                .extract::<String>()
+                .map_err(|_| value_error("picker: prompt must be a string"))?,
+        ),
+        None => None,
+    };
+    Ok(klemmbrett::config::PickerConfig { def, prompt })
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +964,7 @@ fn main(
     };
     let socket = parsed.socket;
     match parsed.invocation {
+        Invocation::Pick(args) => Ok(py.detach(|| cli::run_pick(&args, socket.as_deref()))),
         Invocation::Show(args) => Ok(py.detach(|| cli::run_popup(&args, false, socket.as_deref()))),
         Invocation::Prompt(args) => {
             Ok(py.detach(|| cli::run_popup(&args, true, socket.as_deref())))

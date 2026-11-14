@@ -134,6 +134,19 @@ pub struct Ranking {
 }
 
 impl Ranking {
+    /// fzf-style fuzzy matching, with no rankers.
+    pub fn fuzzy() -> Self {
+        Self {
+            matching: MatchSpec::Fuzzy {
+                scheme: Scheme::default(),
+                case: Case::default(),
+                syntax: true,
+            },
+            rank: Vec::new(),
+            prefer: Prefer::default(),
+        }
+    }
+
     pub fn from_json(value: &Value) -> Result<Self, String> {
         let ranking = Ranking::deserialize(value).map_err(|err| format!("ranking: {err}"))?;
         for term in &ranking.rank {

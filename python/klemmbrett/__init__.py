@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from . import layouts, notifications, providers, ranking, rpc, secrets, themes, ui
 from ._record import Record
-from ._registry import Widget, configure, widget
+from ._registry import Widget, configure, picker, widget
 from ._schema import SchemaError
 from ._runtime import activate_window, copy, is_running, launch, notify, quit, set_theme, show
 from .layouts import LayoutContext
@@ -45,6 +45,7 @@ __all__ = [
     "mm",
     "notifications",
     "pct",
+    "picker",
     "provider",
     "providers",
     "px",

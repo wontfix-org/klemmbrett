@@ -32,6 +32,12 @@ method Show(widget: string, pointer: ?Point, records: ?[]Record) -> ()
 # Handlers do not run. Cancelling, or opening another popup, returns no values.
 method Prompt(widget: string, pointer: ?Point, records: ?[]Record) -> (values: []string)
 
+# Opens the configured ad-hoc picker. There is no widget name. records may be
+# empty. query is the text the filter starts with. multi overrides the
+# configured multi-select (left out keeps it). prompt replaces the label in
+# front of the filter. Cancelling returns no values.
+method Pick(records: []Record, pointer: ?Point, query: ?string, multi: ?bool, prompt: ?string) -> (values: []string)
+
 # The configured widgets.
 method Widgets() -> (widgets: []WidgetInfo)
 

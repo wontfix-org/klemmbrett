@@ -132,6 +132,26 @@ fn show_and_prompt_reach_the_ui() {
 }
 
 #[test]
+fn pick_needs_no_widget_name() {
+    let fixture = Fixture::start(false);
+    let mut client = fixture.client();
+    let reply = client
+        .call(
+            "Pick",
+            json!({
+                "records": [{ "value": "one" }, { "value": "two" }],
+                "query": "tw",
+                "multi": true,
+                "prompt": "> ",
+            }),
+        )
+        .unwrap();
+    assert_eq!(reply, json!({ "values": ["one"] }));
+    let (error, _) = remote(client.call("Pick", json!({})));
+    assert_eq!(error, "org.varlink.service.InvalidParameter");
+}
+
+#[test]
 fn errors_name_the_problem() {
     let fixture = Fixture::start(false);
     let mut client = fixture.client();
