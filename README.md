@@ -216,6 +216,12 @@ state). When logind has no session, klemmbrett logs a warning and continues.
 `kb.configure(session=True)` makes a missing session a startup error.
 `session=False` does not subscribe.
 
+The output layout (`zxdg_output_v1`) is probed the same way. Placement uses
+the live layout while the subscription is running, and reads it once per
+popup when the subscription is off or the protocol is missing.
+`kb.configure(outputs=True)` makes a missing protocol a startup error.
+`outputs=False` does not subscribe.
+
 Widgets, providers, record data, live stores, handlers, and recipes are
 documented in [`docs/widgets.md`](docs/widgets.md). Fuzzy matching and
 ordering by past picks (`match=rk.fuzzy()`, `rank=rk.frecency()`) are

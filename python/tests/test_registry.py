@@ -157,6 +157,16 @@ def test_layouts_are_static_or_called_per_open():
         wire_widget("broken")["layout"]("broken", False, False)
 
 
+def test_output_tracking_is_probed_unless_configured():
+    assert _registry.wire()["outputs"] is None
+    kb.configure(outputs=True)
+    assert _registry.wire()["outputs"] is True
+    kb.configure(outputs=False)
+    assert _registry.wire()["outputs"] is False
+    with pytest.raises(TypeError, match="outputs"):
+        kb.configure(outputs="yes")  # type: ignore[arg-type]
+
+
 def test_session_tracking_is_probed_unless_configured():
     assert _registry.wire()["session"] is None
     kb.configure(session=True)
