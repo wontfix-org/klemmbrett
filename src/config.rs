@@ -5,9 +5,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::launch::Launch;
+use crate::layout::LayoutSpec;
 use crate::notifications::NotificationConfig;
-use crate::widget::{Handlers, NoHandlers, Widgets};
+use crate::rank::Ranking;
+use crate::widget::{Handlers, NoHandlers, WidgetDef, Widgets};
 use crate::DEFAULT_LABEL_MAX;
+
+/// The ad-hoc picker's usage namespace and the name layouts see.
+pub const PICKER_NAME: &str = "picker";
+/// Shown in front of the filter when the layout's prompt has no text.
+pub const PICKER_PROMPT: &str = "> ";
 
 /// Everything the daemon needs once the configuration has been evaluated.
 pub struct AppConfig {
@@ -19,6 +26,25 @@ pub struct AppConfig {
     pub notifications: Option<NotificationConfig>,
     /// The Varlink socket; `None` uses [`crate::socket_path`]'s default.
     pub socket: Option<PathBuf>,
+    /// The picker `kb` opens when it is given no subcommand.
+    pub picker: PickerConfig,
+}
+
+/// How the ad-hoc picker looks and matches. `prompt` replaces the label in
+/// front of the filter; `None` leaves a layout's own text and fills a blank
+/// one with [`PICKER_PROMPT`].
+pub struct PickerConfig {
+    pub def: WidgetDef,
+    pub prompt: Option<String>,
+}
+
+impl Default for PickerConfig {
+    fn default() -> Self {
+        let mut def = WidgetDef::new(PICKER_NAME, None);
+        def.layout = LayoutSpec::filter();
+        def.ranking = Ranking::fuzzy();
+        Self { def, prompt: None }
+    }
 }
 
 impl Default for AppConfig {
@@ -31,6 +57,7 @@ impl Default for AppConfig {
             handlers: Arc::new(NoHandlers),
             notifications: None,
             socket: None,
+            picker: PickerConfig::default(),
         }
     }
 }
@@ -44,6 +71,16 @@ pub struct MultiSelect {
 }
 
 impl MultiSelect {
+    /// `Some(true)` turns multi-select on, using `configured` or Tab /
+    /// Shift-Tab. `Some(false)` turns it off. `None` keeps `configured`.
+    pub fn resolve(configured: Option<Self>, choice: Option<bool>) -> Option<Self> {
+        match choice {
+            Some(true) => Some(configured.unwrap_or_else(Self::fzf)),
+            Some(false) => None,
+            None => configured,
+        }
+    }
+
     pub fn fzf() -> Self {
         Self {
             select: KeySpec::parse("tab").expect("tab"),
@@ -134,6 +171,18 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multi_select_resolve_overrides_the_configured_keys() {
+        let keys = MultiSelect::fzf();
+        assert_eq!(MultiSelect::resolve(None, None), None);
+        assert_eq!(
+            MultiSelect::resolve(Some(keys.clone()), None),
+            Some(keys.clone())
+        );
+        assert_eq!(MultiSelect::resolve(None, Some(true)), Some(keys.clone()));
+        assert_eq!(MultiSelect::resolve(Some(keys), Some(false)), None);
+    }
 
     #[test]
     fn key_spec_parses_fzf_names_and_modifiers() {

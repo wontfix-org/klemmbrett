@@ -487,6 +487,15 @@ impl Widgets {
             .map(|index| &self.themes[index])
     }
 
+    /// The theme a definition uses, including one that is not a named widget.
+    /// A definition without its own palette uses the current file-wide theme.
+    pub fn theme_of(&self, own: Option<&ThemeSpec>) -> Theme {
+        match own {
+            Some(own) => Theme::resolve(&[own, &self.overrides]),
+            None => self.default_theme.clone(),
+        }
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.defs.iter().map(|def| def.name.clone()).collect()
     }

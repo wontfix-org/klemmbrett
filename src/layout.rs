@@ -205,6 +205,26 @@ impl Layout {
         self.location
     }
 
+    /// `Some` replaces every prompt's text. `None` fills a prompt that has
+    /// none, using `default`, and leaves one that already has text.
+    pub fn apply_prompt(&mut self, text: Option<&str>, default: &str) {
+        fn walk(node: &mut Node, text: Option<&str>, default: &str) {
+            if matches!(node.kind, NodeKind::Prompt) {
+                match text {
+                    Some(text) => node.style.text = Some(text.to_owned()),
+                    None if node.style.text.is_none() => {
+                        node.style.text = Some(default.to_owned());
+                    }
+                    None => {}
+                }
+            }
+            for child in &mut node.children {
+                walk(child, text, default);
+            }
+        }
+        walk(&mut self.root, text, default);
+    }
+
     pub fn has_inputbar(&self) -> bool {
         self.inputbar
     }
@@ -478,7 +498,21 @@ pub trait LayoutBuilder: Send + Sync {
     fn build(&self, ctx: &LayoutContext) -> Result<Layout, String>;
 }
 
+/// Builds [`Layout::filter`], so multi-select markers follow the open.
+struct FilterLayout;
+
+impl LayoutBuilder for FilterLayout {
+    fn build(&self, ctx: &LayoutContext) -> Result<Layout, String> {
+        Ok(Layout::filter(ctx.multi))
+    }
+}
+
 impl LayoutSpec {
+    /// The filter layout, rebuilt for each open so `ctx.multi` is honored.
+    pub fn filter() -> Self {
+        Self::Dynamic(Arc::new(FilterLayout))
+    }
+
     pub fn build(&self, ctx: &LayoutContext) -> Result<Arc<Layout>, String> {
         match self {
             Self::Default => Ok(Arc::new(Layout::menu(ctx.multi))),
@@ -511,6 +545,23 @@ mod tests {
         assert_eq!(menu.card_size(&theme, 1, 20), (236.0, 30.0));
         assert_eq!(menu.card_size(&theme, 10, 64), (520.0, 282.0));
         assert_eq!(menu.card_size(&theme, 100, 64), (520.0, 600.0));
+    }
+
+    #[test]
+    fn filter_spec_follows_multi_and_prompt_text_fills_only_blanks() {
+        let ctx = LayoutContext {
+            widget: "picker".into(),
+            multi: true,
+            prompt: true,
+        };
+        let layout = LayoutSpec::filter().build(&ctx).unwrap();
+        assert!(format!("{layout:?}").contains("Marker"));
+        let mut layout = Layout::filter(false);
+        layout.apply_prompt(None, "> ");
+        assert!(format!("{layout:?}").contains("\"> \""));
+        layout.apply_prompt(Some("go> "), "> ");
+        assert!(format!("{layout:?}").contains("\"go> \""));
+        assert!(!format!("{layout:?}").contains("\"> \""));
     }
 
     #[test]

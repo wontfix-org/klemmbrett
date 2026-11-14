@@ -13,6 +13,7 @@ from typing import Any
 from . import _core, _runtime, notifications, providers, secrets
 from . import ranking as rk
 from ._record import Record, from_wire, to_record
+from . import layouts
 from .layouts import LayoutContext
 from .style import Theme
 from .ui import Window
@@ -38,6 +39,7 @@ class Registry:
     def __init__(self) -> None:
         self.settings = Settings()
         self.widgets: dict[str, Widget] = {}
+        self.picker: Picker | None = None
 
 
 registry = Registry()
@@ -83,6 +85,114 @@ def configure(
         if not isinstance(overrides, Theme):
             overrides = Theme(overrides)
         settings.overrides = overrides
+
+
+class Picker:
+    """The popup `kb` opens when it has no subcommand. Not a named widget."""
+
+    def __init__(
+        self,
+        *,
+        layout: Layout | None = None,
+        theme: str | Theme | None = None,
+        location: str | None = None,
+        multi: bool = False,
+        select: str | None = None,
+        deselect: str | None = None,
+        search: Sequence[str] | None = None,
+        match: rk.Matcher | None = None,
+        rank: rk.Rank | None = None,
+        prefer: str = "blend",
+        prompt: str | None = None,
+    ) -> None:
+        if layout is None:
+            layout = layouts.filter
+        if not (isinstance(layout, Window) or callable(layout)):
+            raise TypeError(
+                f"picker: layout must be a ui.Window or a function returning one, got {layout!r}"
+            )
+        if isinstance(search, str):
+            search = [search]
+        if search is not None and not all(isinstance(path, str) and path for path in search):
+            raise TypeError("picker: search must be a list of paths such as 'sender.name'")
+        if theme is not None:
+            _runtime.theme_wire(theme)
+        if multi or select or deselect:
+            multi_keys: tuple[str, str] | None = (select or "tab", deselect or "shift-tab")
+        else:
+            multi_keys = None
+        if match is None:
+            match = rk.fuzzy()
+        if not isinstance(match, rk.Matcher):
+            raise TypeError(f"picker: match must be a matcher such as rk.fuzzy(), got {match!r}")
+        if rank is not None and not isinstance(rank, rk.Rank):
+            raise TypeError(f"picker: rank must be rankers such as rk.frecency(), got {rank!r}")
+        if prefer not in rk.PREFER:
+            raise ValueError(f"picker: prefer must be one of {', '.join(rk.PREFER)}")
+        if prompt is not None and not isinstance(prompt, str):
+            raise TypeError(f"picker: prompt must be a string, got {prompt!r}")
+        self.layout = layout
+        self.theme = theme
+        self.location = location
+        self.multi = multi_keys
+        self.search = list(search or ())
+        self.match = match
+        self.rank = rank
+        self.prefer = prefer
+        #: `None` leaves a layout's own prompt text; a blank one becomes `"> "`.
+        self.prompt = prompt
+
+    def _wire(self) -> dict[str, Any]:
+        return {
+            "layout": _layout(self.layout),
+            "theme": None if self.theme is None else _runtime.theme_wire(self.theme),
+            "location": self.location,
+            "multi": self.multi,
+            "search": self.search,
+            "ranking": rk.wire(self.match, self.rank, self.prefer),
+            "prompt": self.prompt,
+        }
+
+
+def picker(
+    *,
+    layout: Layout | None = None,
+    theme: str | Theme | None = None,
+    location: str | None = None,
+    multi: bool = False,
+    select: str | None = None,
+    deselect: str | None = None,
+    search: Sequence[str] | None = None,
+    match: rk.Matcher | None = None,
+    rank: rk.Rank | None = None,
+    prefer: str = "blend",
+    prompt: str | None = None,
+) -> None:
+    """Configures the picker `kb` opens when it has no subcommand.
+
+    There is no widget name and no provider: the choices come from the
+    command, and the picked values are printed. `layout` defaults to
+    `layouts.filter` and `match` to `ranking.fuzzy()`. `prompt` is the
+    label in front of the filter; left out, a blank prompt becomes `"> "`.
+    `multi`, `select`, `deselect`, `search`, `rank`, `prefer`, `theme`, and
+    `location` mean the same as on `kb.widget`. Calling this twice is an
+    error. Without it, those defaults are used.
+    """
+    if registry.picker is not None:
+        raise ValueError("the picker is configured more than once")
+    registry.picker = Picker(
+        layout=layout,
+        theme=theme,
+        location=location,
+        multi=multi,
+        select=select,
+        deselect=deselect,
+        search=search,
+        match=match,
+        rank=rank,
+        prefer=prefer,
+        prompt=prompt,
+    )
 
 
 class Widget:
@@ -471,6 +581,7 @@ def wire() -> dict[str, Any]:
         "clipboard": bool(hooks),
         "notifications": notifications._wire(),
         "route_notifications": notifications._routed(),
+        "picker": (registry.picker or Picker())._wire(),
     }
 
 

@@ -91,6 +91,40 @@ your home directory is written with systemd's `%h` specifier. Pass
 (`kb install-systemd --config /path/to/config.py`); the same specifier is
 used when that file is under your home directory.
 
+With no subcommand, `kb` is a picker. Choices come from stdin when it is not
+a terminal, or from a file. Each picked value is printed on its own line.
+Cancelling prints nothing and exits 1. A problem reading the choices or
+reaching the daemon exits 2.
+
+```sh
+printf '%s\n' one two | kb
+kb -m --query tw choices.txt
+printf 'one\0two\0' | kb -0
+```
+
+`-m` marks several rows (Tab and Shift-Tab). `--no-multi` picks one row even
+when the configured picker allows several. `-q` is the text the filter
+starts with. `--prompt` replaces the label in front of it. `-0` reads
+NUL-separated text. `-x` and `-y` are pointer coordinates, as for `show`.
+`--format text|json|yaml` is the same record format a `File` provider reads
+and defaults to `text`. `-` reads stdin even from a terminal. A repeated
+line is kept, and the printed value is still that line.
+
+The popup is `kb.picker()` in the configuration. It is not a named widget,
+so nothing has to be declared for `kb` to open one. Left unconfigured, it
+is a centered filter with fzf-style fuzzy matching, and a blank prompt
+becomes `"> "`:
+
+```python
+from klemmbrett import ranking as rk
+
+kb.picker(match=rk.fuzzy(scheme="path"), multi=True, prompt="run> ")
+```
+
+`layout`, `theme`, `location`, `search`, `rank`, and `prefer` mean the same
+as on a widget. Layout functions see `ctx.widget == "picker"` and
+`ctx.prompt == True`.
+
 To open a configured widget:
 
 ```sh

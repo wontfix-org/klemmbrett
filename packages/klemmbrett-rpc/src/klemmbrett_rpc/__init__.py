@@ -152,6 +152,30 @@ class Client:
         reply = self.call("Prompt", widget=widget, pointer=_pointer(pointer), records=_records(records))
         return list(reply.get("values", []))
 
+    def pick(
+        self,
+        records: Iterable[RecordLike],
+        *,
+        pointer: tuple[int, int] | None = None,
+        query: str | None = None,
+        multi: bool | None = None,
+        prompt: str | None = None,
+    ) -> list[str]:
+        """Opens the configured picker and returns the picked values.
+
+        Unlike `prompt`, this does not name a widget. An empty `records`
+        still opens the picker.
+        """
+        reply = self.call(
+            "Pick",
+            records=[_encode_record(record) for record in records],
+            pointer=_pointer(pointer),
+            query=query,
+            multi=multi,
+            prompt=prompt,
+        )
+        return list(reply.get("values", []))
+
     def widgets(self) -> list[dict[str, Any]]:
         return list(self.call("Widgets").get("widgets", []))
 
@@ -253,6 +277,26 @@ class AsyncClient:
         pointer: tuple[int, int] | None = None,
     ) -> list[str]:
         reply = await self.call("Prompt", widget=widget, pointer=_pointer(pointer), records=_records(records))
+        return list(reply.get("values", []))
+
+    async def pick(
+        self,
+        records: Iterable[RecordLike],
+        *,
+        pointer: tuple[int, int] | None = None,
+        query: str | None = None,
+        multi: bool | None = None,
+        prompt: str | None = None,
+    ) -> list[str]:
+        """Opens the configured picker and returns the picked values."""
+        reply = await self.call(
+            "Pick",
+            records=[_encode_record(record) for record in records],
+            pointer=_pointer(pointer),
+            query=query,
+            multi=multi,
+            prompt=prompt,
+        )
         return list(reply.get("values", []))
 
     async def subscribe(self, widgets: Iterable[str] | None = None) -> AsyncIterator[dict[str, Any]]:

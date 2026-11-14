@@ -5,6 +5,7 @@
 //! `parameters` or `error` and `parameters`, plus `continues` while a `more`
 //! call keeps streaming. The interface is `org.wontfix.klemmbrett.varlink`.
 
+use crate::config::PICKER_NAME;
 use crate::events;
 use crate::journal;
 use crate::notifications::{NotificationCenter, NotifyRequest};
@@ -37,6 +38,16 @@ pub struct ShowRequest {
     pub pointer: Option<(i32, i32)>,
     pub records: Option<Vec<Record>>,
     pub reply: Option<Reply>,
+    /// Set for the ad-hoc picker, which is not a named widget.
+    pub pick: Option<PickOptions>,
+}
+
+/// Overrides for one ad-hoc pick. `multi` left out keeps the configured picker.
+#[derive(Debug, Clone)]
+pub struct PickOptions {
+    pub query: String,
+    pub multi: Option<bool>,
+    pub prompt: Option<String>,
 }
 
 /// `explicit`, then `$KLEMMBRETT_SOCKET`, then
@@ -257,6 +268,7 @@ impl Server {
             (INTERFACE, "Subscribe") => return self.subscribe(&parameters, more, send),
             (INTERFACE, "Show") => self.show(&parameters, false),
             (INTERFACE, "Prompt") => self.show(&parameters, true),
+            (INTERFACE, "Pick") => self.pick(&parameters),
             (INTERFACE, "Widgets") => Ok(self.widget_info()),
             (INTERFACE, "Records") => self.records(&parameters),
             (INTERFACE, "StashList" | "StashMarkRead") => self.handlers.call(name, parameters),
@@ -299,18 +311,7 @@ impl Server {
         {
             return Err(CallError::new("Busy", json!({})));
         }
-        let pointer = match &parameters["pointer"] {
-            Value::Null => None,
-            point => {
-                let coordinate = |name: &str| {
-                    point[name]
-                        .as_i64()
-                        .and_then(|value| i32::try_from(value).ok())
-                        .ok_or_else(|| invalid("pointer"))
-                };
-                Some((coordinate("x")?, coordinate("y")?))
-            }
-        };
+        let pointer = read_pointer(parameters)?;
         let records = match &parameters["records"] {
             Value::Null => None,
             Value::Array(rows) if rows.is_empty() => None,
@@ -326,21 +327,65 @@ impl Server {
         } else {
             (None, None)
         };
-        (self.show)(ShowRequest {
+        self.deliver(ShowRequest {
             widget: widget.to_owned(),
             pointer,
             records,
             reply,
-        })
-        .map_err(CallError::failed)?;
-        let Some(answer) = answer else {
-            return Ok(json!({}));
-        };
-        match answer.recv() {
-            Ok(Ok(values)) => Ok(json!({ "values": values })),
-            Ok(Err(err)) => Err(CallError::failed(err)),
-            Err(_) => Err(CallError::failed("the prompt closed without a result")),
+            pick: None,
+        })?;
+        wait_for_prompt(answer)
+    }
+
+    /// Opens the configured picker. `records` is required and may be empty.
+    /// There is no widget name: the daemon's picker supplies the layout.
+    fn pick(&self, parameters: &Value) -> Result<Value, CallError> {
+        if self.busy() {
+            return Err(CallError::new("Busy", json!({})));
         }
+        let pointer = read_pointer(parameters)?;
+        let records = match &parameters["records"] {
+            Value::Array(rows) => Some(decode_records(PICKER_NAME, rows)?),
+            _ => return Err(invalid("records")),
+        };
+        let query = match &parameters["query"] {
+            Value::Null => String::new(),
+            Value::String(text) => text.clone(),
+            _ => return Err(invalid("query")),
+        };
+        let multi = match &parameters["multi"] {
+            Value::Null => None,
+            Value::Bool(value) => Some(*value),
+            _ => return Err(invalid("multi")),
+        };
+        let prompt = match &parameters["prompt"] {
+            Value::Null => None,
+            Value::String(text) => Some(text.clone()),
+            _ => return Err(invalid("prompt")),
+        };
+        let (tx, rx) = mpsc::channel();
+        self.deliver(ShowRequest {
+            widget: PICKER_NAME.into(),
+            pointer,
+            records,
+            reply: Some(tx),
+            pick: Some(PickOptions {
+                query,
+                multi,
+                prompt,
+            }),
+        })?;
+        wait_for_prompt(Some(rx))
+    }
+
+    fn busy(&self) -> bool {
+        self.secrets
+            .get()
+            .is_some_and(|(open, _)| open.load(Ordering::Relaxed))
+    }
+
+    fn deliver(&self, request: ShowRequest) -> Result<(), CallError> {
+        (self.show)(request).map_err(CallError::failed)
     }
 
     fn widget_info(&self) -> Value {
@@ -514,6 +559,34 @@ impl Server {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return false,
             }
         }
+    }
+}
+
+fn read_pointer(parameters: &Value) -> Result<Option<(i32, i32)>, CallError> {
+    match &parameters["pointer"] {
+        Value::Null => Ok(None),
+        point => {
+            let coordinate = |name: &str| {
+                point[name]
+                    .as_i64()
+                    .and_then(|value| i32::try_from(value).ok())
+                    .ok_or_else(|| invalid("pointer"))
+            };
+            Ok(Some((coordinate("x")?, coordinate("y")?)))
+        }
+    }
+}
+
+fn wait_for_prompt(
+    answer: Option<mpsc::Receiver<Result<Vec<String>, String>>>,
+) -> Result<Value, CallError> {
+    let Some(answer) = answer else {
+        return Ok(json!({}));
+    };
+    match answer.recv() {
+        Ok(Ok(values)) => Ok(json!({ "values": values })),
+        Ok(Err(err)) => Err(CallError::failed(err)),
+        Err(_) => Err(CallError::failed("the prompt closed without a result")),
     }
 }
 

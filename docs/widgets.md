@@ -113,8 +113,10 @@ under systemd) and ends that handler; the daemon keeps running. Handlers
 run one at a time on a dedicated thread, in the order the events
 happened, so a slow handler never freezes the popup.
 
-`kb prompt` and the Varlink `Prompt` method return the selected
-values and do not call any handlers.
+`kb` with no subcommand, `kb prompt`, and the Varlink `Pick` and `Prompt`
+methods return the selected values and do not call any handlers. `kb` uses
+the picker from `kb.picker()` and does not name a widget. `kb prompt` uses
+a widget you declared.
 
 ### Operations
 
@@ -352,7 +354,15 @@ def decode(record):
     kb.copy(result.stdout)
 ```
 
-Paste-style pickers that print instead of acting are `kb prompt`:
+Paste-style pickers that print instead of acting are a bare `kb`. The
+popup is whatever `kb.picker()` configured, or a fuzzy filter when it was
+left out:
+
+```sh
+printf '%s\n' one two | kb
+```
+
+`kb prompt` does the same for a named widget:
 
 ```sh
 printf '%s\n' one two | kb prompt pick -

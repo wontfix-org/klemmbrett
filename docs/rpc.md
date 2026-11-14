@@ -59,6 +59,7 @@ parameters may be left out or `null`.
 | --- | --- | --- |
 | `Show` | `widget`, `pointer?`, `records?` | `{}` |
 | `Prompt` | `widget`, `pointer?`, `records?` | `values`: picked values |
+| `Pick` | `records`, `pointer?`, `query?`, `multi?`, `prompt?` | `values`: picked values |
 | `Widgets` | | `widgets`: `name`, `provider`, `multi` |
 | `Records` | `widget` | `records`: what the provider supplies now |
 | `Subscribe` | `widgets?` | a stream of `event` (call with `more`) |
@@ -81,6 +82,13 @@ Without `records`, or with an empty list, the widget's provider supplies the
 rows. `Show` runs the widget's `on_select` as usual. `Prompt` waits until
 the popup closes, returns the picked values, and runs no handlers.
 Cancelling, or opening another popup, returns no values.
+
+`Pick` is the picker `kb` opens when it has no subcommand. It does not name
+a widget: the daemon uses `kb.picker()` (a centered fuzzy filter when that
+was left out). `records` is required and may be empty. `query` is the text
+the filter starts with. `multi` overrides the configured multi-select for
+this call (`null` keeps it). `prompt` replaces the label in front of the
+filter. Like `Prompt`, it returns the picked values and runs no handlers.
 
 `Notify` sends a notification through the configured routing, like
 `notify-send` would; `urgency` is 0–2 and `timeout` is in milliseconds.
