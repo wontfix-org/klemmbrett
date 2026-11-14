@@ -99,6 +99,7 @@ The first of these that applies runs:
 | `ClipboardHistory()` | copy | Recent clips, newest first, in SQLite |
 | `File(path, format=None, schema=None)` | copy | Reloaded each time the popup opens |
 | `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
+| `Applications()` | launch the desktop entry | Desktop files; `Terminal=true` needs `kb.configure(terminal=...)` |
 | `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
 | `Themes()` | `kb.set_theme(value)` | `default`, then every shipped palette |
 | `Widgets()` | `kb.show(value)` | Configured widgets that can be opened; agent widgets are left out |
@@ -193,6 +194,29 @@ One row per configured widget, in the order they were declared. Picking a
 row opens that widget. Widgets whose provider is an agent
 (`secrets.SystemdAgent`, `Askpass`, `Pinentry`, `Polkit`) are left out:
 they open when an asker has a question.
+
+### Applications
+
+```python
+kb.configure(terminal=["foot", "-e"])
+kb.widget(
+    "apps",
+    providers.Applications(),
+    layout=layouts.filter,
+    search=["label", "generic_name", "comment", "keywords[*]"],
+)
+```
+
+Desktop files under `$XDG_DATA_HOME/applications` and `$XDG_DATA_DIRS`,
+in that order. The same desktop-file id later in the path is ignored.
+`Name` is the label, the id is the key, and `generic_name`, `comment`,
+and `keywords` sit on `data` for `search`. Selecting activates a
+`DBusActivatable` entry and, if that does not answer, launches `Exec`.
+`%f`, `%u`, `%F`, and `%U` are dropped. `Hidden`, `NoDisplay`, a missing
+`TryExec`, and `OnlyShowIn` / `NotShowIn` that exclude
+`$XDG_CURRENT_DESKTOP` leave the entry out. `Terminal=true` entries are
+listed only when `terminal` is set; that command is placed in front of
+`Exec`.
 
 ### ClipboardHistory
 

@@ -39,6 +39,18 @@ def launch(argv: Sequence[str | os.PathLike[str]]) -> None:
     backend.launch_command([os.fspath(part) for part in argv])
 
 
+def activate_desktop(app_id: str) -> bool:
+    """Activates a DBusActivatable application. False when it does not answer."""
+    if not isinstance(app_id, str) or not app_id:
+        raise TypeError(f"activate_desktop: expected an application id, got {app_id!r}")
+    try:
+        _core.activate_desktop(app_id)
+    except RuntimeError as err:
+        logger.warning("activate %s: %s", app_id, err)
+        return False
+    return True
+
+
 def run(args: Any, *, check: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     """Runs a command and waits, like ``subprocess.run`` with ``check=True``.
 

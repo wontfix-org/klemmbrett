@@ -35,6 +35,7 @@ class Settings:
         self.overrides: Theme | None = None
         self.session: bool | None = None
         self.outputs: bool | None = None
+        self.terminal: list[str] | None = None
 
 
 class Registry:
@@ -55,6 +56,7 @@ def configure(
     overrides: Theme | None = None,
     session: bool | None = None,
     outputs: bool | None = None,
+    terminal: Sequence[str] | None = None,
 ) -> None:
     """Daemon-wide settings. Only the arguments given are changed.
 
@@ -71,6 +73,9 @@ def configure(
       Left unset, a missing protocol logs a warning and placement reads the
       layout once per popup. `True` aborts startup instead. `False` does not
       subscribe.
+    - `terminal`: command placed in front of `Exec` for desktop entries with
+      `Terminal=true`, such as `["foot", "-e"]`. Left unset, those entries
+      are not listed.
     """
     settings = registry.settings
     if label_max is not None:
@@ -104,6 +109,13 @@ def configure(
         if not isinstance(outputs, bool):
             raise TypeError(f"outputs must be true or false, got {outputs!r}")
         settings.outputs = outputs
+    if terminal is not None:
+        if isinstance(terminal, str) or not isinstance(terminal, Sequence):
+            raise TypeError("terminal must be a list of strings")
+        command = [os.fspath(part) for part in terminal]
+        if not command or not all(part.strip() for part in command):
+            raise ValueError("terminal must be a non-empty list of strings")
+        settings.terminal = command
 
 
 class Picker:

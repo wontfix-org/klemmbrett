@@ -1052,6 +1052,12 @@ fn launch_command(py: Python<'_>, argv: Vec<String>) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn activate_desktop(py: Python<'_>, app_id: String) -> PyResult<()> {
+    py.detach(|| klemmbrett::desktop::activate(&app_id))
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
 fn activate_window(py: Python<'_>, key: String) -> PyResult<()> {
     let runtime = runtime()?;
     py.detach(|| runtime.activate_window(&key))
@@ -1242,6 +1248,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(main, module)?)?;
     module.add_function(wrap_pyfunction!(copy, module)?)?;
     module.add_function(wrap_pyfunction!(launch_command, module)?)?;
+    module.add_function(wrap_pyfunction!(activate_desktop, module)?)?;
     module.add_function(wrap_pyfunction!(activate_window, module)?)?;
     module.add_function(wrap_pyfunction!(set_theme, module)?)?;
     module.add_function(wrap_pyfunction!(show, module)?)?;
