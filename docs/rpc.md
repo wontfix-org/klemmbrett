@@ -5,7 +5,7 @@ The daemon answers [Varlink](https://varlink.org) calls on a Unix socket:
 `$XDG_RUNTIME_DIR/klemmbrett/varlink.sock`. The socket is only open to the
 user running the daemon, and only one daemon runs per socket: a second one
 exits with an error, and a socket left by a crashed daemon is replaced.
-With the systemd units from `kb install-systemd`, systemd holds the socket
+With the systemd units from `kb provision systemd`, systemd holds the socket
 and starts the daemon on the first call.
 
 Messages are JSON objects terminated by a NUL byte. `varlinkctl` from

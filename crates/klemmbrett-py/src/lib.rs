@@ -6,12 +6,12 @@
 //! `{"kind", "style", "children", "text"}`, and records are
 //! `(key, label, value, data)` tuples whose `data` is JSON-like.
 
-use klemmbrett::cli::{self, Invocation};
+use klemmbrett::cli::{self, Invocation, Provision};
 use klemmbrett::journal;
 use klemmbrett::notifications::{CloseReason, Notification, NotificationConfig};
 use klemmbrett::secret::{AgentKind, AgentSpec};
 use klemmbrett::{
-    cmyk, hsl, hwb, parse_color, resolve_config_path, systemd, ui, AppConfig, CallError,
+    cmyk, hsl, hwb, parse_color, provision, resolve_config_path, systemd, ui, AppConfig, CallError,
     ClipboardHistorySource, DataPath, Edges, ExecutablesSource, FileFormat, FileSource, Handlers,
     KeySpec, Launch, Layout, LayoutBuilder, LayoutContext, LayoutSpec, Location, MultiSelect, Node,
     NodeKind, Orientation, Props, Ranking, Record, RecordSource, Rgba, Runtime, State, Style,
@@ -973,12 +973,19 @@ fn main(
         Invocation::Stash(args) => Ok(py.detach(|| cli::run_stash(&args, socket.as_deref()))),
         Invocation::Askpass(args) => Ok(py.detach(|| cli::run_askpass(&args, socket.as_deref()))),
         Invocation::Pinentry(_) => Ok(py.detach(|| cli::run_pinentry(socket.as_deref()))),
-        Invocation::InstallSystemd { config } => {
-            let config = match config {
-                Some(path) => Some(absolute(&path)?),
-                None => None,
+        Invocation::Provision(action) => {
+            let result = match action {
+                Provision::Systemd { config } => {
+                    let config = match config {
+                        Some(path) => Some(absolute(&path)?),
+                        None => None,
+                    };
+                    py.detach(|| systemd::install(&exe, config.as_deref()))
+                }
+                Provision::Askpass => py.detach(|| provision::askpass(&exe)),
+                Provision::Pinentry => py.detach(|| provision::pinentry(&exe)),
             };
-            match py.detach(|| systemd::install(&exe, config.as_deref())) {
+            match result {
                 Ok(()) => Ok(0),
                 Err(err) => {
                     eprintln!("klemmbrett: {err}");

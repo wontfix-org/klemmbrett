@@ -1,5 +1,6 @@
-//! Command line: the picker, `run`, `install-systemd`, `show`, `prompt`,
-//! `watch`, and `stash`. Everything but `run` talks Varlink to the daemon.
+//! Command line: the picker, `run`, `provision`, `show`, `prompt`,
+//! `watch`, and `stash`. Everything but `run` and `provision` talks Varlink
+//! to the daemon.
 
 use crate::varlink::{records_json, socket_path, Client, ClientError};
 use crate::widget::{parse_records, validate_records, FileFormat, Record};
@@ -88,12 +89,32 @@ enum Sub {
     Askpass(AskpassArgs),
     /// A pinentry for gpg-agent (pinentry-program) that asks in the popup
     Pinentry(PinentryArgs),
-    /// Install systemd user units bound to graphical-session.target and enable them
+    /// Install systemd user units. Use `kb provision systemd`.
+    #[command(hide = true)]
     InstallSystemd {
         /// Configuration file to pin in ExecStart
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Write desktop integration configuration
+    Provision {
+        #[command(subcommand)]
+        action: ProvisionCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProvisionCommand {
+    /// Install systemd user units bound to graphical-session.target and enable them
+    Systemd {
+        /// Configuration file to pin in ExecStart
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Point SSH_ASKPASS, SUDO_ASKPASS, and GIT_ASKPASS at klemmbrett-askpass
+    Askpass,
+    /// Point gpg-agent's pinentry-program at klemmbrett-pinentry
+    Pinentry,
 }
 
 #[derive(ClapArgs, Debug, Clone)]
@@ -157,15 +178,21 @@ pub enum Invocation {
     Daemon {
         config: Option<PathBuf>,
     },
-    InstallSystemd {
-        config: Option<PathBuf>,
-    },
+    Provision(Provision),
     Show(PopupArgs),
     Prompt(PopupArgs),
     Watch(WatchArgs),
     Stash(StashArgs),
     Askpass(AskpassArgs),
     Pinentry(PinentryArgs),
+}
+
+/// One `kb provision` integration.
+#[derive(Debug)]
+pub enum Provision {
+    Systemd { config: Option<PathBuf> },
+    Askpass,
+    Pinentry,
 }
 
 /// One ad-hoc pick. `multi` left out keeps the configured picker.
@@ -207,7 +234,14 @@ pub fn parse(argv: &[String]) -> Result<Parsed, clap::Error> {
         Some(Sub::Stash(stash)) => Invocation::Stash(stash),
         Some(Sub::Askpass(askpass)) => Invocation::Askpass(askpass),
         Some(Sub::Pinentry(pinentry)) => Invocation::Pinentry(pinentry),
-        Some(Sub::InstallSystemd { config }) => Invocation::InstallSystemd { config },
+        Some(Sub::InstallSystemd { config }) => {
+            Invocation::Provision(Provision::Systemd { config })
+        }
+        Some(Sub::Provision { action }) => Invocation::Provision(match action {
+            ProvisionCommand::Systemd { config } => Provision::Systemd { config },
+            ProvisionCommand::Askpass => Provision::Askpass,
+            ProvisionCommand::Pinentry => Provision::Pinentry,
+        }),
         None => Invocation::Pick(PickArgs {
             multi: match (args.multi, args.no_multi) {
                 (true, _) => Some(true),
@@ -590,19 +624,34 @@ mod tests {
     }
 
     #[test]
-    fn install_systemd_is_a_subcommand() {
+    fn provision_groups_the_integration_commands() {
         assert!(matches!(
-            invocation(&["kb", "install-systemd"]),
-            Invocation::InstallSystemd { config: None }
+            invocation(&["kb", "provision", "systemd"]),
+            Invocation::Provision(Provision::Systemd { config: None })
         ));
-        match invocation(&["kb", "install-systemd", "--config", "/c.py"]) {
-            Invocation::InstallSystemd { config } => {
+        match invocation(&["kb", "provision", "systemd", "--config", "/c.py"]) {
+            Invocation::Provision(Provision::Systemd { config }) => {
                 assert_eq!(config.as_deref(), Some(Path::new("/c.py")))
             }
-            other => panic!("expected install-systemd, got {other:?}"),
+            other => panic!("expected provision systemd, got {other:?}"),
         }
+        assert!(matches!(
+            invocation(&["kb", "provision", "askpass"]),
+            Invocation::Provision(Provision::Askpass)
+        ));
+        assert!(matches!(
+            invocation(&["kb", "provision", "pinentry"]),
+            Invocation::Provision(Provision::Pinentry)
+        ));
+        assert!(parse(&argv(&["kb", "provision"])).is_err());
+        assert!(matches!(
+            invocation(&["kb", "install-systemd", "--config", "/c.py"]),
+            Invocation::Provision(Provision::Systemd { config: Some(_) })
+        ));
         assert!(parse(&argv(&["kb", "--install-systemd"])).is_err());
-        assert!(parse(&argv(&["kb", "--config", "/c.py", "install-systemd"])).is_err());
+        assert!(parse(&argv(&["kb", "provision", "askpass", "--config", "/c.py"])).is_err());
+        assert!(parse(&argv(&["kb", "--config", "/c.py", "provision", "systemd"])).is_err());
+        assert!(parse(&argv(&["kb", "-m", "provision", "askpass"])).is_err());
     }
 
     #[test]

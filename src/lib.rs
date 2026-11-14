@@ -209,6 +209,7 @@ mod outputs;
 pub mod pinentry;
 pub mod polkit;
 mod popup;
+pub mod provision;
 pub mod rank;
 pub mod secret;
 pub mod systemd;
