@@ -893,7 +893,18 @@ fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
     if let Some(picker) = item(dict, "picker")? {
         app.picker = picker_config(&picker)?;
     }
+    app.session = track_flag(item(dict, "session")?, "session")?;
     Ok(app)
+}
+
+fn track_flag(value: Option<Bound<'_, PyAny>>, name: &str) -> PyResult<Option<bool>> {
+    match value {
+        None => Ok(None),
+        Some(value) => value
+            .extract::<bool>()
+            .map(Some)
+            .map_err(|_| value_error(format!("{name} must be true or false"))),
+    }
 }
 
 fn picker_config(value: &Bound<'_, PyAny>) -> PyResult<klemmbrett::config::PickerConfig> {

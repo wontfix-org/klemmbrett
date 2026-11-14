@@ -33,6 +33,7 @@ class Settings:
         self.launch: str | list[str] = "auto"
         self.theme: str | Theme | None = None
         self.overrides: Theme | None = None
+        self.session: bool | None = None
 
 
 class Registry:
@@ -51,6 +52,7 @@ def configure(
     launch: str | Sequence[str] | None = None,
     theme: str | Theme | None = None,
     overrides: Theme | None = None,
+    session: bool | None = None,
 ) -> None:
     """Daemon-wide settings. Only the arguments given are changed.
 
@@ -60,6 +62,9 @@ def configure(
       wrapper command list such as `["uwsm", "app", "--"]`.
     - `theme`: a palette name, a `Theme`, or `None` for the built-in look.
     - `overrides`: applied over every widget's theme, and kept by `set_theme`.
+    - `session`: subscribe to the logind session. Left unset, klemmbrett probes
+      and logs a warning when the session is missing. `True` aborts startup
+      instead. `False` does not subscribe.
     """
     settings = registry.settings
     if label_max is not None:
@@ -85,6 +90,10 @@ def configure(
         if not isinstance(overrides, Theme):
             overrides = Theme(overrides)
         settings.overrides = overrides
+    if session is not None:
+        if not isinstance(session, bool):
+            raise TypeError(f"session must be true or false, got {session!r}")
+        settings.session = session
 
 
 class Picker:
@@ -579,6 +588,7 @@ def wire() -> dict[str, Any]:
         "widgets": [widget._wire() for widget in widgets.values()],
         "dispatcher": Dispatcher(widgets, hooks),
         "clipboard": bool(hooks),
+        "session": settings.session,
         "notifications": notifications._wire(),
         "route_notifications": notifications._routed(),
         "picker": (registry.picker or Picker())._wire(),
