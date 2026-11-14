@@ -31,6 +31,9 @@ pub struct AppConfig {
     /// `Some(true)` requires the logind session, `Some(false)` skips it, and
     /// `None` probes and warns when logind has no session.
     pub session: Option<bool>,
+    /// `Some(true)` requires `zxdg_output_v1`, `Some(false)` skips the live
+    /// subscription, and `None` probes and warns when the protocol is missing.
+    pub outputs: Option<bool>,
 }
 
 /// How the ad-hoc picker looks and matches. `prompt` replaces the label in
@@ -62,6 +65,7 @@ impl Default for AppConfig {
             socket: None,
             picker: PickerConfig::default(),
             session: None,
+            outputs: None,
         }
     }
 }

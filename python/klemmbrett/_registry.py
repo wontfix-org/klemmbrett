@@ -34,6 +34,7 @@ class Settings:
         self.theme: str | Theme | None = None
         self.overrides: Theme | None = None
         self.session: bool | None = None
+        self.outputs: bool | None = None
 
 
 class Registry:
@@ -53,6 +54,7 @@ def configure(
     theme: str | Theme | None = None,
     overrides: Theme | None = None,
     session: bool | None = None,
+    outputs: bool | None = None,
 ) -> None:
     """Daemon-wide settings. Only the arguments given are changed.
 
@@ -65,6 +67,10 @@ def configure(
     - `session`: subscribe to the logind session. Left unset, klemmbrett probes
       and logs a warning when the session is missing. `True` aborts startup
       instead. `False` does not subscribe.
+    - `outputs`: subscribe to `zxdg_output_v1` and keep the output layout.
+      Left unset, a missing protocol logs a warning and placement reads the
+      layout once per popup. `True` aborts startup instead. `False` does not
+      subscribe.
     """
     settings = registry.settings
     if label_max is not None:
@@ -94,6 +100,10 @@ def configure(
         if not isinstance(session, bool):
             raise TypeError(f"session must be true or false, got {session!r}")
         settings.session = session
+    if outputs is not None:
+        if not isinstance(outputs, bool):
+            raise TypeError(f"outputs must be true or false, got {outputs!r}")
+        settings.outputs = outputs
 
 
 class Picker:
@@ -589,6 +599,7 @@ def wire() -> dict[str, Any]:
         "dispatcher": Dispatcher(widgets, hooks),
         "clipboard": bool(hooks),
         "session": settings.session,
+        "outputs": settings.outputs,
         "notifications": notifications._wire(),
         "route_notifications": notifications._routed(),
         "picker": (registry.picker or Picker())._wire(),

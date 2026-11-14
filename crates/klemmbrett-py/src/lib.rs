@@ -894,6 +894,7 @@ fn app_config(config: &Bound<'_, PyAny>) -> PyResult<AppConfig> {
         app.picker = picker_config(&picker)?;
     }
     app.session = track_flag(item(dict, "session")?, "session")?;
+    app.outputs = track_flag(item(dict, "outputs")?, "outputs")?;
     Ok(app)
 }
 
