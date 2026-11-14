@@ -101,6 +101,7 @@ The first of these that applies runs:
 | `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
 | `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
 | `Themes()` | `kb.set_theme(value)` | `default`, then every shipped palette |
+| `Widgets()` | `kb.show(value)` | Configured widgets that can be opened; agent widgets are left out |
 | `Static(records)` | copy | A fixed list |
 | `Store(records=(), schema=None, limit=None)` | copy | Kept in memory, changed at any time |
 | `provider.view(...)` | the source's | Another provider filtered, sorted, mapped |
@@ -175,6 +176,17 @@ The open popup restyles as you move through the list. Enter keeps the
 current row's theme, and Escape keeps whatever was last highlighted.
 
 ## Providers
+
+### Widgets
+
+```python
+kb.widget("widgets", providers.Widgets(), layout=layouts.filter)
+```
+
+One row per configured widget, in the order they were declared. Picking a
+row opens that widget. Widgets whose provider is an agent
+(`secrets.SystemdAgent`, `Askpass`, `Pinentry`, `Polkit`) are left out:
+they open when an asker has a question.
 
 ### ClipboardHistory
 

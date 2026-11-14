@@ -126,6 +126,7 @@ A widget that sets no `match=` or `rank=` takes them from its provider:
 | `WaylandWindows` | `rk.fuzzy()` | `rk.recent()` |
 | `ClipboardHistory` | `rk.fuzzy(scheme="history")` | none, it is newest first already |
 | `File` | `rk.fuzzy()` | none |
+| `Widgets` | `rk.fuzzy()` | none |
 | others | `rk.substring()` | none |
 
 Your own providers declare theirs as class attributes:
