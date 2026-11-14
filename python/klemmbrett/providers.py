@@ -44,6 +44,7 @@ __all__ = [
     "View",
     "Merge",
     "Themes",
+    "Widgets",
     "provider",
 ]
 
@@ -476,6 +477,31 @@ def _select_with(source: Any, record: Record) -> None:
         select(record)
     else:
         _runtime.copy(record.value)
+
+
+class Widgets(Provider):
+    """Every configured widget that can be opened. Selecting shows it.
+
+    Agent widgets are left out: they open when an asker has a question, and
+    picking one from a list would have nothing to show. Use it with a filter
+    to jump to any other widget::
+
+        kb.widget("widgets", providers.Widgets(), layout=layouts.filter)
+    """
+
+    default_match = rk.fuzzy()
+
+    def records(self) -> list[Record]:
+        from ._registry import registry
+
+        return [
+            Record(widget.name)
+            for widget in registry.widgets.values()
+            if widget.agent is None
+        ]
+
+    def select(self, record: Record) -> None:
+        _runtime.show(record.value)
 
 
 class Themes(Provider):

@@ -5,7 +5,7 @@ import textwrap
 import pytest
 
 import klemmbrett as kb
-from klemmbrett import _registry, layouts, providers, themes, ui
+from klemmbrett import _registry, layouts, providers, secrets, themes, ui
 
 
 def dispatcher():
@@ -54,6 +54,19 @@ def test_default_select_prefers_the_provider_then_copies(daemon):
         ("set_theme", None),
         ("copy", "x"),
     ]
+
+
+def test_widgets_lists_what_can_be_opened_and_shows_it(daemon):
+    kb.widget("history", providers.Static(["a"]))
+    kb.widget("unlock", secrets.SystemdAgent())
+    kb.widget("run", providers.Static(["b"]))
+    kb.widget("ssh", secrets.Askpass())
+    menu = providers.Widgets()
+    kb.widget("widgets", menu)
+
+    assert [record.value for record in menu.records()] == ["history", "run", "widgets"]
+    menu.select(kb.Record("run"))
+    assert daemon.calls == [("show", ("run", None, None))]
 
 
 def test_class_providers_supply_select_and_clipboard_hooks(daemon):
