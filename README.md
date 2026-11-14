@@ -301,61 +301,43 @@ needs only the standard library; inside a configuration it is also
 
 ## Sway key binding
 
-Sway's stable IPC does not report the pointer. A small helper can still pass
-coordinates: it tries `swaymsg -t get_cursor` (available on some builds), and
-otherwise reads the pointer from a seat if the compositor includes it, falling
-back to the focused output only if neither is present.
+Sway's stable IPC does not report the pointer. A small shell helper can still
+pass coordinates, and it starts quickly on a key binding: it tries
+`swaymsg -t get_cursor` (available on some builds), and otherwise reads the
+pointer from a seat if the compositor includes it, falling back to the focused
+output only if neither is present. `jq` parses the replies.
 
-Put this next to your Sway config, for example as `~/.config/sway/clip-history.py`:
+Put this next to your Sway config, for example as `~/.config/sway/clip-history.sh`:
 
-```python
-#!/usr/bin/env python3
-import json
-import subprocess
-import sys
+```sh
+#!/bin/sh
+# Show history at the pointer. Kept in the shell so a key binding starts quickly.
+set -eu
 
-
-def call(msg_type):
-    return json.loads(subprocess.check_output(["swaymsg", "-t", msg_type]))
-
-
-def coords():
-    try:
-        cursor = call("get_cursor")
-        return int(cursor["x"]), int(cursor["y"])
-    except Exception:
-        pass
-
-    try:
-        for seat in call("get_seats"):
-            cursor = seat.get("cursor") or {}
-            if "x" in cursor and "y" in cursor:
-                return int(cursor["x"]), int(cursor["y"])
-    except Exception:
-        pass
-
-    # Last resort: the focused output's origin, so the menu still appears
-    # on the screen the pointer is most likely on.
-    for output in call("get_outputs"):
-        if output.get("focused"):
-            rect = output["rect"]
-            return int(rect["x"]), int(rect["y"])
-
-    sys.exit("could not determine pointer coordinates")
-
-
-x, y = coords()
-subprocess.check_call(["kb", "show", "history", "-x", str(x), "-y", str(y)])
+pair=$(
+    swaymsg -t get_cursor -r 2>/dev/null |
+        jq -er 'select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)"' 2>/dev/null
+) || pair=$(
+    swaymsg -t get_seats -r 2>/dev/null |
+        jq -er 'first(.[] | .cursor // empty | select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)")' 2>/dev/null
+) || pair=$(
+    swaymsg -t get_outputs -r 2>/dev/null |
+        jq -er 'first(.[] | select(.focused) | .rect // empty | select(.x != null and .y != null) | "\(.x | floor) \(.y | floor)")' 2>/dev/null
+) || {
+    echo "could not determine pointer coordinates" >&2
+    exit 1
+}
+exec kb show history -x "${pair%% *}" -y "${pair##* }"
 ```
 
 ```sh
-chmod +x ~/.config/sway/clip-history.py
+chmod +x ~/.config/sway/clip-history.sh
 ```
 
 In `~/.config/sway/config`:
 
 ```
-bindsym $mod+v exec ~/.config/sway/clip-history.py
+bindsym $mod+v exec ~/.config/sway/clip-history.sh
 ```
 
 Without pointer coordinates the popup opens on the focused window's output:
