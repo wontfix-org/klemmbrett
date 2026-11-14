@@ -134,6 +134,12 @@ them outside the daemon raises `RuntimeError`.
 | `kb.notify(summary, body="", urgency="normal", timeout=None, app_name="klemmbrett")` | Sends a notification and returns its id |
 | `kb.quit()` | Stops the daemon |
 
+`kb.run(args, *, check=True, **kwargs)` waits for a command, like
+`subprocess.run` with `check=True`, including outside the daemon. It logs the
+command at info. Stderr left on the default stream is captured, logged at
+info, and returned on the result. `stderr=` or `capture_output` keeps the
+caller's own capture.
+
 `kb.notify` replaces `notify-send`. When `notifications.serve` is on, the
 notification goes through your routing like any other; otherwise it goes to
 the session's notification server. `urgency` is `"low"`, `"normal"`,
@@ -362,7 +368,7 @@ Filter through a command:
 ```python
 @kb.widget("decode", providers.ClipboardHistory())
 def decode(record):
-    result = subprocess.run(["base64", "-d"], input=record.value, capture_output=True, text=True, check=True)
+    result = kb.run(["base64", "-d"], input=record.value, capture_output=True, text=True)
     kb.copy(result.stdout)
 ```
 
