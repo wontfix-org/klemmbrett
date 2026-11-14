@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import shlex
+import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -10,6 +13,16 @@ from . import _core
 from ._record import RecordLike, to_record
 
 backend: Any = _core
+
+logger = logging.getLogger("klemmbrett")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_handler)
+    # This logger writes its own lines. Propagating would print them twice
+    # once the root logger has a handler.
+    logger.propagate = False
 
 
 def copy(text: str) -> None:
@@ -24,6 +37,69 @@ def launch(argv: Sequence[str | os.PathLike[str]]) -> None:
     if isinstance(argv, str | bytes):
         raise TypeError("launch: pass the command as a list, e.g. ['xdg-open', url]")
     backend.launch_command([os.fspath(part) for part in argv])
+
+
+def run(args: Any, *, check: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Runs a command and waits, like ``subprocess.run`` with ``check=True``.
+
+    Logs the command at info on the ``klemmbrett`` logger. Stderr left on the
+    default stream is captured, logged at info, and returned on the result.
+    ``stderr=`` or ``capture_output`` keeps the caller's own capture and is
+    left out of the log. ``check=False`` returns a non-zero exit instead of
+    raising.
+    """
+    log_stderr = not _caller_captures_stderr(kwargs)
+    if log_stderr:
+        kwargs["stderr"] = subprocess.PIPE
+    command = _format_command(args)
+    logger.info("run %s", command)
+    try:
+        result = subprocess.run(args, check=check, **kwargs)
+    except subprocess.CalledProcessError as error:
+        if log_stderr:
+            _log_stderr(command, error.stderr)
+        raise
+    except subprocess.TimeoutExpired as error:
+        if log_stderr:
+            _log_stderr(command, error.stderr)
+        raise
+    if log_stderr:
+        _log_stderr(command, result.stderr)
+    return result
+
+
+def _caller_captures_stderr(kwargs: dict[str, Any]) -> bool:
+    if kwargs.get("capture_output"):
+        return True
+    return kwargs.get("stderr") is not None
+
+
+def _format_command(args: Any) -> str:
+    try:
+        if isinstance(args, str):
+            return args
+        if isinstance(args, bytes):
+            return args.decode(errors="replace")
+        if isinstance(args, os.PathLike):
+            return os.fspath(args)
+        parts: list[str] = []
+        for part in args:
+            if isinstance(part, bytes):
+                parts.append(part.decode(errors="replace"))
+            else:
+                parts.append(os.fspath(part))
+        return shlex.join(parts)
+    except TypeError:
+        return repr(args)
+
+
+def _log_stderr(command: str, stderr: str | bytes | None) -> None:
+    if not stderr:
+        return
+    text = stderr.decode(errors="replace") if isinstance(stderr, bytes) else stderr
+    for line in text.splitlines():
+        if line:
+            logger.info("run %s: %s", command, line)
 
 
 def activate_window(key: str) -> None:

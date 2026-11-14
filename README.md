@@ -204,10 +204,12 @@ def snippets(record):
 Selecting a row calls the widget's `on_select` with the `Record`. Without
 one, the provider decides (`Executables` launches, `WaylandWindows` focuses
 the window), and otherwise the value is copied. Handlers are ordinary Python,
-including `subprocess`, `re`, and `json`. `kb.launch` starts detached programs. With `launch="auto"`, that is
-`systemd-run --user --scope` when klemmbrett runs as a systemd unit, and a
-POSIX double fork otherwise. `"posix"`, `"systemd-run"`, or a wrapper list
-such as `["uwsm", "app", "--"]` override it.
+including `re` and `json`. `kb.run` waits for a command and logs it, including
+stderr left uncaptured. `kb.launch` starts detached programs. With
+`launch="auto"`, that is `systemd-run --user --scope` when klemmbrett runs
+as a systemd unit, and a POSIX double fork otherwise. `"posix"`,
+`"systemd-run"`, or a wrapper list such as `["uwsm", "app", "--"]` override
+it.
 
 Widgets, providers, record data, live stores, handlers, and recipes are
 documented in [`docs/widgets.md`](docs/widgets.md). Fuzzy matching and
