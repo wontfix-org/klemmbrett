@@ -100,6 +100,8 @@ The first of these that applies runs:
 | `File(path, format=None, schema=None)` | copy | Reloaded each time the popup opens |
 | `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
 | `Applications()` | launch the desktop entry | Desktop files; `Terminal=true` needs `kb.configure(terminal=...)` |
+| `AudioSinks()` | make it the default sink | PulseAudio and PipeWire sinks |
+| `AudioSources()` | make it the default source | PulseAudio and PipeWire sources |
 | `Directory(path).flat()` | `xdg-open` the file | Every file under `path`, labeled with its relative path |
 | `Directory(path).browse()` | step into a folder, or `xdg-open` a file | One folder, plus `..` below the root |
 | `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
@@ -219,6 +221,19 @@ and `keywords` sit on `data` for `search`. Selecting activates a
 `$XDG_CURRENT_DESKTOP` leave the entry out. `Terminal=true` entries are
 listed only when `terminal` is set; that command is placed in front of
 `Exec`.
+
+### AudioSinks and AudioSources
+
+```python
+kb.widget("audio-sinks", providers.AudioSinks(), layout=layouts.filter)
+kb.widget("audio-sources", providers.AudioSources(), layout=layouts.filter)
+```
+
+`pactl` lists the PulseAudio server and `wpctl` lists PipeWire. Picking a
+row makes it the default sink or source. When PulseAudio is PipeWire's own
+server and `wpctl` returned devices, the PulseAudio copies are left out.
+A device from both otherwise keeps its backend in the label. `data` has
+`backend`, `kind`, `name`, `description`, `id`, and `default`.
 
 ### Directory
 

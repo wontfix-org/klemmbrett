@@ -29,7 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime, desktop, directory
+from . import _core, _runtime, audio, desktop, directory
 from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
 
@@ -39,6 +39,8 @@ __all__ = [
     "File",
     "Executables",
     "Applications",
+    "AudioSinks",
+    "AudioSources",
     "Directory",
     "WaylandWindows",
     "Static",
@@ -229,6 +231,32 @@ class Applications(Provider):
             activate=_runtime.activate_desktop,
             start=_runtime.launch,
         )
+
+
+class AudioSinks(Provider):
+    """Audio sinks from PulseAudio and PipeWire. Selecting makes one the default."""
+
+    default_match = rk.fuzzy()
+    default_rank = rk.frecency() + rk.learned()
+
+    def records(self) -> list[Record]:
+        return audio.devices("sink")
+
+    def select(self, record: Record) -> None:
+        audio.activate(record, _runtime.run)
+
+
+class AudioSources(Provider):
+    """Audio sources from PulseAudio and PipeWire. Selecting makes one the default."""
+
+    default_match = rk.fuzzy()
+    default_rank = rk.frecency() + rk.learned()
+
+    def records(self) -> list[Record]:
+        return audio.devices("source")
+
+    def select(self, record: Record) -> None:
+        audio.activate(record, _runtime.run)
 
 
 class Directory:
