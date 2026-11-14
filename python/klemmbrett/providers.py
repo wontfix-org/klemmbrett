@@ -29,7 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime
+from . import _core, _runtime, desktop
 from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
 
@@ -38,6 +38,7 @@ __all__ = [
     "ClipboardHistory",
     "File",
     "Executables",
+    "Applications",
     "WaylandWindows",
     "Static",
     "Store",
@@ -190,6 +191,43 @@ class Executables(_Native):
 
     def select(self, record: Record) -> None:
         _runtime.launch([record.value])
+
+
+class Applications(Provider):
+    """Installed desktop applications.
+
+    The label is the localized `Name` and the key is the desktop-file id.
+    Selecting activates `DBusActivatable` entries on the session bus and
+    otherwise launches `Exec`. `Terminal=true` entries are included only
+    after `kb.configure(terminal=...)`, and that command is placed in front
+    of `Exec`. `argv`, `app_id`, `generic_name`, `comment`, and `keywords`
+    are on `data`.
+    """
+
+    default_match = rk.fuzzy()
+    default_rank = rk.frecency() + rk.learned()
+
+    def records(self) -> list[Record]:
+        from ._registry import registry
+
+        return desktop.applications(
+            home=desktop.data_home(),
+            dirs=desktop.data_dirs(),
+            desktops=desktop.current_desktops(),
+            locales=desktop.message_locales(),
+            path=os.environ.get("PATH", ""),
+            terminal=registry.settings.terminal,
+        )
+
+    def select(self, record: Record) -> None:
+        from ._registry import registry
+
+        desktop.launch(
+            record,
+            terminal=registry.settings.terminal,
+            activate=_runtime.activate_desktop,
+            start=_runtime.launch,
+        )
 
 
 class WaylandWindows(_Native):

@@ -2,7 +2,8 @@
 
 A Wayland session helper configured in Python. Popup widgets list values to
 copy, open, or run, including clipboard history, text/JSON/YAML files,
-executables on `PATH`, and Wayland windows to switch to. The daemon keeps
+executables on `PATH`, desktop applications, and Wayland windows to switch
+to. The daemon keeps
 the clipboard and primary selection holding the same text. It can be the
 desktop notification server, and it can answer password prompts from systemd
 user services, ssh, sudo, git, gpg-agent, and polkit.
@@ -185,10 +186,16 @@ primary sync still run, but there are no popup widgets or history.
 import klemmbrett as kb
 from klemmbrett import layouts, providers, themes
 
-kb.configure(label_max=64, launch="auto", theme=themes.nord)
+kb.configure(label_max=64, launch="auto", terminal=["foot", "-e"], theme=themes.nord)
 
 kb.widget("history", providers.ClipboardHistory(), layout=layouts.filter)
 kb.widget("run", providers.Executables(), layout=layouts.filter)
+kb.widget(
+    "apps",
+    providers.Applications(),
+    layout=layouts.filter,
+    search=["label", "generic_name", "comment", "keywords[*]"],
+)
 kb.widget("windows", providers.WaylandWindows(), layout=layouts.filter)
 kb.widget("pick", layout=layouts.filter)
 

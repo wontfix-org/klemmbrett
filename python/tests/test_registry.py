@@ -178,15 +178,20 @@ def test_session_tracking_is_probed_unless_configured():
 
 
 def test_configure_validates_and_themes_by_name():
-    kb.configure(label_max=10, launch=["uwsm", "app", "--"], theme="nord")
+    kb.configure(label_max=10, launch=["uwsm", "app", "--"], terminal=["foot", "-e"], theme="nord")
     config = _registry.wire()
     assert config["label_max"] == 10
     assert config["launch"] == ["uwsm", "app", "--"]
+    assert _registry.registry.settings.terminal == ["foot", "-e"]
     assert config["theme"] == themes.nord._wire()
     with pytest.raises(ValueError, match="label_max"):
         kb.configure(label_max=0)
     with pytest.raises(ValueError, match="launch"):
         kb.configure(launch="nohup")
+    with pytest.raises(TypeError, match="terminal"):
+        kb.configure(terminal="foot")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="terminal"):
+        kb.configure(terminal=[])
     with pytest.raises(KeyError, match="unknown theme"):
         kb.configure(theme="nope")
     with pytest.raises(KeyError, match="unknown theme"):

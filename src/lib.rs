@@ -198,6 +198,7 @@ pub mod cli;
 mod clipboard_history;
 pub mod config;
 pub mod data;
+pub mod desktop;
 mod events;
 mod executables;
 mod history;
