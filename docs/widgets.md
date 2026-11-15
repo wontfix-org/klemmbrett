@@ -102,8 +102,8 @@ The first of these that applies runs:
 | `Applications()` | launch the desktop entry | Desktop files; `Terminal=true` needs `kb.configure(terminal=...)` |
 | `AudioSinks()` | make it the default sink | PulseAudio and PipeWire sinks |
 | `AudioSources()` | make it the default source | PulseAudio and PipeWire sources |
-| `Directory(path).flat()` | `xdg-open` the file | Every file under `path`, labeled with its relative path |
-| `Directory(path).browse()` | step into a folder, or `xdg-open` a file | One folder, plus `..` below the root |
+| `Directory(path).flat()` | copy the file's text | Every file under `path`, labeled with its relative path |
+| `Directory(path).browse()` | step into a folder, or copy a file's text | One folder, plus `..` below the root |
 | `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
 | `Themes()` | `kb.set_theme(value)` | `default`, then every shipped palette |
 | `Widgets()` | `kb.show(value)` | Configured widgets that can be opened; agent widgets are left out |
@@ -247,7 +247,7 @@ Both widgets walk `~/notes` the same way. `flat` has one row per file, and
 the label is the relative path, so a filter searches it. `browse` has the
 entries of one folder. Picking a folder replaces the popup with that
 folder; `..` goes back, and Escape closes. Picking a file in either widget
-runs `xdg-open` on it. `data` has `name` and `relative`. Symlinks are
+copies its text to the clipboard. `data` has `name` and `relative`. Symlinks are
 listed and not followed, and hidden names are included.
 
 ### ClipboardHistory

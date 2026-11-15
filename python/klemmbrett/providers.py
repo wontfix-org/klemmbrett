@@ -259,14 +259,23 @@ class AudioSources(Provider):
         audio.activate(record, _runtime.run)
 
 
+def _copy_file(path: str) -> None:
+    """Puts the text of `path` on the clipboard. A symlink is followed."""
+    file = Path(path)
+    if not file.is_file():
+        _runtime.logger.warning("%s is not a file", path)
+        return
+    _runtime.copy(file.read_text(encoding="utf-8"))
+
+
 class Directory:
     """A directory tree. `flat()` and `browse()` are two views of one walk.
 
     `flat()` lists every file. The label is the path relative to `path`, and
-    selecting a row opens it with `xdg-open`. `browse()` lists one folder.
-    Selecting a folder replaces the popup with that folder, `..` goes back,
-    and selecting a file opens it the same way. Symlinks are listed and not
-    followed. Hidden names are included.
+    selecting a row copies the file's text to the clipboard. `browse()` lists
+    one folder. Selecting a folder replaces the popup with that folder, `..`
+    goes back, and selecting a file copies its text the same way. Symlinks
+    are listed and not followed. Hidden names are included.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
@@ -296,7 +305,7 @@ class _DirectoryFlat(Provider):
         return directory.scan(self.tree.path).flat()
 
     def select(self, record: Record) -> None:
-        _runtime.launch(["xdg-open", record.value])
+        _copy_file(record.value)
 
     def __repr__(self) -> str:
         return f"{self.tree!r}.flat()"
@@ -320,7 +329,7 @@ class _DirectoryBrowse(Provider):
         if isinstance(relative, str) and index.is_dir(relative):
             _runtime.show(_runtime.current_widget(), index.browse(relative))
             return
-        _runtime.launch(["xdg-open", record.value])
+        _copy_file(record.value)
 
     def __repr__(self) -> str:
         return f"{self.tree!r}.browse()"

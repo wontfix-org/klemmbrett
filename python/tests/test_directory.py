@@ -68,18 +68,28 @@ def test_browse_steps_into_a_directory_and_back(tmp_path, daemon):
     ]
 
 
-def test_selecting_a_file_opens_it(tmp_path, daemon):
+def test_selecting_a_file_copies_its_contents(tmp_path, daemon):
     tree = _tree(tmp_path)
     kb.widget("files", tree.flat())
     record = next(record for record in tree.flat().records() if record.label == "a.txt")
     _registry.wire()["dispatcher"].select("files", [record._wire()])
-    assert daemon.calls == [("launch", ["xdg-open", str(tmp_path / "a.txt")])]
+    assert daemon.calls == [("copy", "a")]
+
+    linked = next(record for record in tree.flat().records() if record.label == "filelink")
+    daemon.calls.clear()
+    _registry.wire()["dispatcher"].select("files", [linked._wire()])
+    assert daemon.calls == [("copy", "a")]
 
     kb.widget("browse", tree.browse())
     daemon.calls.clear()
     opened = next(record for record in tree.browse().records() if record.label == "a.txt")
     _registry.wire()["dispatcher"].select("browse", [opened._wire()])
-    assert daemon.calls == [("launch", ["xdg-open", str(tmp_path / "a.txt")])]
+    assert daemon.calls == [("copy", "a")]
+
+    directory_link = next(record for record in tree.flat().records() if record.label == "link")
+    daemon.calls.clear()
+    _registry.wire()["dispatcher"].select("files", [directory_link._wire()])
+    assert daemon.calls == []
 
 
 def test_browse_without_a_widget_refuses_to_guess(tmp_path):
