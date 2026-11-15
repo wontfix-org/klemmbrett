@@ -33,6 +33,34 @@ def test_themes_change_the_size():
     assert size(layouts.menu(ctx()), 3, themes.tokyo_night) != size(layouts.menu(ctx()), 3)
 
 
+def test_filter_can_carry_a_preview():
+    plain = layouts.filter(ctx())
+    text = ui.RichText("{preview}", language="sql")
+    split = layouts.filter(ctx(), preview=text)
+    assert size(split, 4)[0] > size(plain, 4)[0]
+    assert size(split, 4)[1] == size(plain, 4)[1]
+    pane = split._wire()["children"][-1]
+    assert pane["kind"] == "preview"
+    assert pane["children"] == [text._wire()]
+    own = ui.Preview(ui.Text("{preview}"), width=120)
+    assert layouts.filter(ctx(), preview=own)._wire()["children"][-1] == own._wire()
+    bound = layouts.filter(preview=text)
+    assert bound(ctx(multi=True))._wire() == layouts.filter(ctx(multi=True), preview=text)._wire()
+    with pytest.raises(TypeError, match="preview"):
+        layouts.filter(ctx(), preview="nope")
+
+
+def test_preview_widens_the_card_without_making_it_taller():
+    body = (
+        ui.InputBar(ui.Prompt(), ui.Entry()),
+        ui.ListView(ui.Element(ui.Text("{label}"))),
+    )
+    plain = ui.Window(*body)
+    split = ui.Window(*body, ui.Preview(ui.Text("{preview}")))
+    assert size(split, 4)[0] > size(plain, 4)[0]
+    assert size(split, 4)[1] == size(plain, 4)[1]
+
+
 def test_custom_trees_validate():
     card = ui.Window(
         ui.InputBar(ui.Prompt(), ui.Entry()),
@@ -52,6 +80,8 @@ def test_custom_trees_validate():
         (ui.Window(ui.Element()), "window cannot contain element"),
         (ui.Window(ui.ListView(ui.Element()), ui.ListView(ui.Element())), "only one listview"),
         (ui.Window(ui.Row(ui.InputBar())), "inputbar"),
+        (ui.Window(ui.Preview(), ui.Preview()), "only one preview"),
+        (ui.Window(ui.Row(ui.Preview())), "preview"),
         (ui.Window(ui.ListView()), "element"),
     ],
 )
@@ -69,6 +99,15 @@ def test_unused_node_properties_are_rejected():
         ui.Text("{label}", location="center")
     assert ui.ListView(ui.Element(), spacing=2).style["spacing"] == 2.0
     assert ui.Window(location="center", padding=4).style["padding"] == (4.0,)
+
+
+def test_rich_text_is_a_preview_child():
+    window = ui.Window(
+        ui.ListView(ui.Element(ui.Text("{label}"))),
+        ui.Preview(ui.RichText("{preview}", language="sql")),
+    )
+    assert size(window, 1)[0] > 0
+    assert window._wire()["children"][-1]["children"][0]["language"] == "sql"
 
 
 def test_leaves_take_no_children():

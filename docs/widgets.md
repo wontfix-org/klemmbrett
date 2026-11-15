@@ -189,6 +189,9 @@ def preview(record):
 The open popup restyles as you move through the list. Enter keeps the
 current row's theme, and Escape keeps whatever was last highlighted.
 
+`ui.Preview` draws that same row in a pane to the right of the list. See
+[theming](theming.md#preview).
+
 ## Providers
 
 ### Widgets
@@ -242,7 +245,11 @@ A device from both otherwise keeps its backend in the label. `data` has
 
 ```python
 tree = providers.Directory("~/notes")
-kb.widget("files", tree.flat(), layout=layouts.filter)
+kb.widget(
+    "files",
+    tree.flat().view(map=providers.preview_file),
+    layout=layouts.filter(preview=providers.file_preview_pane),
+)
 kb.widget("browse", tree.browse(), layout=layouts.menu)
 ```
 
@@ -252,6 +259,14 @@ entries of one folder. Picking a folder replaces the popup with that
 folder; `..` goes back, and Escape closes. Picking a file in either widget
 copies its text to the clipboard. `data` has `name` and `relative`. Symlinks are
 listed and not followed, and hidden names are included.
+
+`preview_file` reads the file named by `value`. It stores the text as
+`data["preview"]` and the syntax name as `data["language"]` (empty for
+plain text). The type comes from the file name or extension, and otherwise
+from the first line, such as a shebang. A file that is not text is
+described in one plain line, and a read error is the traceback.
+`file_preview(path)` returns that same `FilePreview` without a record.
+`file_preview_pane` is the `RichText` that draws it.
 
 ### ClipboardHistory
 

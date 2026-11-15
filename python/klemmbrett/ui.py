@@ -2,8 +2,9 @@
 
 Where nodes may appear:
 
-- `Window` holds at most one `InputBar` and one `ListView`, plus `Text`,
-  `Spacer`, `Row`, and `Column`.
+- `Window` holds at most one `InputBar`, one `ListView`, and one `Preview`,
+  plus `Text`, `RichText`, `Spacer`, `Row`, and `Column`. `Preview` is the
+  highlighted row, drawn to the right of the list.
 - `InputBar` holds `Prompt` and `Entry`, plus the primitives.
 - `ListView` holds exactly one `Element`, the template for every row.
 - `Element` holds `Marker`, `Index`, `Field`, and the primitives.
@@ -39,10 +40,12 @@ __all__ = [
     "Marker",
     "Index",
     "Text",
+    "RichText",
     "Field",
     "Spacer",
     "Row",
     "Column",
+    "Preview",
 ]
 
 
@@ -147,6 +150,19 @@ class Column(Node):
         super().__init__(*children, **_children(children, kwargs))
 
 
+class Preview(Node):
+    """The highlighted row, drawn to the right of the list.
+
+    Children are `Text`, `RichText`, `Field`, `Row`, and `Column`. Templates
+    expand against that row and keep its line breaks; they are not shortened.
+    """
+
+    kind = "preview"
+
+    def __init__(self, *children: Node, **kwargs: Any) -> None:
+        super().__init__(*children, **_children(children, kwargs))
+
+
 class Prompt(Node):
     """The prompt: its `text` style property, else the widget name."""
 
@@ -206,6 +222,40 @@ class Text(Node):
     def __repr__(self) -> str:
         extra = "".join(f", {name}={value!r}" for name, value in self.style.items())
         return f"Text({self.template!r}{extra})"
+
+
+class RichText(Node):
+    """Preview text with syntax highlighting or terminal color codes.
+
+    `language` expands like the template. Empty is plain text. `"auto"`
+    takes the syntax from the highlighted record's file extension. A name
+    or extension such as `"sql"` forces that syntax. Terminal color codes
+    in the text are drawn as written, including 24-bit color, and syntax
+    highlighting is skipped.
+    """
+
+    kind = "richtext"
+    leaf = True
+
+    def __init__(self, template: str, *, language: str | None = None, **kwargs: Any) -> None:
+        if not isinstance(template, str):
+            raise TypeError(f"RichText: expected a template string, got {template!r}")
+        if language is not None and not isinstance(language, str):
+            raise TypeError(f"RichText: language must be a string, got {language!r}")
+        super().__init__(**kwargs)
+        self.template = template
+        self.language = language
+
+    def _wire(self) -> dict[str, Any]:
+        wire = {**super()._wire(), "text": self.template}
+        if self.language is not None:
+            wire["language"] = self.language
+        return wire
+
+    def __repr__(self) -> str:
+        lang = f", language={self.language!r}" if self.language is not None else ""
+        extra = "".join(f", {name}={value!r}" for name, value in self.style.items())
+        return f"RichText({self.template!r}{lang}{extra})"
 
 
 class Field(Node):

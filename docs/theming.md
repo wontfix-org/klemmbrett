@@ -185,22 +185,25 @@ subcommand and for `kb prompt`). The ad-hoc picker reports
 | Layout | Location | Contents |
 | --- | --- | --- |
 | `layouts.menu` (default) | `pointer` | the list, with accelerators |
-| `layouts.filter` | `center` | an input bar over the list; typing filters labels |
+| `layouts.filter` | `center` | an input bar over the list; typing filters labels. `preview=` adds a pane |
 | `layouts.prompt` | `center` | an input bar only; Enter submits the typed text |
 
 `layouts.rows(ctx)` is their list (marker when multi-select, index, label)
-for reuse in your own layouts.
+for reuse in your own layouts. `layouts.filter(preview=node)` is the filter
+card with a preview pane: `node` is a `ui.Preview`, or one child of one.
+The call returns a layout function.
 
 ### Nodes
 
 | Node | May contain |
 | --- | --- |
-| `ui.Window(*children, location=None)` | at most one `InputBar` and one `ListView`, plus primitives |
+| `ui.Window(*children, location=None)` | at most one `InputBar`, one `ListView`, and one `Preview`, plus primitives |
 | `ui.InputBar(*children)` | `Prompt`, `Entry`, primitives |
 | `ui.ListView(element)` | exactly one `Element`, the template for every row |
 | `ui.Element(*children)` | `Marker`, `Index`, `Field`, primitives |
+| `ui.Preview(*children)` | `Text`, `RichText`, `Field`, `Row`, `Column`, `Spacer` |
 | `ui.Row(*children)`, `ui.Column(*children)` | primitives (and whatever their parent area allows) |
-| `ui.Text(template)`, `ui.Spacer()` | nothing |
+| `ui.Text(template)`, `ui.RichText(template, language=None)`, `ui.Spacer()` | nothing |
 | `ui.Prompt()`, `ui.Entry(mask=None)`, `ui.Marker()`, `ui.Index()`, `ui.Field(path, fallback="")` | nothing |
 
 `InputBar` and `ListView` must be direct children of the window. A window
@@ -208,11 +211,13 @@ with an `InputBar` filters as you type, and accelerators are off. A window
 without a `ListView` is a prompt: Enter submits the typed text as `key`,
 `label`, and `value`.
 
-`Text` templates expand `{label}`, `{key}`, `{value}`, and paths into the
-record's data (`{sender.name}`, `{tags[0]}`) inside an element, and
-`{widget}`, `{query}`, and `{count}` elsewhere. `{{` and `}}` are literal
-braces, and names that reach nothing are kept as written. Everything
-expanded in a row is shortened to `label_max`. `ui.Field(path)` shows all
+`Text` and `RichText` templates expand `{label}`, `{key}`, `{value}`, and
+paths into the record's data (`{sender.name}`, `{tags[0]}`) inside an
+element or a preview, and `{widget}`, `{query}`, and `{count}` elsewhere.
+`RichText`'s `language` expands the same way. `{{` and `}}` are literal
+braces, and names that reach nothing are kept as written.
+Everything expanded in a row is shortened to `label_max`. A preview keeps
+the text and its line breaks. `ui.Field(path)` shows all
 values a path reaches (`tags[*]`), joined by commas, or `fallback` when it
 reaches nothing. Paths are described in [widgets](widgets.md#data).
 
@@ -321,6 +326,41 @@ def bookmarks(ctx):
         location="center",
     )
 ```
+
+### Preview
+
+`ui.Preview` is a pane to the right of the list, in the manner of fzf. It
+shows the highlighted row and follows the cursor. The list keeps its usual
+width and the preview adds the same width again, unless the preview sets
+`width`. The card does not grow taller; the pane scrolls.
+
+`ui.Text` draws the text as written. `ui.RichText` colors it. `language`
+expands like the template: leave it empty for plain text, pass `"auto"` to
+take the syntax from the record's file extension, or pass a name or
+extension such as `"sql"`. When the text contains terminal color codes,
+those colors are drawn, including 24-bit color, and syntax highlighting is
+skipped.
+
+A field already on the record is named in the template:
+
+```python
+kb.widget("mail", mail, layout=layouts.filter(preview=ui.Text("{body}")))
+```
+
+A directory of files can be read and highlighted by type. `preview_file`
+stores the text as `data["preview"]` and the syntax name as
+`data["language"]`. `file_preview_pane` is the `RichText` that draws them:
+
+```python
+tree = providers.Directory("~/notes")
+kb.widget(
+    "files",
+    tree.flat().view(map=providers.preview_file),
+    layout=layouts.filter(preview=providers.file_preview_pane),
+)
+```
+
+`{preview}` keeps its line breaks.
 
 ### Two-line rows
 

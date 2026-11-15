@@ -156,6 +156,10 @@ def test_layouts_are_static_or_called_per_open():
     assert wire_widget("default")["layout"] is None
     build = wire_widget("dynamic")["layout"]
     assert build("dynamic", True, False) == layouts.filter(layouts.LayoutContext("dynamic", True, False))._wire()
+    kb.widget("previewed", layout=layouts.filter(preview=ui.Text("{preview}")), multi=True)
+    previewed = wire_widget("previewed")["layout"]
+    context = layouts.LayoutContext("previewed", True, False)
+    assert previewed("previewed", True, False) == layouts.filter(context, preview=ui.Text("{preview}"))._wire()
 
     kb.widget("broken", layout=lambda ctx: "nope")
     with pytest.raises(TypeError, match="not a ui.Window"):

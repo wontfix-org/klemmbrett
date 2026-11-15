@@ -212,6 +212,8 @@ pub mod polkit;
 mod popup;
 pub mod provision;
 pub mod rank;
+mod richtext;
+pub use richtext::syntax_name;
 pub mod secret;
 pub mod session;
 pub mod systemd;

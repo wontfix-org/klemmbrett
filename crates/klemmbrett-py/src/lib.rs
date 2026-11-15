@@ -352,6 +352,16 @@ fn node(value: &Bound<'_, PyAny>) -> PyResult<Node> {
             Some(text) => text.extract()?,
             None => String::new(),
         }),
+        "richtext" => NodeKind::RichText {
+            template: match dict.get_item("text")? {
+                Some(text) => text.extract()?,
+                None => String::new(),
+            },
+            language: match dict.get_item("language")? {
+                Some(language) if !language.is_none() => language.extract()?,
+                _ => String::new(),
+            },
+        },
         "field" => {
             let path: String = match dict.get_item("text")? {
                 Some(path) => path.extract()?,
@@ -369,6 +379,7 @@ fn node(value: &Bound<'_, PyAny>) -> PyResult<Node> {
         "spacer" => NodeKind::Spacer,
         "row" => NodeKind::Row,
         "column" => NodeKind::Column,
+        "preview" => NodeKind::Preview,
         other => return Err(value_error(format!("layout: unknown node kind {other:?}"))),
     };
     let style = match dict.get_item("style")? {
@@ -1233,6 +1244,12 @@ fn resolve_theme<'py>(py: Python<'py>, layers: Bound<'py, PyList>) -> PyResult<B
     Ok(out)
 }
 
+/// The syntax name for a file, from its name or extension, else its first line.
+#[pyfunction]
+fn syntax_name(path: &str, first_line: &str) -> Option<String> {
+    klemmbrett::syntax_name(path, first_line)
+}
+
 /// Validates a layout and returns its card size for `rows` records.
 #[pyfunction]
 #[pyo3(signature = (layout, rows, theme=None, label_max=klemmbrett::DEFAULT_LABEL_MAX))]
@@ -1274,5 +1291,6 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(cmyk_py, module)?)?;
     module.add_function(wrap_pyfunction!(resolve_theme, module)?)?;
     module.add_function(wrap_pyfunction!(layout_size, module)?)?;
+    module.add_function(wrap_pyfunction!(syntax_name, module)?)?;
     Ok(())
 }

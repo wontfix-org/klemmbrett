@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _core, _runtime, audio, desktop, directory
+from .preview import FilePreview, file_preview, file_preview_pane, preview_file
 from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
 
@@ -42,6 +43,10 @@ __all__ = [
     "AudioSinks",
     "AudioSources",
     "Directory",
+    "FilePreview",
+    "file_preview",
+    "file_preview_pane",
+    "preview_file",
     "WaylandWindows",
     "Static",
     "Store",
@@ -275,7 +280,8 @@ class Directory:
     selecting a row copies the file's text to the clipboard. `browse()` lists
     one folder. Selecting a folder replaces the popup with that folder, `..`
     goes back, and selecting a file copies its text the same way. Symlinks
-    are listed and not followed. Hidden names are included.
+    are listed and not followed. Hidden names are included. `preview_file`
+    reads each file for `file_preview_pane`.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:

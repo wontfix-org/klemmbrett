@@ -17,7 +17,9 @@ use crate::history::shorten_label;
 use crate::journal;
 use crate::launch::{spawn_detached, ResolvedLaunch};
 use crate::layout::LayoutSpec;
-use crate::layout::{expand, expand_record, Layout, LayoutContext, Node, NodeKind};
+use crate::layout::{
+    expand, expand_record, expand_record_full, Layout, LayoutContext, Node, NodeKind,
+};
 use crate::notifications::{
     self, CloseReason, Notification, NotificationCenter, NotifyRequest, ToastCmd,
 };
@@ -38,9 +40,10 @@ use crate::{
 };
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
-    canvas, div, point, prelude::*, px, rgba, size, uniform_list, AnyElement, App, Bounds, Context,
-    Corners, DisplayId, Entity, FocusHandle, Focusable, KeyDownEvent, LinuxWindowBackground,
-    MouseButton, Pixels, QuitMode, RenderImage, ScrollStrategy, Styled, UniformListScrollHandle,
+    canvas, div, point, prelude::*, px, rgb, rgb_to_hsla, rgba, size, uniform_list, AnyElement,
+    App, Bounds, Context, Corners, DisplayId, Entity, FocusHandle, Focusable, FontStyle,
+    FontWeight, HighlightStyle, KeyDownEvent, LinuxWindowBackground, MouseButton, Pixels, QuitMode,
+    RenderImage, ScrollStrategy, Styled, StyledText, UnderlineStyle, UniformListScrollHandle,
     WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
 use ksni::blocking::TrayMethods;
@@ -2012,9 +2015,39 @@ impl Render for PopupView {
             query: &self.query,
             secret: self.secret.as_ref(),
         };
-        for child in &layout.root().children {
-            if let Some(element) = chrome.render(child, &window_style, &mut rows) {
-                card_el = card_el.child(element);
+        if layout.has_preview() {
+            let highlighted = visible.get(self.selected).cloned();
+            let mut left = div()
+                .h_full()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .overflow_hidden();
+            for child in &layout.root().children {
+                if matches!(child.kind, NodeKind::Preview) {
+                    continue;
+                }
+                if let Some(element) = chrome.render(child, &window_style, &mut rows) {
+                    left = left.child(element);
+                }
+            }
+            let preview = layout.preview().expect("preview");
+            let pane = preview_pane(preview, highlighted.as_ref(), &theme, &window_style);
+            card_el = card_el.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    .child(left)
+                    .child(pane),
+            );
+        } else {
+            for child in &layout.root().children {
+                if let Some(element) = chrome.render(child, &window_style, &mut rows) {
+                    card_el = card_el.child(element);
+                }
             }
         }
         apply_box(
@@ -2102,7 +2135,7 @@ impl Chrome<'_> {
                 };
                 apply_box(div().flex_1().min_w_0().truncate().child(text), &style).into_any()
             }
-            NodeKind::Text(template) => {
+            NodeKind::Text(template) | NodeKind::RichText { template, .. } => {
                 let style = Style::plain(parent, Orientation::Vertical).with(&node.style);
                 let text = expand(template, &self.fields);
                 if self.secret.is_some() && text.trim().is_empty() {
@@ -2176,6 +2209,145 @@ fn popup_row(
     row
 }
 
+/// The highlighted row, filling the right half of the card and scrolling
+/// when the text is longer than the list.
+fn preview_pane(node: &Node, record: Option<&Record>, theme: &Theme, window: &Style) -> AnyElement {
+    let style = Style::plain(window, Orientation::Vertical).with(&node.style);
+    let mut pane = apply_box(
+        div()
+            .id("klemmbrett-preview")
+            .h_full()
+            .min_w_0()
+            .overflow_y_scroll(),
+        &style,
+    )
+    .flex()
+    .flex_col();
+    pane = match style.width {
+        Some(width) => pane.w(px(width)).flex_none(),
+        None => pane.flex_1(),
+    };
+    if style.border.left == 0.0 {
+        pane = pane.border_l(px(1.0));
+    }
+    if let Some(record) = record {
+        for child in &node.children {
+            pane = pane.child(preview_node(child, record, &style, theme));
+        }
+    }
+    pane.into_any()
+}
+
+fn preview_node(node: &Node, record: &Record, parent: &Style, theme: &Theme) -> AnyElement {
+    match &node.kind {
+        NodeKind::Text(template) => {
+            preview_text(&expand_record_full(template, record), &node.style, theme)
+        }
+        NodeKind::RichText { template, language } => {
+            let text = expand_record_full(template, record);
+            let language = expand_record_full(language, record);
+            let rich = crate::richtext::present(
+                &text,
+                &language,
+                crate::richtext::source_path(record),
+                crate::richtext::dark_background(theme.window().background),
+            );
+            preview_rich(&rich, &node.style, theme)
+        }
+        NodeKind::Field { path, fallback } => {
+            let text = record.text(path).unwrap_or_else(|| fallback.clone());
+            preview_text(&text, &node.style, theme)
+        }
+        NodeKind::Spacer => spacer(&node.style.width, &node.style.height),
+        NodeKind::Row | NodeKind::Column => {
+            let style = container_style(node, parent);
+            let mut el = container(&style, parent);
+            for child in &node.children {
+                el = el.child(preview_node(child, record, &style, theme));
+            }
+            el.into_any()
+        }
+        _ => div().into_any(),
+    }
+}
+
+/// One block of preview text, one styled line at a time so highlights stay on
+/// character boundaries after the text is split on newlines.
+fn preview_rich(rich: &crate::richtext::Rich, props: &crate::Props, theme: &Theme) -> AnyElement {
+    let style = theme.element_text().with(props);
+    let mut lines = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .text_color(paint(style.text_color));
+    if rich.plain.is_empty() {
+        return lines.into_any();
+    }
+    let mut offset = 0;
+    for line in rich.plain.split('\n') {
+        let start = offset;
+        let end = start + line.len();
+        offset = end + 1;
+        if line.is_empty() {
+            lines = lines.child(div().w_full().child(" "));
+            continue;
+        }
+        let highlights = rich.spans.iter().filter_map(|span| {
+            let from = span.range.start.max(start);
+            let to = span.range.end.min(end);
+            (from < to).then(|| (from - start..to - start, highlight_style(span)))
+        });
+        lines = lines.child(
+            div()
+                .w_full()
+                .whitespace_normal()
+                .child(StyledText::new(line).with_highlights(highlights)),
+        );
+    }
+    lines.into_any()
+}
+
+fn highlight_style(span: &crate::richtext::Span) -> HighlightStyle {
+    let hsla = |(r, g, b): (u8, u8, u8)| {
+        rgb_to_hsla(rgb(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)))
+    };
+    HighlightStyle {
+        color: span.color.map(hsla),
+        background_color: span.background.map(hsla),
+        font_weight: span.bold.then_some(FontWeight::BOLD),
+        font_style: span.italic.then_some(FontStyle::Italic),
+        underline: span.underline.then_some(UnderlineStyle {
+            thickness: px(1.0),
+            color: None,
+            wavy: false,
+        }),
+        fade_out: span.dim.then_some(0.45),
+        ..Default::default()
+    }
+}
+
+/// One block of preview text, keeping the record's line breaks.
+fn preview_text(text: &str, props: &crate::Props, theme: &Theme) -> AnyElement {
+    let style = theme.element_text().with(props);
+    let mut lines = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .text_color(paint(style.text_color));
+    if text.is_empty() {
+        return lines.into_any();
+    }
+    for line in text.split('\n') {
+        let shown = if line.is_empty() {
+            " ".to_owned()
+        } else {
+            line.to_owned()
+        };
+        lines = lines.child(div().w_full().whitespace_normal().child(shown));
+    }
+    lines.into_any()
+}
+
 fn row_node(node: &Node, parent: &Style, data: &RowData, theme: &Theme) -> AnyElement {
     match &node.kind {
         NodeKind::Marker => {
@@ -2193,7 +2365,7 @@ fn row_node(node: &Node, parent: &Style, data: &RowData, theme: &Theme) -> AnyEl
                 .child(data.accelerator.map(|c| c.to_string()).unwrap_or_default())
                 .into_any()
         }
-        NodeKind::Text(template) => {
+        NodeKind::Text(template) | NodeKind::RichText { template, .. } => {
             let style = theme.element_text().with(&node.style);
             text_box(&style)
                 .child(expand_record(template, &data.record, data.label_max))

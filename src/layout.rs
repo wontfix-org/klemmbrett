@@ -29,6 +29,12 @@ pub enum NodeKind {
     Index,
     /// `{name}` fields are expanded when drawn; `{{` and `}}` are literal braces.
     Text(String),
+    /// Like [`Text`](NodeKind::Text), drawn with syntax highlighting or terminal colors.
+    /// An empty `language` is plain text. `"auto"` uses the record's file extension.
+    RichText {
+        template: String,
+        language: String,
+    },
     /// One value from the row's record, `fallback` when the path reaches nothing.
     Field {
         path: DataPath,
@@ -37,6 +43,8 @@ pub enum NodeKind {
     Spacer,
     Row,
     Column,
+    /// The highlighted row, drawn beside the list.
+    Preview,
 }
 
 impl NodeKind {
@@ -51,10 +59,12 @@ impl NodeKind {
             Self::Marker => "marker",
             Self::Index => "index",
             Self::Text(_) => "text",
+            Self::RichText { .. } => "richtext",
             Self::Field { .. } => "field",
             Self::Spacer => "spacer",
             Self::Row => "row",
             Self::Column => "column",
+            Self::Preview => "preview",
         }
     }
 }
@@ -90,6 +100,7 @@ enum Area {
     Window,
     InputBar,
     Element,
+    Preview,
 }
 
 impl Area {
@@ -98,25 +109,28 @@ impl Area {
             Self::Window => "window",
             Self::InputBar => "inputbar",
             Self::Element => "element",
+            Self::Preview => "preview",
         }
     }
 
     fn allows(self, kind: &NodeKind, nested: bool) -> bool {
         use NodeKind::*;
         match (self, kind) {
-            (_, Text(_) | Spacer | Row | Column) => true,
-            (Area::Window, InputBar | ListView) => !nested,
+            (_, Text(_) | RichText { .. } | Spacer | Row | Column) => true,
+            (Area::Window, InputBar | ListView | Preview) => !nested,
             (Area::InputBar, Prompt | Entry) => true,
             (Area::Element, Marker | Index | Field { .. }) => true,
+            (Area::Preview, Field { .. }) => true,
             _ => false,
         }
     }
 
     fn expected(self) -> &'static str {
         match self {
-            Area::Window => "inputbar, listview, text, spacer, row, or column",
-            Area::InputBar => "prompt, entry, text, spacer, row, or column",
-            Area::Element => "marker, index, field, text, spacer, row, or column",
+            Area::Window => "inputbar, listview, preview, text, richtext, spacer, row, or column",
+            Area::InputBar => "prompt, entry, text, richtext, spacer, row, or column",
+            Area::Element => "marker, index, field, text, richtext, spacer, row, or column",
+            Area::Preview => "text, richtext, field, spacer, row, or column",
         }
     }
 }
@@ -137,6 +151,7 @@ pub struct Layout {
     location: Option<Location>,
     inputbar: bool,
     listview: bool,
+    preview: bool,
 }
 
 impl Layout {
@@ -152,6 +167,7 @@ impl Layout {
             location,
             inputbar: false,
             listview: false,
+            preview: false,
         };
         for child in &layout.root.children {
             match child.kind {
@@ -161,8 +177,12 @@ impl Layout {
                 NodeKind::ListView if layout.listview => {
                     return Err("a window may contain only one listview".into())
                 }
+                NodeKind::Preview if layout.preview => {
+                    return Err("a window may contain only one preview".into())
+                }
                 NodeKind::InputBar => layout.inputbar = true,
                 NodeKind::ListView => layout.listview = true,
+                NodeKind::Preview => layout.preview = true,
                 _ => {}
             }
             validate(child, Area::Window, false)?;
@@ -233,6 +253,18 @@ impl Layout {
         self.listview
     }
 
+    pub fn has_preview(&self) -> bool {
+        self.preview
+    }
+
+    /// The preview pane, a direct child of the window.
+    pub fn preview(&self) -> Option<&Node> {
+        self.root
+            .children
+            .iter()
+            .find(|node| matches!(node.kind, NodeKind::Preview))
+    }
+
     /// The row template inside the listview.
     pub fn element(&self) -> Option<&Node> {
         self.root
@@ -272,10 +304,19 @@ impl Layout {
 
     pub fn card_size(&self, theme: &Theme, rows: usize, label_max: usize) -> (f32, f32) {
         let window = self.window_style(theme);
-        let width = window.width.unwrap_or_else(|| {
-            (label_max as f32 * self.char_width(theme) + self.width_chrome(theme))
-                .clamp(MIN_CARD_WIDTH, MAX_CARD_WIDTH)
-        });
+        let list_width = (label_max as f32 * self.char_width(theme) + self.width_chrome(theme))
+            .clamp(MIN_CARD_WIDTH, MAX_CARD_WIDTH);
+        let width = match window.width {
+            Some(width) => width,
+            None if self.preview => {
+                let preview = self
+                    .preview()
+                    .and_then(|node| node.style.width)
+                    .unwrap_or(list_width);
+                list_width + preview
+            }
+            None => list_width,
+        };
         let height = if self.listview {
             (rows.max(1) as f32 * self.row_extent(theme) + self.height_chrome(theme))
                 .min(window.max_height.unwrap_or(600.0))
@@ -313,7 +354,13 @@ impl Layout {
     fn height_chrome(&self, theme: &Theme) -> f32 {
         let window = self.window_style(theme);
         let mut chrome = window.padding.vertical() + window.border.vertical();
-        for child in &self.root.children {
+        let stacked: Vec<&Node> = self
+            .root
+            .children
+            .iter()
+            .filter(|child| !matches!(child.kind, NodeKind::Preview))
+            .collect();
+        for child in &stacked {
             chrome += match &child.kind {
                 NodeKind::ListView => 0.0,
                 NodeKind::InputBar => {
@@ -330,7 +377,15 @@ impl Layout {
                 }
             };
         }
-        chrome + gaps(&self.root.children, window.spacing)
+        chrome + gaps_len(stacked.len(), window.spacing)
+    }
+}
+
+fn gaps_len(count: usize, spacing: f32) -> f32 {
+    if count > 1 {
+        spacing * (count - 1) as f32
+    } else {
+        0.0
     }
 }
 
@@ -356,7 +411,7 @@ fn fixed_width(node: &Node, theme: &Theme, parent: &Style) -> f32 {
             .with(&node.style)
             .width
             .unwrap_or(INDEX_WIDTH),
-        NodeKind::Text(_) | NodeKind::Field { .. } => {
+        NodeKind::Text(_) | NodeKind::RichText { .. } | NodeKind::Field { .. } => {
             theme.element_text().with(&node.style).width.unwrap_or(0.0)
         }
         NodeKind::Row | NodeKind::Column => {
@@ -391,7 +446,7 @@ fn validate(node: &Node, area: Area, nested: bool) -> Result<(), String> {
             area.name(),
             node.kind.name(),
             if nested {
-                area.expected().replace("inputbar, listview, ", "")
+                area.expected().replace("inputbar, listview, preview, ", "")
             } else {
                 area.expected().to_owned()
             }
@@ -402,6 +457,10 @@ fn validate(node: &Node, area: Area, nested: bool) -> Result<(), String> {
             .children
             .iter()
             .try_for_each(|child| validate(child, Area::InputBar, false)),
+        NodeKind::Preview => node
+            .children
+            .iter()
+            .try_for_each(|child| validate(child, Area::Preview, false)),
         NodeKind::ListView => match node.children.as_slice() {
             [element] if element.kind == NodeKind::Element => element
                 .children
@@ -454,6 +513,15 @@ pub fn expand_record(template: &str, record: &crate::Record, label_max: usize) -
         record
             .text(&path)
             .map(|text| shorten_label(&text, label_max))
+    })
+}
+
+/// Like [`expand_record`], without collapsing or shortening the text. A
+/// preview keeps the record's line breaks.
+pub fn expand_record_full(template: &str, record: &crate::Record) -> String {
+    expand_with(template, |name| {
+        let path = DataPath::parse(name).ok()?;
+        record.text(&path)
     })
 }
 
@@ -689,6 +757,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("text cannot have children"), "{error}");
+    }
+
+    #[test]
+    fn a_preview_widens_the_card_without_making_it_taller() {
+        let theme = Theme::default();
+        let list = Node::new(
+            NodeKind::ListView,
+            vec![Node::new(NodeKind::Element, vec![Node::text("{label}")])],
+        );
+        let plain = Layout::new(Node::new(NodeKind::Window, vec![list.clone()]), None).unwrap();
+        let split = Layout::new(
+            Node::new(
+                NodeKind::Window,
+                vec![
+                    list,
+                    Node::new(NodeKind::Preview, vec![Node::text("{preview}")]),
+                ],
+            ),
+            None,
+        )
+        .unwrap();
+        let (plain_width, plain_height) = plain.card_size(&theme, 4, 16);
+        let (split_width, split_height) = split.card_size(&theme, 4, 16);
+        assert!(split_width > plain_width, "{split_width} > {plain_width}");
+        assert_eq!(split_height, plain_height);
+        assert_eq!(
+            expand_record_full(
+                "a\nb {preview}",
+                &crate::Record::new("v").with_data(serde_json::json!({"preview": "x\ny"}))
+            ),
+            "a\nb x\ny"
+        );
     }
 
     #[test]

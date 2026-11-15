@@ -142,10 +142,12 @@ NODE_PROPERTIES: dict[str, frozenset[str]] = {
     "Marker": ELEMENT_PROPERTIES["element_marker"],
     "Index": ELEMENT_PROPERTIES["element_index"],
     "Text": _BOX | {"width"},
+    "RichText": _BOX | {"width"},
     "Field": _BOX | {"width"},
     "Spacer": frozenset({"width", "height"}),
     "Row": _BOX | {"width", "height"},
     "Column": _BOX | {"width", "height"},
+    "Preview": _BOX | {"width", "height"},
 }
 
 EM_PX = 14.0

@@ -21,6 +21,7 @@ gpui_platform = { package = "gpui_ce_platform", version = "0.3", default-feature
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
+syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

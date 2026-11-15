@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import overload
 
-from .ui import Element, Entry, Index, InputBar, ListView, Marker, Prompt, Text, Window
+from .ui import Element, Entry, Index, InputBar, ListView, Marker, Node, Preview, Prompt, Text, Window
 
 __all__ = ["LayoutContext", "menu", "filter", "prompt", "rows", "secret"]
 
@@ -30,9 +32,39 @@ def menu(ctx: LayoutContext) -> Window:
     return Window(rows(ctx), location="pointer")
 
 
-def filter(ctx: LayoutContext) -> Window:  # noqa: A001
-    """An input bar over the list, centered; typing filters the rows."""
-    return Window(InputBar(Prompt(), Entry()), rows(ctx), location="center")
+@overload
+def filter(ctx: LayoutContext, *, preview: Node | None = None) -> Window: ...  # noqa: A001
+
+
+@overload
+def filter(  # noqa: A001
+    ctx: None = None, *, preview: Node | None = None
+) -> Callable[[LayoutContext], Window]: ...
+
+
+def filter(  # noqa: A001
+    ctx: LayoutContext | None = None, *, preview: Node | None = None
+) -> Window | Callable[[LayoutContext], Window]:
+    """An input bar over the list, centered; typing filters the rows.
+
+    `preview` is a pane to the right of the list. A `ui.Preview` is that
+    pane; any other node is placed inside one. Called without a context,
+    this returns a layout function::
+
+        layout=layouts.filter(preview=ui.RichText("{preview}"))
+    """
+    if preview is not None and not isinstance(preview, Node):
+        raise TypeError(f"filter: preview must be a layout node, got {preview!r}")
+
+    def build(ctx: LayoutContext) -> Window:
+        children: list[Node] = [InputBar(Prompt(), Entry()), rows(ctx)]
+        if preview is not None:
+            children.append(preview if isinstance(preview, Preview) else Preview(preview))
+        return Window(*children, location="center")
+
+    if ctx is None:
+        return build
+    return build(ctx)
 
 
 def prompt(ctx: LayoutContext) -> Window:
