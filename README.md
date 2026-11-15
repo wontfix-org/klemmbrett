@@ -52,8 +52,11 @@ sudo apt install \
 Install the `kb` command from a checkout:
 
 ```sh
-uv tool install .        # or: pipx install .
+just install
 ```
+
+That runs `uv tool install` for this package and the local
+`klemmbrett-rpc` package beside it.
 
 For development, `just dev` builds the extension into `.venv` with
 `maturin develop`, and `just test` runs `cargo test` and `pytest`.

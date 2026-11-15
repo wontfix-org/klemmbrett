@@ -2,6 +2,10 @@
 default:
     @just --list
 
+# Install kb from this checkout, with the local klemmbrett-rpc package.
+install:
+    uv tool install --force --with ./packages/klemmbrett-rpc .
+
 # Build the extension into .venv and install the klemmbrett command there.
 dev:
     [ -x .venv/bin/python ] || uv venv .venv
