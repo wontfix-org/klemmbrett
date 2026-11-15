@@ -16,6 +16,10 @@ class FakeBackend:
     def copy(self, text: str) -> None:
         self.calls.append(("copy", text))
 
+    def paste(self) -> str:
+        self.calls.append(("paste", None))
+        return "clipped"
+
     def launch_command(self, argv: list[str]) -> None:
         self.calls.append(("launch", argv))
 

@@ -26,6 +26,11 @@ def test_records_default_key_and_label_and_are_frozen():
         kb.Record(3)  # type: ignore[arg-type]
 
 
+def test_paste_reads_the_clipboard(daemon):
+    assert kb.paste() == "clipped"
+    assert daemon.calls == [("paste", None)]
+
+
 def test_decorator_sets_on_select(daemon):
     @kb.widget("links", providers.Static(["a"]))
     def links(record):

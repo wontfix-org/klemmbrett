@@ -1043,6 +1043,12 @@ fn copy(py: Python<'_>, text: String) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn paste(py: Python<'_>) -> PyResult<String> {
+    let runtime = runtime()?;
+    py.detach(|| runtime.paste()).map_err(runtime_error)
+}
+
+#[pyfunction]
 fn launch_command(py: Python<'_>, argv: Vec<String>) -> PyResult<()> {
     if argv.is_empty() {
         return Err(value_error("launch: the command must not be empty"));
@@ -1247,6 +1253,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeSource>()?;
     module.add_function(wrap_pyfunction!(main, module)?)?;
     module.add_function(wrap_pyfunction!(copy, module)?)?;
+    module.add_function(wrap_pyfunction!(paste, module)?)?;
     module.add_function(wrap_pyfunction!(launch_command, module)?)?;
     module.add_function(wrap_pyfunction!(activate_desktop, module)?)?;
     module.add_function(wrap_pyfunction!(activate_window, module)?)?;

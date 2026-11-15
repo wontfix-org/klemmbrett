@@ -88,10 +88,12 @@ pub(crate) struct PendingSecret {
 
 enum ClipCmd {
     Restore(String),
+    /// Reply with the clipboard text. `None` means it could not be read.
+    Read(mpsc::Sender<Option<String>>),
 }
 
-/// Lets code outside the UI thread act on the running daemon. Every method
-/// returns immediately.
+/// Lets code outside the UI thread act on the running daemon. `paste` waits
+/// for the clipboard thread; the other methods return immediately.
 #[derive(Clone)]
 pub struct Runtime {
     ui: async_channel::Sender<UiCmd>,
@@ -109,6 +111,20 @@ impl Runtime {
         self.clip
             .send(ClipCmd::Restore(text.to_owned()))
             .map_err(|_| "the clipboard thread is not running".to_string())
+    }
+
+    /// The current clipboard text, read on the clipboard thread so the read
+    /// is not mistaken for a new selection.
+    pub fn paste(&self) -> Result<String, String> {
+        let (reply, text) = mpsc::channel();
+        self.clip
+            .send(ClipCmd::Read(reply))
+            .map_err(|_| "the clipboard thread is not running".to_string())?;
+        match text.recv() {
+            Ok(Some(text)) => Ok(text),
+            Ok(None) => Err("the clipboard could not be read".to_string()),
+            Err(_) => Err("the clipboard thread is not running".to_string()),
+        }
     }
 
     /// Starts a detached process the way the `launch` setting says.
@@ -373,8 +389,8 @@ fn send_ui(tx: &async_channel::Sender<UiCmd>, cmd: UiCmd, what: &str) {
     }
 }
 
-fn spawn_clipboard(
-    mut sync: ClipboardSync<ArboardBackend>,
+fn spawn_clipboard<B: Backend + Send + 'static>(
+    mut sync: ClipboardSync<B>,
     ui: async_channel::Sender<UiCmd>,
 ) -> mpsc::Sender<ClipCmd> {
     let (tx, rx) = mpsc::channel();
@@ -400,6 +416,9 @@ fn spawn_clipboard(
                                 "send clipboard history",
                             );
                         }
+                    }
+                    Ok(ClipCmd::Read(reply)) => {
+                        let _ = reply.send(sync.backend_mut().read(Selection::Clipboard));
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         let action = sync.tick();
@@ -2764,7 +2783,52 @@ fn rgba_to_argb(
 
 #[cfg(test)]
 mod tests {
-    use super::rgba_to_argb;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::{rgba_to_argb, spawn_clipboard, ClipCmd};
+    use crate::{Backend, ClipboardSync, Selection};
+
+    struct MemoryBackend {
+        clipboard: String,
+        primary: String,
+        writes: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Backend for MemoryBackend {
+        fn read(&mut self, selection: Selection) -> Option<String> {
+            Some(match selection {
+                Selection::Clipboard => self.clipboard.clone(),
+                Selection::Primary => self.primary.clone(),
+            })
+        }
+
+        fn write(&mut self, _selection: Selection, text: &str) -> Result<(), String> {
+            self.writes.lock().expect("writes").push(text.to_owned());
+            Ok(())
+        }
+
+        fn sleep(&mut self, _duration: Duration) {}
+    }
+
+    #[test]
+    fn paste_reads_the_clipboard_without_writing() {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let sync = ClipboardSync::new(MemoryBackend {
+            clipboard: "hello".to_owned(),
+            primary: "hello".to_owned(),
+            writes: Arc::clone(&writes),
+        });
+        let (ui, _events) = async_channel::unbounded();
+        let clip = spawn_clipboard(sync, ui);
+        let (reply, text) = std::sync::mpsc::channel();
+        clip.send(ClipCmd::Read(reply)).unwrap();
+        assert_eq!(
+            text.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some("hello".to_owned())
+        );
+        assert!(writes.lock().expect("writes").is_empty());
+    }
 
     #[test]
     fn rgba_pixels_become_network_order_argb() {

@@ -54,6 +54,14 @@ def copy(text: str) -> None:
     backend.copy(text)
 
 
+def paste() -> str:
+    """The current clipboard text, read on the sync thread."""
+    text = backend.paste()
+    if not isinstance(text, str):
+        raise TypeError(f"paste: expected a string, got {text!r}")
+    return text
+
+
 def launch(argv: Sequence[str | os.PathLike[str]]) -> None:
     """Starts a detached program the way the `launch` setting says."""
     if isinstance(argv, str | bytes):

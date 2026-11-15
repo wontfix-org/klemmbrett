@@ -16,7 +16,18 @@ from . import layouts, notifications, providers, ranking, rpc, secrets, themes, 
 from ._record import Record
 from ._registry import Widget, configure, picker, widget
 from ._schema import SchemaError
-from ._runtime import activate_window, copy, is_running, launch, notify, quit, run, set_theme, show
+from ._runtime import (
+    activate_window,
+    copy,
+    is_running,
+    launch,
+    notify,
+    paste,
+    quit,
+    run,
+    set_theme,
+    show,
+)
 from .layouts import LayoutContext
 from .providers import Provider, provider
 from .style import Style, Theme, ch, cmyk, em, hsl, hwb, inherit, mm, pct, px, rgb, transparent
@@ -34,6 +45,7 @@ __all__ = [
     "cmyk",
     "configure",
     "copy",
+    "paste",
     "em",
     "hsl",
     "hwb",

@@ -132,6 +132,7 @@ them outside the daemon raises `RuntimeError`.
 | Function | Effect |
 | --- | --- |
 | `kb.copy(text)` | Sets the clipboard and primary selection, and records history |
+| `kb.paste()` | The current clipboard text, read on the sync thread |
 | `kb.launch(argv)` | Starts a detached program the way the `launch` setting says |
 | `kb.activate_window(key)` | Focuses a `WaylandWindows` record's window |
 | `kb.set_theme(theme)` | Switches the palette: a name, `"default"`, or a `Theme` |
@@ -151,7 +152,9 @@ the session's notification server. `urgency` is `"low"`, `"normal"`,
 `"critical"`, or 0–2, and `timeout` is in milliseconds (0 never expires).
 
 `kb.copy` goes through the sync thread, so the copied text is not copied
-back as a new selection. Prefer it over `wl-copy`.
+back as a new selection. Prefer it over `wl-copy`. `kb.paste` reads on that
+same thread, so the read is not treated as a new selection either. Prefer it
+over `wl-paste`.
 
 ## Multi-select
 
@@ -380,6 +383,37 @@ kb.widget("todo", Todo())
 when the provider reports a change, so it may block briefly (reading files,
 calling a command), but slow providers delay the popup. `Todo` above could
 call `self.changed()` after inserting, so an open popup shows the new item.
+
+A function cannot be a record: the popup stores records as JSON. Keep the
+functions on the provider and list their names. Picking a name reads the
+clipboard at that moment and copies the result. Both examples strip each line, drop
+lines that are empty after that, and join with `", "`.
+
+```python
+def _items(text):
+    return [item.strip() for item in text.splitlines() if item.strip()]
+
+def newlines_to_commas(text):
+    return ", ".join(_items(text))
+
+def newlines_to_quoted_commas(text):
+    return ", ".join(f'"{item}"' for item in _items(text))
+
+class Clipboard(kb.Provider):
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def records(self):
+        return [kb.Record(name) for name in self.transforms]
+
+    def select(self, record):
+        kb.copy(self.transforms[record.value](kb.paste()))
+
+kb.widget("clipboard", Clipboard({
+    "Newlines to commas": newlines_to_commas,
+    "Newlines to quoted commas": newlines_to_quoted_commas,
+}), layout=layouts.menu)
+```
 
 ## Recipes
 
