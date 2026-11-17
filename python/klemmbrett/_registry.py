@@ -253,6 +253,7 @@ class Widget:
         match: rk.Matcher | None = _PROVIDER_DEFAULT,
         rank: rk.Rank | None = _PROVIDER_DEFAULT,
         prefer: str = "blend",
+        run_query: bool | None = None,
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("widget name must be a non-empty string")
@@ -267,6 +268,7 @@ class Widget:
                     ("search", bool(search)),
                     ("match", match is not _PROVIDER_DEFAULT),
                     ("rank", rank is not _PROVIDER_DEFAULT),
+                    ("run_query", run_query is True),
                 )
                 if given
             ]
@@ -305,6 +307,12 @@ class Widget:
             raise TypeError(f"widget {name!r}: rank must be rankers such as rk.frecency(), got {rank!r}")
         if prefer not in rk.PREFER:
             raise ValueError(f"widget {name!r}: prefer must be one of {', '.join(rk.PREFER)}")
+        if run_query is None:
+            run_query = bool(getattr(self.provider, "run_query", False))
+        elif not isinstance(run_query, bool):
+            raise TypeError(
+                f"widget {name!r}: run_query must be true or false, got {run_query!r}"
+            )
         self.match = match
         self.rank = rank
         self.prefer = prefer
@@ -313,6 +321,7 @@ class Widget:
         self.location = location
         self.multi = multi_keys
         self.search = list(search or ())
+        self.run_query = run_query
         self._on_select = _handler(on_select, "on_select")
         self._on_highlight = _handler(on_highlight, "on_highlight")
         self._shown: dict[str, Record] = {}
@@ -336,6 +345,8 @@ class Widget:
         with _runtime.handling(self.name):
             if self._on_select is not None:
                 self._on_select(record)
+            elif self.run_query and providers._launches_directly(record):
+                providers.launch_executable(record)
             elif callable(select := getattr(self.provider, "select", None)):
                 select(record)
             else:
@@ -382,6 +393,7 @@ class Widget:
             "search": self.search,
             "ranking": rk.wire(self.match, self.rank, self.prefer),
             "agent": None if self.agent is None else self.agent._wire(),
+            "run_query": self.run_query,
         }
 
 
@@ -407,6 +419,7 @@ def widget(
     match: rk.Matcher | None = _PROVIDER_DEFAULT,
     rank: rk.Rank | None = _PROVIDER_DEFAULT,
     prefer: str = "blend",
+    run_query: bool | None = None,
 ) -> Widget:
     """Declares a popup widget.
 
@@ -424,6 +437,8 @@ def widget(
     - `rank`: how past picks order rows, such as `ranking.frecency()`. `None`
       keeps the provider's order. Left out, the provider's default applies.
     - `prefer`: `"blend"`, `"match"`, or `"usage"`; see docs/ranking.md.
+    - `run_query`: offer typed text as a command and remember accepted lines.
+      Left out, the provider's choice applies (`Executables` turns it on).
     """
     if name in registry.widgets:
         raise ValueError(f"widget {name!r} is configured more than once")
@@ -449,6 +464,7 @@ def widget(
         match=match,
         rank=rank,
         prefer=prefer,
+        run_query=run_query,
     )
     registry.widgets[name] = created
     return created

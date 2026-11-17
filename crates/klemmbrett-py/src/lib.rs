@@ -802,6 +802,9 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
         def.ranking = Ranking::from_json(&to_json(&ranking)?)
             .map_err(|err| value_error(format!("widget {name:?}: {err}")))?;
     }
+    if let Some(run_query) = item(dict, "run_query")? {
+        def.run_query = run_query.extract()?;
+    }
     if let Some(agent) = item(dict, "agent")? {
         let agent = agent.cast::<PyDict>()?;
         let kind: String = item(agent, "kind")?

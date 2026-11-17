@@ -132,6 +132,9 @@ A widget that sets no `match=` or `rank=` takes them from its provider:
 | `Widgets` | `rk.fuzzy()` | none |
 | others | `rk.substring()` | none |
 
+Remembered command lines from a run widget are ordinary rows, so these
+rankers order them with the programs on `PATH`.
+
 Your own providers declare theirs as class attributes:
 
 ```python

@@ -13,6 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const PICKS_KEPT: usize = 16;
 /// Rows kept per namespace before the least recently used go.
 pub const NAMESPACE_LIMIT: usize = 2000;
+/// Command lines remembered per widget, newest kept.
+pub const COMMANDS_KEPT: usize = 256;
 /// Typed queries are kept up to this many characters.
 const QUERY_MAX_CHARS: usize = 32;
 
@@ -74,6 +76,7 @@ pub struct NamespaceUsage {
 pub struct UsageStore {
     conn: Connection,
     limit: usize,
+    command_limit: usize,
 }
 
 impl UsageStore {
@@ -106,16 +109,29 @@ impl UsageStore {
                 key TEXT NOT NULL,
                 at INTEGER NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS picks_by_key ON picks (namespace, query, key, at);",
+            CREATE INDEX IF NOT EXISTS picks_by_key ON picks (namespace, query, key, at);
+            CREATE TABLE IF NOT EXISTS commands (
+                namespace TEXT NOT NULL,
+                command TEXT NOT NULL,
+                last_used INTEGER NOT NULL,
+                PRIMARY KEY (namespace, command)
+            );",
         )?;
+        conn.busy_timeout(std::time::Duration::from_secs(1))?;
         Ok(Self {
             conn,
             limit: NAMESPACE_LIMIT,
+            command_limit: COMMANDS_KEPT,
         })
     }
 
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.max(1);
+        self
+    }
+
+    pub fn with_command_limit(mut self, limit: usize) -> Self {
+        self.command_limit = limit.max(1);
         self
     }
 
@@ -222,7 +238,77 @@ impl UsageStore {
             .execute("DELETE FROM usage WHERE namespace = ?1", [namespace])?;
         self.conn
             .execute("DELETE FROM picks WHERE namespace = ?1", [namespace])?;
+        self.conn
+            .execute("DELETE FROM commands WHERE namespace = ?1", [namespace])?;
         Ok(())
+    }
+
+    /// Remembers `command` under `namespace`, keeping the newest [`COMMANDS_KEPT`].
+    ///
+    /// `loginctl lock-session` is stored as that line. A later accept of the
+    /// same line only moves it forward. Blank lines are ignored.
+    pub fn remember_command(
+        &mut self,
+        namespace: &str,
+        command: &str,
+        at: i64,
+    ) -> rusqlite::Result<()> {
+        let command = command.trim();
+        if namespace.is_empty() || command.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO commands (namespace, command, last_used) VALUES (?1, ?2, ?3)
+             ON CONFLICT (namespace, command)
+             DO UPDATE SET last_used = max(last_used, ?3)",
+            params![namespace, command, at],
+        )?;
+        tx.execute(
+            "DELETE FROM commands WHERE rowid IN (
+                SELECT rowid FROM commands WHERE namespace = ?1
+                ORDER BY last_used DESC, command ASC LIMIT -1 OFFSET ?2
+            )",
+            params![namespace, self.command_limit as i64],
+        )?;
+        tx.commit()
+    }
+
+    /// Drops one remembered command line. A missing line is not an error.
+    pub fn forget_command(&mut self, namespace: &str, command: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM commands WHERE namespace = ?1 AND command = ?2",
+            params![namespace, command.trim()],
+        )?;
+        Ok(())
+    }
+
+    /// Remembered command lines, newest first.
+    pub fn commands(&self, namespace: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT command FROM commands WHERE namespace = ?1
+             ORDER BY last_used DESC, command ASC",
+        )?;
+        let rows = stmt.query_map([namespace], |row| row.get(0))?;
+        rows.collect()
+    }
+}
+
+/// Command lines stored for `namespace`, or nothing if the database cannot be read.
+pub fn remembered_commands(namespace: &str) -> Vec<String> {
+    let path = default_usage_path();
+    match UsageStore::open(&path) {
+        Ok(store) => match store.commands(namespace) {
+            Ok(commands) => commands,
+            Err(err) => {
+                crate::journal::error(&format!("failed to read command history: {err}"));
+                Vec::new()
+            }
+        },
+        Err(err) => {
+            crate::journal::error(&format!("failed to open {}: {err}", path.display()));
+            Vec::new()
+        }
     }
 }
 
@@ -311,6 +397,40 @@ mod tests {
     fn queries_are_normalized() {
         assert_eq!(normalize_query("  FireFox "), "firefox");
         assert_eq!(normalize_query(&"x".repeat(50)).len(), QUERY_MAX_CHARS);
+    }
+
+    #[test]
+    fn remembered_commands_keep_the_newest_and_can_be_forgotten() {
+        let mut store = UsageStore::open_in_memory()
+            .unwrap()
+            .with_command_limit(2);
+        store
+            .remember_command("run", "  loginctl lock-session ", 1)
+            .unwrap();
+        store.remember_command("run", "foot -e htop", 2).unwrap();
+        store
+            .remember_command("run", "loginctl lock-session", 4)
+            .unwrap();
+        store.remember_command("run", "notify-send hi", 3).unwrap();
+        store.remember_command("other", "keep", 9).unwrap();
+        store.remember_command("run", "   ", 5).unwrap();
+        assert_eq!(
+            store.commands("run").unwrap(),
+            vec![
+                "loginctl lock-session".to_string(),
+                "notify-send hi".to_string(),
+            ]
+        );
+        store.forget_command("run", "notify-send hi").unwrap();
+        store.forget_command("run", "missing").unwrap();
+        assert_eq!(
+            store.commands("run").unwrap(),
+            vec!["loginctl lock-session".to_string()]
+        );
+        assert_eq!(store.commands("other").unwrap(), vec!["keep".to_string()]);
+        store.clear("run").unwrap();
+        assert!(store.commands("run").unwrap().is_empty());
+        assert_eq!(store.commands("other").unwrap(), vec!["keep".to_string()]);
     }
 
     #[test]

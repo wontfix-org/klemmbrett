@@ -391,6 +391,8 @@ pub struct WidgetDef {
     pub ranking: Ranking,
     /// Set when the widget answers secret questions instead of showing rows.
     pub agent: Option<AgentSpec>,
+    /// Offer the typed text as a command, and list commands accepted before.
+    pub run_query: bool,
 }
 
 impl WidgetDef {
@@ -406,6 +408,7 @@ impl WidgetDef {
             search: Vec::new(),
             ranking: Ranking::default(),
             agent: None,
+            run_query: false,
         }
     }
 }
@@ -509,6 +512,11 @@ impl Widgets {
         self.defs.iter().any(|def| def.ranking.uses_usage())
     }
 
+    /// Whether any widget runs typed commands and remembers them.
+    pub fn runs_commands(&self) -> bool {
+        self.defs.iter().any(|def| def.run_query)
+    }
+
     /// Widgets the tray can open. On-demand widgets need records from the caller.
     pub fn names_with_provider(&self) -> Vec<String> {
         self.defs
@@ -574,9 +582,15 @@ pub fn fetch_records(def: &WidgetDef) -> Result<Vec<Record>, String> {
             def.name
         ));
     };
-    let records = source
+    let mut records = source
         .records()
         .map_err(|err| format!("widget {:?}: {err}", def.name))?;
+    if def.run_query {
+        crate::executables::merge_commands(
+            &mut records,
+            &crate::usage::remembered_commands(&def.name),
+        );
+    }
     validate_records(&def.name, &records)?;
     Ok(records)
 }

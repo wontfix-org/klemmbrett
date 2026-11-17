@@ -213,8 +213,9 @@ def snippets(record):
 `printf '%s\n' one two | kb show pick -`.
 
 Selecting a row calls the widget's `on_select` with the `Record`. Without
-one, the provider decides (`Executables` launches, `WaylandWindows` focuses
-the window), and otherwise the value is copied. Handlers are ordinary Python,
+one, the provider decides (`Executables` launches, including a command you
+type, and remembers it; `WaylandWindows` focuses the window), and otherwise
+the value is copied. Handlers are ordinary Python,
 including `re` and `json`. `kb.run` waits for a command and logs it, including
 stderr left uncaptured. `kb.launch` starts detached programs. With
 `launch="auto"`, that is `systemd-run --user --scope` when klemmbrett runs

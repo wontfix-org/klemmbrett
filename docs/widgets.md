@@ -16,7 +16,8 @@ def links(record):
 ```
 
 `kb.widget(name, provider=None, *, layout, theme, location, multi, select,
-deselect, on_select, on_highlight, search, match, rank, prefer)` returns a
+deselect, on_select, on_highlight, search, match, rank, prefer, run_query)`
+returns a
 `Widget`. `match`, `rank`, and `prefer` choose how typing matches rows and
 how past picks order them; see [`ranking.md`](ranking.md). Calling the `Widget`
 with a function sets `on_select`, which is what makes the decorator form
@@ -98,7 +99,7 @@ The first of these that applies runs:
 | --- | --- | --- |
 | `ClipboardHistory()` | copy | Recent clips, newest first, in SQLite |
 | `File(path, format=None, schema=None)` | copy | Reloaded each time the popup opens |
-| `Executables()` | `kb.launch([value])` | `PATH` entries; first basename wins |
+| `Executables()` | launch the program or typed command | `PATH` names, plus remembered command lines |
 | `Applications()` | launch the desktop entry | Desktop files; `Terminal=true` needs `kb.configure(terminal=...)` |
 | `AudioSinks()` | make it the default sink | PulseAudio and PipeWire sinks |
 | `AudioSources()` | make it the default source | PulseAudio and PipeWire sources |
@@ -204,6 +205,30 @@ One row per configured widget, in the order they were declared. Picking a
 row opens that widget. Widgets whose provider is an agent
 (`secrets.SystemdAgent`, `Askpass`, `Pinentry`, `Polkit`) are left out:
 they open when an asker has a question.
+
+### Executables
+
+```python
+kb.configure(terminal=["foot", "-e"])
+kb.widget("run", providers.Executables(), layout=layouts.filter)
+```
+
+The list is every executable basename on `PATH`; the first of each name
+wins. Selecting launches that file, with no shell and no arguments.
+
+Typing a line that is not exactly one of those labels adds a row for the
+line. `loginctl lock-session` stays available next to `loginctl`, and Enter
+runs it as the arguments `loginctl` and `lock-session`. Quotes group words,
+as in `notify-send "hello world"`. Pipes, globs, and aliases are not
+expanded. Accepting a line remembers it, up to a few hundred per widget, and
+the usual frecency ranking brings it back. A line that is exactly a `PATH`
+name is not stored again. Shift+Delete forgets a remembered line.
+Shift+Enter runs the selected program or command in the terminal from
+`kb.configure(terminal=...)`.
+
+`run_query=False` turns this off. Another provider does not do it unless the
+widget sets `run_query=True`, which is how a `Merge` of applications and
+executables can offer the same row.
 
 ### Applications
 

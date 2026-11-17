@@ -41,6 +41,60 @@ def test_decorator_sets_on_select(daemon):
     assert daemon.calls == [("copy", "A")]
 
 
+def test_typed_commands_are_split_and_can_run_in_a_terminal(daemon):
+    kb.configure(terminal=["foot", "-e"])
+    kb.widget("run", providers.Executables())
+    kb.widget("apps", providers.Applications())
+    kb.widget("plain", providers.Executables(), run_query=False)
+    kb.widget(
+        "both",
+        providers.Merge(providers.Applications(), providers.Executables()),
+        run_query=True,
+    )
+    kb.widget("view", providers.Executables().view())
+    assert wire_widget("run")["run_query"] is True
+    assert wire_widget("apps")["run_query"] is False
+    assert wire_widget("plain")["run_query"] is False
+    assert wire_widget("both")["run_query"] is True
+    assert wire_widget("view")["run_query"] is True
+
+    def row(value, data=None):
+        return (value, value, value, data)
+
+    dispatcher().select("run", [row("loginctl lock-session", {"command": True})])
+    dispatcher().select("run", [("firefox", "firefox", "/usr/bin/firefox", {"terminal": True})])
+    dispatcher().select(
+        "both",
+        [row("flatpak run org.foo", {"command": True, "terminal": True})],
+    )
+    dispatcher().select("run", [row('notify-send "hello world"', {"command": True})])
+    assert daemon.calls == [
+        ("launch", ["loginctl", "lock-session"]),
+        ("launch", ["foot", "-e", "/usr/bin/firefox"]),
+        ("launch", ["foot", "-e", "flatpak", "run", "org.foo"]),
+        ("launch", ["notify-send", "hello world"]),
+    ]
+
+    run = _registry.registry.widgets["run"]
+    with pytest.raises(ValueError, match="No closing quotation"):
+        run.select(kb.Record('foo "bar', data={"command": True}))
+    with pytest.raises(ValueError, match="empty"):
+        providers.launch_executable(kb.Record("   ", data={"command": True}))
+    with pytest.raises(TypeError, match="run_query"):
+        kb.widget("bad", providers.Executables(), run_query="yes")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="run_query"):
+        kb.widget("ask", secrets.Askpass(), run_query=True)
+
+
+def test_a_run_widget_without_a_terminal_refuses_shift_enter(daemon):
+    kb.widget("run", providers.Executables())
+    with pytest.raises(RuntimeError, match="terminal is not configured"):
+        _registry.registry.widgets["run"].select(
+            kb.Record("/usr/bin/htop", data={"terminal": True})
+        )
+    assert daemon.calls == []
+
+
 def test_default_select_prefers_the_provider_then_copies(daemon):
     kb.widget("run", providers.Executables())
     kb.widget("windows", providers.WaylandWindows())

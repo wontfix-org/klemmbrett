@@ -21,6 +21,7 @@ showing it, directly or through a `View` or `Merge`, reloads, and
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 import threading
 import traceback
@@ -189,16 +190,23 @@ class File(_Native):
 
 
 class Executables(_Native):
-    """Programs on `PATH`; the first of each basename wins. Selecting launches it."""
+    """Programs on `PATH`; the first of each basename wins.
+
+    Selecting launches the program. A widget using this provider also offers
+    a typed line that is not already a label (`loginctl lock-session` runs
+    those arguments) and remembers it. Shift+Enter runs the program or the
+    line in the configured terminal. Shift+Delete forgets a remembered line.
+    """
 
     default_match = rk.fuzzy()
     default_rank = rk.frecency() + rk.learned()
+    run_query = True
 
     def _open(self) -> _core.NativeSource:
         return _core.NativeSource.executables()
 
     def select(self, record: Record) -> None:
-        _runtime.launch([record.value])
+        launch_executable(record)
 
 
 class Applications(Provider):
@@ -549,6 +557,10 @@ class View(Provider):
     def default_rank(self) -> rk.Rank | None:  # type: ignore[override]
         return defaults(self.source)[1]
 
+    @property
+    def run_query(self) -> bool:
+        return bool(getattr(self.source, "run_query", False))
+
     def _sources(self) -> tuple[Provider, ...]:
         return (self.source,)
 
@@ -618,6 +630,55 @@ def _agreed(values: Iterable[Any]) -> Any:
     if values and all(value == values[0] for value in values):
         return values[0]
     return None
+
+
+def _command_data(record: Record) -> dict[str, Any]:
+    return record.data if isinstance(record.data, dict) else {}
+
+
+def _launches_directly(record: Record) -> bool:
+    """A typed command, or a `PATH` row marked to run in a terminal.
+
+    A desktop entry carries other data, so it is left to its own provider.
+    """
+    data = _command_data(record)
+    if data.get("command") is True:
+        return True
+    return data.get("terminal") is True and set(data) <= {"terminal", "command", "pending"}
+
+
+def split_command(line: str) -> list[str]:
+    """Splits a command line the way POSIX `shlex` does, without a shell.
+
+    `loginctl lock-session` is `["loginctl", "lock-session"]`.
+    `notify-send "hello world"` keeps the quoted text as one argument.
+    `foot -T 'my title'` does the same with single quotes.
+    A trailing backslash or an open quote raises `ValueError`.
+    """
+    try:
+        argv = shlex.split(line, posix=True)
+    except ValueError as err:
+        raise ValueError(f"command {line!r}: {err}") from err
+    if not argv:
+        raise ValueError(f"command {line!r} is empty")
+    return argv
+
+
+def launch_executable(record: Record) -> None:
+    """Launches a `PATH` entry, or a typed command line when `data["command"]` is set.
+
+    `data["terminal"]` places the configured terminal in front of the arguments.
+    """
+    data = _command_data(record)
+    argv = split_command(record.value) if data.get("command") is True else [record.value]
+    if data.get("terminal") is True:
+        from ._registry import registry
+
+        prefix = registry.settings.terminal
+        if not prefix:
+            raise RuntimeError("terminal is not configured")
+        argv = [*prefix, *argv]
+    _runtime.launch(argv)
 
 
 def _select_with(source: Any, record: Record) -> None:
