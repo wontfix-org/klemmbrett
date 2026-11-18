@@ -10,11 +10,12 @@
 //! protocol's supported way to focus a surface that was not opened from user
 //! input, so the rows and their key handling live here instead.
 
-use crate::behavior::{install, AppCall, Behavior, BehaviorSpec, Effects, Flow, KeyPress};
+use crate::behavior::{
+    clear_terminal, install, AppCall, Behavior, BehaviorSpec, Effects, Flow, KeyPress,
+};
 use crate::config::{AppConfig, PICKER_PROMPT};
 use crate::data::DataPath;
 use crate::events;
-use crate::executables;
 use crate::history::shorten_label;
 use crate::journal;
 use crate::launch::ResolvedLaunch;
@@ -1043,7 +1044,6 @@ impl Klemmbrett {
             query,
             own_theme: def.theme.clone(),
             location: def.location,
-            run_query: def.run_query,
         };
         let ctx = LayoutContext {
             widget: face.widget.clone(),
@@ -1129,7 +1129,6 @@ impl Klemmbrett {
             priors,
             live,
             reply,
-            run_query: face.run_query,
         };
         if let Some(shown) = self.reuse_popup(&entries, &placement, shown, cx) {
             self.open_shell(placement, true, cx, move |app, placement, _window, cx| {
@@ -1290,7 +1289,6 @@ struct ShowFace {
     query: String,
     own_theme: Option<ThemeSpec>,
     location: Option<Location>,
-    run_query: bool,
 }
 
 /// What a visible popup was opened for.
@@ -1304,8 +1302,6 @@ struct Shown {
     /// The rows come from the provider, so a refresh may reload them.
     live: bool,
     reply: Option<Reply>,
-    /// Typed text that is not a row can be run, and accepted lines come back.
-    run_query: bool,
 }
 
 /// Opens the usage store when a widget ranks by past picks.
@@ -1337,25 +1333,11 @@ fn load_entries(
         Some(records) => (records, HashMap::new()),
         None => fetch_scored(def)?,
     };
-    if def.run_query && from_provider {
-        let commands = match usage {
-            Some(store) => {
-                let store = store
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                store.commands(&def.name).map_err(|err| {
-                    format!(
-                        "widget {:?}: failed to read command history: {err}",
-                        def.name
-                    )
-                })?
-            }
-            None => usage::remembered_commands(&def.name),
-        };
-        executables::merge_commands(&mut entries, &commands);
-    }
-    for (index, spec) in def.behaviors.iter().enumerate() {
-        spec.clone().build(index).on_load(&def.name, &mut entries);
+    // Passed records are the whole list. History is added only for a provider.
+    if from_provider {
+        for (index, spec) in def.behaviors.iter().enumerate() {
+            spec.clone().build(index).on_load(&def.name, &mut entries);
+        }
     }
     let priors = Priors::load(&def.ranking, &def.name, &python, usage, usage::now_secs());
     Ok((entries, priors))
@@ -1505,8 +1487,6 @@ pub(crate) struct ListPopup {
     /// Key of the row highlight handlers last ran for (or the row the popup opened on).
     highlighted: Option<String>,
     reply: Option<Reply>,
-    /// Typed text that is not a row can be run, and accepted lines come back.
-    run_query: bool,
 }
 
 impl ListPopup {
@@ -1526,7 +1506,6 @@ impl ListPopup {
             priors,
             live,
             reply,
-            run_query,
         } = shown.unwrap_or(Shown {
             widget: String::new(),
             behaviors: Vec::new(),
@@ -1536,9 +1515,9 @@ impl ListPopup {
             priors: Priors::default(),
             live: false,
             reply: None,
-            run_query: false,
         });
-        let (behaviors, state) = install(&behaviors, entries, query);
+        let (behaviors, mut state) = install(&behaviors, entries, query);
+        state.widget = widget.clone();
         let mut view = Self {
             shell: None,
             app,
@@ -1558,7 +1537,6 @@ impl ListPopup {
             scroll: UniformListScrollHandle::new(),
             highlighted: None,
             reply,
-            run_query,
         };
         view.refilter();
         view.highlighted = view.first_key();
@@ -1597,7 +1575,8 @@ impl ListPopup {
     ) {
         self.finish_prompt(Ok(Vec::new()));
         self.reply = shown.reply;
-        let (behaviors, state) = install(&shown.behaviors, entries, shown.query);
+        let (behaviors, mut state) = install(&shown.behaviors, entries, shown.query);
+        state.widget = shown.widget.clone();
         self.behaviors = behaviors;
         self.state = state;
         self.card = placement.card;
@@ -1611,7 +1590,6 @@ impl ListPopup {
         self.ranking = shown.ranking;
         self.priors = shown.priors;
         self.live = shown.live;
-        self.run_query = shown.run_query;
         self.refilter();
         self.highlighted = self.first_key();
         self.state.selected = 0;
@@ -1643,10 +1621,9 @@ impl ListPopup {
 
     /// Matches and orders the rows again; call after the query, the rows,
     /// or the priors change. Without an input bar the query stays empty.
-    /// A run widget also keeps a row for text that is not already a label.
+    /// A run-commands behavior keeps a row for text that is not already a label.
     fn refilter(&mut self) {
         let before = self.state.entries.len();
-        executables::sync_query_command(&mut self.state.entries, &self.state.query, self.run_query);
         for behavior in &self.behaviors {
             behavior.on_query(&mut self.state);
         }
@@ -1722,27 +1699,25 @@ impl ListPopup {
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
         let filter = self.layout.has_inputbar();
-        if self.layout.has_listview() && !mods.platform {
-            let press = KeyPress {
-                key: key.to_owned(),
-                shift: mods.shift,
-                control: mods.control,
-                alt: mods.alt,
-                platform: mods.platform,
-            };
-            let mut fx = Effects::default();
-            let mut consumed = false;
-            for behavior in &self.behaviors {
-                if behavior.on_key(&press, &mut self.state, &mut fx) == Flow::Consume {
-                    consumed = true;
-                    break;
-                }
+        let press = KeyPress {
+            key: key.to_owned(),
+            shift: mods.shift,
+            control: mods.control,
+            alt: mods.alt,
+            platform: mods.platform,
+        };
+        let mut fx = Effects::default();
+        let mut consumed = false;
+        for behavior in &self.behaviors {
+            if behavior.on_key(&press, &mut self.state, &mut fx) == Flow::Consume {
+                consumed = true;
+                break;
             }
-            if consumed {
-                let close = self.apply_effects(&mut fx, window, cx);
-                cx.stop_propagation();
-                return close;
-            }
+        }
+        if consumed {
+            let close = self.apply_effects(&mut fx, window, cx);
+            cx.stop_propagation();
+            return close;
         }
         match key {
             "escape" => {
@@ -1751,18 +1726,11 @@ impl ListPopup {
             }
             "enter" => {
                 cx.stop_propagation();
-                return self.confirm(window, cx, mods.shift);
-            }
-            "delete"
-                if self.run_query && mods.shift && !mods.control && !mods.alt && !mods.platform =>
-            {
-                self.forget_selected(window, cx);
-                cx.stop_propagation();
-                return false;
+                return self.confirm(window, cx);
             }
             "space" if !filter => {
                 cx.stop_propagation();
-                return self.activate(self.state.selected, false, window, cx);
+                return self.activate(self.state.selected, window, cx);
             }
             "up" => {
                 self.move_selection(-1, cx);
@@ -1809,7 +1777,7 @@ impl ListPopup {
         if let Some(ch) = typed {
             if let Some(index) = index_for_accelerator(ch, self.state.entries.len()) {
                 cx.stop_propagation();
-                return self.activate(index, false, window, cx);
+                return self.activate(index, window, cx);
             }
         }
         false
@@ -1845,23 +1813,35 @@ impl ListPopup {
             self.clamp_selection();
             self.resize_card();
         }
-        for call in applied.calls {
-            match call {
-                AppCall::ForgetCommand { widget, command } => {
-                    self.app
-                        .update(cx, |app, cx| app.forget_command(&widget, command, cx));
-                }
-            }
-        }
+        self.perform_calls(applied.calls, cx);
         let _ = applied.refresh;
         self.scroll
             .scroll_to_item(self.state.selected, ScrollStrategy::Nearest);
         self.sync_highlight(cx);
         cx.notify();
+        if applied.submit_selection {
+            return self.confirm(window, cx) || applied.close;
+        }
         if let Some(records) = applied.submit {
             return self.submit_records(records, window, cx) || applied.close;
         }
         applied.close
+    }
+
+    fn perform_calls(&mut self, calls: Vec<AppCall>, cx: &mut Context<Self>) {
+        for call in calls {
+            match call {
+                AppCall::ForgetCommand { widget, command } => {
+                    self.app
+                        .update(cx, |app, cx| app.forget_command(&widget, command, cx));
+                }
+                AppCall::RememberCommands { widget, commands } if self.reply.is_none() => {
+                    self.app
+                        .update(cx, |app, cx| app.remember_commands(&widget, commands, cx));
+                }
+                AppCall::RememberCommands { .. } => {}
+            }
+        }
     }
 
     /// Tells the widget's highlight handler when the selected row changes.
@@ -1914,83 +1894,53 @@ impl ListPopup {
         self.card = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
     }
 
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>, in_terminal: bool) -> bool {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.layout.has_listview() {
             let text = self.state.query.clone();
             return self.submit_records(vec![Record::new(text)], window, cx);
         }
-        let mut records: Vec<Record> = self
+        let records: Vec<Record> = self
             .visible_entries()
             .get(self.state.selected)
             .map(|record| (*record).clone())
             .into_iter()
             .collect();
-        let mut fx = Effects::default();
-        for behavior in &self.behaviors {
-            behavior.on_submit(&self.state, &mut records, &mut fx);
-        }
-        if in_terminal && self.run_query {
-            records = records
-                .into_iter()
-                .map(executables::apply_terminal)
-                .collect();
-        }
-        let applied = fx.apply(&mut self.state);
-        for call in applied.calls {
-            match call {
-                AppCall::ForgetCommand { widget, command } => {
-                    self.app
-                        .update(cx, |app, cx| app.forget_command(&widget, command, cx));
-                }
-            }
-        }
-        if applied.refilter {
-            self.refilter();
-        }
-        self.submit_records(records, window, cx) || applied.close
+        self.finish_choice(records, true, window, cx)
     }
 
-    /// Drops the highlighted remembered command. A `PATH` row and the row for
-    /// text that has not been accepted yet stay.
-    fn forget_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let forgotten = {
-            let visible = self.visible_entries();
-            let Some(record) = visible.get(self.state.selected) else {
-                return;
-            };
-            if !executables::is_remembered(record) {
-                return;
-            }
-            (record.key.clone(), record.value.clone())
-        };
-        let (key, command) = forgotten;
-        let mut fx = Effects::default();
-        fx.remove_keys.push(key);
-        fx.calls.push(AppCall::ForgetCommand {
-            widget: self.widget_name.clone(),
-            command,
-        });
-        let _ = self.apply_effects(&mut fx, window, cx);
-    }
-
-    fn activate(
-        &mut self,
-        index: usize,
-        in_terminal: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(mut record) = self
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(record) = self
             .visible_entries()
             .get(index)
             .map(|record| (*record).clone())
         else {
             return false;
         };
-        if in_terminal && self.run_query {
-            record = executables::apply_terminal(record);
+        // A click or an accelerator submits that row. Marks stay for Enter.
+        self.finish_choice(vec![record], false, window, cx)
+    }
+
+    /// `marking` lets a multi-select behavior replace the rows. A click does not.
+    fn finish_choice(
+        &mut self,
+        mut records: Vec<Record>,
+        marking: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut fx = Effects::default();
+        for behavior in &self.behaviors {
+            if marking || !behavior.marks_rows() {
+                behavior.on_submit(&self.state, &mut records, &mut fx);
+            }
         }
-        self.submit_records(vec![record], window, cx)
+        clear_terminal(&mut self.state);
+        let applied = fx.apply(&mut self.state);
+        self.perform_calls(applied.calls, cx);
+        if applied.refilter {
+            self.refilter();
+        }
+        self.submit_records(records, window, cx) || applied.close
     }
 
     fn submit_records(
@@ -2007,14 +1957,8 @@ impl ListPopup {
             let keys = records.iter().map(|record| record.key.clone()).collect();
             let query = self.state.query.clone();
             let ranking = self.ranking.clone();
-            let commands = if self.run_query && self.reply.is_none() {
-                executables::commands_to_remember(&self.state.entries, &records)
-            } else {
-                Vec::new()
-            };
             self.app.update(cx, |app, cx| {
                 app.record_usage(&widget, ranking, keys, query, cx);
-                app.remember_commands(&widget, commands, cx);
             });
         }
         if self.reply.is_some() {
@@ -2299,7 +2243,7 @@ fn activate_row(
         let mut parent = None;
         let close = view.update(cx, |this, cx| {
             parent = this.shell.clone();
-            this.activate(index, false, window, cx)
+            this.activate(index, window, cx)
         });
         let Ok(true) = close else {
             if let Err(err) = close {

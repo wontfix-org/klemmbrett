@@ -803,7 +803,7 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
             .map_err(|err| value_error(format!("widget {name:?}: {err}")))?;
     }
     if let Some(run_query) = item(dict, "run_query")? {
-        def.run_query = run_query.extract()?;
+        def.set_run_commands(run_query.extract()?);
     }
     if let Some(agent) = item(dict, "agent")? {
         let agent = agent.cast::<PyDict>()?;

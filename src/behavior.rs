@@ -53,6 +53,8 @@ impl KeyPress {
 pub struct Effects {
     pub close: bool,
     pub submit: Option<Vec<Record>>,
+    /// Submit the highlighted row, or the marked rows, the way Enter does.
+    pub submit_selection: bool,
     pub remove_keys: Vec<String>,
     pub set_query: Option<String>,
     pub refresh: bool,
@@ -62,7 +64,14 @@ pub struct Effects {
 /// Something only the daemon can do, queued by a behavior or the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppCall {
-    ForgetCommand { widget: String, command: String },
+    ForgetCommand {
+        widget: String,
+        command: String,
+    },
+    RememberCommands {
+        widget: String,
+        commands: Vec<String>,
+    },
 }
 
 /// What [`Effects::apply`] changed on the list. The popup still has to
@@ -72,6 +81,7 @@ pub struct Applied {
     pub refilter: bool,
     pub close: bool,
     pub submit: Option<Vec<Record>>,
+    pub submit_selection: bool,
     pub refresh: bool,
     pub calls: Vec<AppCall>,
 }
@@ -92,6 +102,7 @@ impl Effects {
             refilter,
             close: self.close,
             submit: self.submit.take(),
+            submit_selection: self.submit_selection,
             refresh: self.refresh,
             calls: std::mem::take(&mut self.calls),
         }
@@ -101,6 +112,8 @@ impl Effects {
 /// The rows, the query, and per-behavior slots for one open list.
 #[derive(Debug)]
 pub struct ListState {
+    /// The widget this list was opened for. Command history is stored under it.
+    pub widget: String,
     pub entries: Vec<Record>,
     pub query: String,
     /// Indices into `entries` that match `query`, in the order shown.
@@ -112,6 +125,7 @@ pub struct ListState {
 impl ListState {
     pub fn new(entries: Vec<Record>, query: String) -> Self {
         Self {
+            widget: String::new(),
             entries,
             query,
             order: Vec::new(),
@@ -204,10 +218,12 @@ pub trait Behavior: Send + Sync {
 
 /// How a widget asks for a behavior. The `multi` wire key becomes
 /// [`BehaviorSpec::Multi`]; `tab` selects and `shift-tab` deselects unless
-/// the widget named other keys.
+/// the widget named other keys. The `run_query` wire key becomes
+/// [`BehaviorSpec::RunCommands`], bound to Shift-Delete and Shift-Enter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BehaviorSpec {
     Multi { select: KeySpec, deselect: KeySpec },
+    RunCommands { forget: KeySpec, terminal: KeySpec },
 }
 
 impl BehaviorSpec {
@@ -215,11 +231,23 @@ impl BehaviorSpec {
         matches!(self, Self::Multi { .. })
     }
 
+    pub fn runs_commands(&self) -> bool {
+        matches!(self, Self::RunCommands { .. })
+    }
+
     pub fn multi_default() -> Self {
         let keys = MultiSelect::fzf();
         Self::Multi {
             select: keys.select,
             deselect: keys.deselect,
+        }
+    }
+
+    /// Shift-Delete forgets a remembered line. Shift-Enter runs it in a terminal.
+    pub fn run_default() -> Self {
+        Self::RunCommands {
+            forget: KeySpec::parse("shift-delete").expect("shift-delete"),
+            terminal: KeySpec::parse("shift-enter").expect("shift-enter"),
         }
     }
 
@@ -240,6 +268,11 @@ impl BehaviorSpec {
             Self::Multi { select, deselect } => Arc::new(Multi {
                 select,
                 deselect,
+                slot,
+            }),
+            Self::RunCommands { forget, terminal } => Arc::new(RunCommands {
+                forget,
+                terminal,
                 slot,
             }),
         }
@@ -307,6 +340,95 @@ impl Behavior for Multi {
     }
 }
 
+/// Shift-Delete drops a remembered command. Shift-Enter marks the submitted
+/// rows to run in a terminal. A typed query that is not already a row is
+/// offered as a command, and accepting one stores it for the next open.
+pub struct RunCommands {
+    pub forget: KeySpec,
+    pub terminal: KeySpec,
+    slot: usize,
+}
+
+#[derive(Debug, Default)]
+struct RunMark {
+    terminal: bool,
+}
+
+impl RunCommands {
+    fn matches(&self, spec: &KeySpec, key: &KeyPress) -> bool {
+        !key.platform && spec.matches(&key.key, key.shift, key.control, key.alt)
+    }
+}
+
+impl Behavior for RunCommands {
+    fn on_load(&self, widget: &str, entries: &mut Vec<Record>) {
+        // `firefox` is left out when a PATH row is already labeled `firefox`.
+        // `flatpak run org.foo` is added beside `flatpak`.
+        let commands = crate::usage::remembered_commands(widget);
+        crate::executables::merge_commands(entries, &commands);
+    }
+
+    fn on_query(&self, list: &mut ListState) {
+        // `loginctl` is not added when a row is labeled `loginctl`.
+        // `  loginctl lock-session ` is offered as `loginctl lock-session`.
+        crate::executables::sync_query_command(&mut list.entries, &list.query, true);
+    }
+
+    fn on_key(&self, key: &KeyPress, list: &mut ListState, fx: &mut Effects) -> Flow {
+        if self.matches(&self.forget, key) {
+            if let Some(record) = list.visible().get(list.selected).copied() {
+                if crate::executables::is_remembered(record) {
+                    fx.remove_keys.push(record.key.clone());
+                    fx.calls.push(AppCall::ForgetCommand {
+                        widget: list.widget.clone(),
+                        command: record.value.clone(),
+                    });
+                }
+            }
+            return Flow::Consume;
+        }
+        if self.matches(&self.terminal, key) {
+            if let Some(mark) = list.slot_mut::<RunMark>(self.slot) {
+                mark.terminal = true;
+            }
+            fx.submit_selection = true;
+            return Flow::Consume;
+        }
+        Flow::Pass
+    }
+
+    fn on_submit(&self, list: &ListState, picked: &mut Vec<Record>, fx: &mut Effects) {
+        if list
+            .slot::<RunMark>(self.slot)
+            .is_some_and(|mark| mark.terminal)
+        {
+            *picked = std::mem::take(picked)
+                .into_iter()
+                .map(crate::executables::apply_terminal)
+                .collect();
+        }
+        let commands = crate::executables::commands_to_remember(&list.entries, picked);
+        if !commands.is_empty() {
+            fx.calls.push(AppCall::RememberCommands {
+                widget: list.widget.clone(),
+                commands,
+            });
+        }
+    }
+}
+
+/// Clears the terminal mark after a submit so the next one is a normal run.
+pub fn clear_terminal(list: &mut ListState) {
+    for slot in &mut list.slots {
+        if let Some(mark) = slot
+            .as_mut()
+            .and_then(|value| value.downcast_mut::<RunMark>())
+        {
+            mark.terminal = false;
+        }
+    }
+}
+
 /// Builds the behaviors for one open and the slots they store marks in.
 pub fn install(
     specs: &[BehaviorSpec],
@@ -321,6 +443,9 @@ pub fn install(
         .map(|(index, spec)| {
             if spec.marks_rows() {
                 state.init_slot::<Vec<Record>>(index);
+            }
+            if spec.runs_commands() {
+                state.init_slot::<RunMark>(index);
             }
             spec.build(index)
         })
@@ -344,7 +469,9 @@ mod tests {
 
     fn multi() -> Multi {
         let spec = BehaviorSpec::multi_default();
-        let BehaviorSpec::Multi { select, deselect } = spec;
+        let BehaviorSpec::Multi { select, deselect } = spec else {
+            panic!("multi_default");
+        };
         Multi {
             select,
             deselect,
@@ -459,5 +586,123 @@ mod tests {
                 command: "two".into(),
             }]
         );
+    }
+
+    fn run_list(entries: Vec<Record>, query: &str) -> (Arc<dyn Behavior>, ListState) {
+        let (behaviors, mut list) = install(&[BehaviorSpec::run_default()], entries, query.into());
+        list.widget = "run".into();
+        list.order = (0..list.entries.len()).collect();
+        (behaviors.into_iter().next().unwrap(), list)
+    }
+
+    #[test]
+    fn a_typed_line_is_offered_unless_it_is_exactly_a_label() {
+        let (behavior, mut list) = run_list(
+            vec![Record::new("loginctl"), Record::new("foot")],
+            "loginctl",
+        );
+        behavior.on_query(&mut list);
+        assert_eq!(list.entries.len(), 2);
+
+        list.query = "  ".into();
+        behavior.on_query(&mut list);
+        assert_eq!(list.entries.len(), 2);
+
+        list.query = "  loginctl lock-session ".into();
+        behavior.on_query(&mut list);
+        assert_eq!(list.entries.last().unwrap().label, "loginctl lock-session");
+        assert!(crate::executables::is_pending(list.entries.last().unwrap()));
+
+        list.query = "foot -e htop".into();
+        behavior.on_query(&mut list);
+        assert_eq!(list.entries.len(), 3);
+        assert_eq!(list.entries.last().unwrap().label, "foot -e htop");
+        assert!(!list
+            .entries
+            .iter()
+            .any(|record| record.label.contains("lock-session")));
+    }
+
+    #[test]
+    fn shift_delete_forgets_a_remembered_line_and_leaves_a_path_row() {
+        let remembered = crate::executables::merge_commands;
+        let mut entries = vec![Record::new("firefox")];
+        remembered(&mut entries, &["flatpak run org.foo".into()]);
+        let (behavior, mut list) = run_list(entries, "");
+        list.selected = 1;
+        let mut fx = Effects::default();
+        assert_eq!(
+            behavior.on_key(&KeyPress::new("delete").shift(), &mut list, &mut fx),
+            Flow::Consume
+        );
+        assert_eq!(fx.remove_keys, ["flatpak run org.foo"]);
+        assert_eq!(
+            fx.calls,
+            vec![AppCall::ForgetCommand {
+                widget: "run".into(),
+                command: "flatpak run org.foo".into(),
+            }]
+        );
+
+        list.selected = 0;
+        let mut fx = Effects::default();
+        assert_eq!(
+            behavior.on_key(&KeyPress::new("delete").shift(), &mut list, &mut fx),
+            Flow::Consume
+        );
+        assert!(fx.remove_keys.is_empty());
+        assert!(fx.calls.is_empty());
+    }
+
+    #[test]
+    fn shift_enter_marks_the_submit_to_run_in_a_terminal() {
+        let (behavior, mut list) = run_list(vec![Record::new("/usr/bin/firefox")], "");
+        let mut fx = Effects::default();
+        assert_eq!(
+            behavior.on_key(&KeyPress::new("enter").shift(), &mut list, &mut fx),
+            Flow::Consume
+        );
+        assert!(fx.submit_selection);
+        let mut picked = vec![Record::new("/usr/bin/firefox")];
+        behavior.on_submit(&list, &mut picked, &mut fx);
+        assert_eq!(picked[0].data["terminal"], serde_json::json!(true));
+
+        let desktop =
+            Record::new("firefox.desktop").with_data(serde_json::json!({"argv": ["firefox"]}));
+        let mut picked = vec![desktop.clone()];
+        behavior.on_submit(&list, &mut picked, &mut Effects::default());
+        // The terminal mark is still set, so a desktop row stays unmarked.
+        assert_eq!(picked[0].data, desktop.data);
+    }
+
+    #[test]
+    fn submit_remembers_a_typed_command_and_not_a_path_name() {
+        let typed = {
+            let mut entries = vec![Record::new("firefox")];
+            crate::executables::sync_query_command(&mut entries, "firefox --private", true);
+            entries
+        };
+        let (behavior, list) = run_list(typed, "firefox --private");
+        let mut picked = vec![list.entries[1].clone(), list.entries[0].clone()];
+        let mut fx = Effects::default();
+        behavior.on_submit(&list, &mut picked, &mut fx);
+        assert_eq!(
+            fx.calls,
+            vec![AppCall::RememberCommands {
+                widget: "run".into(),
+                commands: vec!["firefox --private".into()],
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unbound_key_is_left_for_the_list() {
+        let (behavior, mut list) = run_list(vec![Record::new("firefox")], "");
+        let mut fx = Effects::default();
+        assert_eq!(
+            behavior.on_key(&KeyPress::new("enter"), &mut list, &mut fx),
+            Flow::Pass
+        );
+        assert!(!fx.submit_selection);
     }
 }

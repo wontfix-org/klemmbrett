@@ -393,8 +393,6 @@ pub struct WidgetDef {
     pub ranking: Ranking,
     /// Set when the widget answers secret questions instead of showing rows.
     pub agent: Option<AgentSpec>,
-    /// Offer the typed text as a command, and list commands accepted before.
-    pub run_query: bool,
 }
 
 impl WidgetDef {
@@ -410,7 +408,6 @@ impl WidgetDef {
             search: Vec::new(),
             ranking: Ranking::default(),
             agent: None,
-            run_query: false,
         }
     }
 
@@ -423,6 +420,14 @@ impl WidgetDef {
                 select: multi.select,
                 deselect: multi.deselect,
             });
+        }
+    }
+
+    /// Replaces any run-commands behavior. The wire key is still `run_query`.
+    pub fn set_run_commands(&mut self, enabled: bool) {
+        self.behaviors.retain(|spec| !spec.runs_commands());
+        if enabled {
+            self.behaviors.push(BehaviorSpec::run_default());
         }
     }
 }
@@ -528,7 +533,9 @@ impl Widgets {
 
     /// Whether any widget runs typed commands and remembers them.
     pub fn runs_commands(&self) -> bool {
-        self.defs.iter().any(|def| def.run_query)
+        self.defs
+            .iter()
+            .any(|def| def.behaviors.iter().any(|spec| spec.runs_commands()))
     }
 
     /// Widgets the tray can open. On-demand widgets need records from the caller.
@@ -562,6 +569,7 @@ impl Widgets {
                         deselect: deselect.clone(),
                     });
                 }
+                BehaviorSpec::RunCommands { .. } => {}
             }
         }
         None
@@ -610,11 +618,8 @@ pub fn fetch_records(def: &WidgetDef) -> Result<Vec<Record>, String> {
     let mut records = source
         .records()
         .map_err(|err| format!("widget {:?}: {err}", def.name))?;
-    if def.run_query {
-        crate::executables::merge_commands(
-            &mut records,
-            &crate::usage::remembered_commands(&def.name),
-        );
+    for (index, spec) in def.behaviors.iter().enumerate() {
+        spec.clone().build(index).on_load(&def.name, &mut records);
     }
     validate_records(&def.name, &records)?;
     Ok(records)
