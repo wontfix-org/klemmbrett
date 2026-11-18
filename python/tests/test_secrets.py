@@ -20,8 +20,8 @@ def test_agents_wire_their_kind_and_route():
 
 
 def test_agent_widgets_refuse_what_would_see_the_answer():
-    with pytest.raises(TypeError, match="on_select, multi"):
-        kb.widget("ssh", secrets.Askpass(), on_select=print, multi=True)
+    with pytest.raises(TypeError, match="on_select, behaviors"):
+        kb.widget("ssh", secrets.Askpass(), on_select=print, behaviors=[])
     with pytest.raises(TypeError, match="rank"):
         kb.widget("gpg", secrets.Pinentry(), rank=None)
     with pytest.raises(TypeError, match="route must be callable"):

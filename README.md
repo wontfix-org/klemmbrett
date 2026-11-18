@@ -135,14 +135,15 @@ is a centered filter with fzf-style fuzzy matching, and a blank prompt
 becomes `"> "`:
 
 ```python
+from klemmbrett import behaviors as bh
 from klemmbrett import ranking as rk
 
-kb.picker(match=rk.fuzzy(scheme="path"), multi=True, prompt="run> ")
+kb.picker(match=rk.fuzzy(scheme="path"), behaviors=[bh.Multi()], prompt="run> ")
 ```
 
-`layout`, `theme`, `location`, `search`, `rank`, and `prefer` mean the same
-as on a widget. Layout functions see `ctx.widget == "picker"` and
-`ctx.prompt == True`.
+`behaviors`, `layout`, `theme`, `location`, `search`, `rank`, and `prefer`
+mean the same as on a widget. Layout functions see `ctx.widget == "picker"`
+and `ctx.prompt == True`.
 
 To open a configured widget:
 

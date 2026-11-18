@@ -12,7 +12,8 @@ The daemon reads `$XDG_CONFIG_HOME/klemmbrett/config.py`::
 
 from __future__ import annotations
 
-from . import layouts, notifications, providers, ranking, rpc, secrets, themes, ui
+from . import behaviors, layouts, notifications, providers, ranking
+from . import rpc, secrets, themes, ui
 from ._record import Record
 from ._registry import Widget, configure, picker, widget
 from ._schema import SchemaError
@@ -33,6 +34,7 @@ from .providers import Provider, provider
 from .style import Style, Theme, ch, cmyk, em, hsl, hwb, inherit, mm, pct, px, rgb, transparent
 
 __all__ = [
+    "behaviors",
     "LayoutContext",
     "Provider",
     "Record",

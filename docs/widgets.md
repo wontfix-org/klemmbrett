@@ -15,8 +15,8 @@ def links(record):
     kb.launch(["xdg-open", record.value])
 ```
 
-`kb.widget(name, provider=None, *, layout, theme, location, multi, select,
-deselect, on_select, on_highlight, search, match, rank, prefer, run_query)`
+`kb.widget(name, provider=None, *, layout, theme, location, behaviors,
+on_select, on_highlight, search, match, rank, prefer)`
 returns a
 `Widget`. `match`, `rank`, and `prefer` choose how typing matches rows and
 how past picks order them; see [`ranking.md`](ranking.md). Calling the `Widget`
@@ -164,21 +164,34 @@ back as a new selection. Prefer it over `wl-copy`. `kb.paste` reads on that
 same thread, so the read is not treated as a new selection either. Prefer it
 over `wl-paste`.
 
-## Multi-select
+## Behaviors
 
-`multi=True` lets Tab toggle the current row and move down, and Shift-Tab
-toggle and move up (fzf `--multi`). Enter calls `on_select` once per marked
-row, in the order the rows were marked. If nothing is marked, Enter picks
-the current row. Clicks and accelerator keys still pick one row. `select`
-and `deselect` change the keys (`"tab"` and `"shift-tab"` by default;
-`"btab"` is Shift-Tab, and modifiers are written `ctrl-space`).
+`behaviors` is a list of key bindings the list runs before its own keys.
+`None` uses the provider's `default_behaviors`. `[]` turns them off.
+
+`behaviors.Multi()` lets Tab toggle the current row and move down, and
+Shift-Tab toggle and move up (fzf `--multi`). Enter calls `on_select` once
+per marked row, in the order the rows were marked. If nothing is marked,
+Enter picks the current row. Clicks and accelerator keys still pick one
+row. `select` and `deselect` change the keys (`"tab"` and `"shift-tab"`
+by default; `"btab"` is Shift-Tab, and modifiers are written `ctrl-space`).
 
 ```python
-kb.widget("links", providers.File("links.yaml"), layout=layouts.filter, multi=True)
+from klemmbrett import behaviors as bh
+
+kb.widget(
+    "links",
+    providers.File("links.yaml"),
+    layout=layouts.filter,
+    behaviors=[bh.Multi()],
+)
 ```
 
 The mark is drawn by `ui.Marker()` in the layout. The shipped layouts add it
-when the widget is multi-select.
+when the widget marks rows.
+
+`multi=True` is `behaviors=[bh.Multi()]`. `select=` and `deselect=` are
+the same arguments on `bh.Multi`.
 
 ## Highlight
 
@@ -233,9 +246,13 @@ name is not stored again. Shift+Delete forgets a remembered line.
 Shift+Enter runs the selected program or command in the terminal from
 `kb.configure(terminal=...)`.
 
-`run_query=False` turns this off. Another provider does not do it unless the
-widget sets `run_query=True`, which is how a `Merge` of applications and
-executables can offer the same row.
+`behaviors=[]` turns this off. Another provider does not do it unless the
+widget sets `behaviors=[behaviors.RunCommands()]`, which is how a
+`Merge` of applications and executables can offer the same row.
+`Executables` sets that behavior itself, and a `View` of it keeps it.
+A `Merge` keeps it only when every source agrees.
+
+`run_query=True` is `behaviors=[behaviors.RunCommands()]`.
 
 ### Applications
 

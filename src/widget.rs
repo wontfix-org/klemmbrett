@@ -383,7 +383,7 @@ pub struct WidgetDef {
     /// Replaces the file-wide palette for this widget only.
     pub theme: Option<ThemeSpec>,
     pub location: Option<Location>,
-    /// Filled from the `multi` wire key until behaviors are configured directly.
+    /// From the `behaviors` wire key: `multi` and `run_commands`.
     pub behaviors: Vec<BehaviorSpec>,
     /// Whether highlight events are worth sending to the handlers.
     pub highlight: bool,

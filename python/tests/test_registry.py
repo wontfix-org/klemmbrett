@@ -6,6 +6,7 @@ import pytest
 
 import klemmbrett as kb
 from klemmbrett import _registry, layouts, providers, secrets, themes, ui
+from klemmbrett import behaviors as bh
 
 
 def dispatcher():
@@ -45,18 +46,35 @@ def test_typed_commands_are_split_and_can_run_in_a_terminal(daemon):
     kb.configure(terminal=["foot", "-e"])
     kb.widget("run", providers.Executables())
     kb.widget("apps", providers.Applications())
-    kb.widget("plain", providers.Executables(), run_query=False)
+    kb.widget("plain", providers.Executables(), behaviors=[])
     kb.widget(
         "both",
         providers.Merge(providers.Applications(), providers.Executables()),
-        run_query=True,
+        behaviors=[bh.RunCommands()],
     )
     kb.widget("view", providers.Executables().view())
-    assert wire_widget("run")["run_query"] is True
-    assert wire_widget("apps")["run_query"] is False
-    assert wire_widget("plain")["run_query"] is False
-    assert wire_widget("both")["run_query"] is True
-    assert wire_widget("view")["run_query"] is True
+    kb.widget(
+        "agree",
+        providers.Merge(providers.Executables(), providers.Executables()),
+    )
+    kb.widget(
+        "split",
+        providers.Merge(providers.Applications(), providers.Executables()),
+    )
+    run = {
+        "kind": "run_commands",
+        "forget": "shift-delete",
+        "terminal": "shift-enter",
+    }
+    assert wire_widget("run")["behaviors"] == [run]
+    assert wire_widget("apps")["behaviors"] == []
+    assert wire_widget("plain")["behaviors"] == []
+    assert wire_widget("both")["behaviors"] == [run]
+    assert wire_widget("view")["behaviors"] == [run]
+    assert wire_widget("agree")["behaviors"] == [run]
+    assert wire_widget("split")["behaviors"] == []
+    assert providers.Executables().default_behaviors == (bh.RunCommands(),)
+    assert providers.Applications().default_behaviors == ()
 
     def row(value, data=None):
         return (value, value, value, data)
@@ -80,10 +98,17 @@ def test_typed_commands_are_split_and_can_run_in_a_terminal(daemon):
         run.select(kb.Record('foo "bar', data={"command": True}))
     with pytest.raises(ValueError, match="empty"):
         providers.launch_executable(kb.Record("   ", data={"command": True}))
-    with pytest.raises(TypeError, match="run_query"):
-        kb.widget("bad", providers.Executables(), run_query="yes")  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="run_query"):
-        kb.widget("ask", secrets.Askpass(), run_query=True)
+
+    class Nope(bh.Behavior):
+        def _spec(self):
+            return {"kind": "nope"}
+
+    with pytest.raises(ValueError, match="unknown behavior"):
+        kb.widget("bad", behaviors=[Nope()])
+    with pytest.raises(ValueError, match="invalid key"):
+        kb.widget("keys", behaviors=[bh.Multi(select="shift-")])
+    with pytest.raises(TypeError, match="behaviors"):
+        kb.widget("ask", secrets.Askpass(), behaviors=[bh.RunCommands()])
 
 
 def test_a_run_widget_without_a_terminal_refuses_shift_enter(daemon):
@@ -173,7 +198,7 @@ def test_function_providers_normalize_records():
 
 
 def test_multi_select_runs_in_marked_order_and_survives_errors(daemon, capsys):
-    @kb.widget("pick", providers.Static(["a", "b", "c"]), multi=True)
+    @kb.widget("pick", providers.Static(["a", "b", "c"]), behaviors=[bh.Multi()])
     def pick(record):
         if record.value == "b":
             raise RuntimeError("boom")
@@ -184,7 +209,9 @@ def test_multi_select_runs_in_marked_order_and_survives_errors(daemon, capsys):
     err = capsys.readouterr().err
     assert "widget 'pick': on_select failed" in err
     assert "RuntimeError: boom" in err
-    assert wire_widget("pick")["multi"] == ("tab", "shift-tab")
+    assert wire_widget("pick")["behaviors"] == [
+        {"kind": "multi", "select": "tab", "deselect": "shift-tab"}
+    ]
 
 
 def test_highlight_handlers(daemon):
@@ -204,13 +231,17 @@ def test_highlight_handlers(daemon):
 def test_layouts_are_static_or_called_per_open():
     static = ui.Window(ui.ListView(ui.Element(ui.Text("{value}"))))
     kb.widget("static", layout=static)
-    kb.widget("dynamic", layout=layouts.filter, multi=True)
+    kb.widget("dynamic", layout=layouts.filter, behaviors=[bh.Multi()])
     kb.widget("default")
     assert wire_widget("static")["layout"] == static._wire()
     assert wire_widget("default")["layout"] is None
     build = wire_widget("dynamic")["layout"]
     assert build("dynamic", True, False) == layouts.filter(layouts.LayoutContext("dynamic", True, False))._wire()
-    kb.widget("previewed", layout=layouts.filter(preview=ui.Text("{preview}")), multi=True)
+    kb.widget(
+        "previewed",
+        layout=layouts.filter(preview=ui.Text("{preview}")),
+        behaviors=[bh.Multi()],
+    )
     previewed = wire_widget("previewed")["layout"]
     context = layouts.LayoutContext("previewed", True, False)
     assert previewed("previewed", True, False) == layouts.filter(context, preview=ui.Text("{preview}"))._wire()
@@ -305,7 +336,7 @@ def test_picker_defaults_to_a_fuzzy_filter_and_can_be_replaced():
 
     default = _registry.wire()["picker"]
     assert default["prompt"] is None
-    assert default["multi"] is None
+    assert default["behaviors"] == []
     assert default["ranking"]["match"]["kind"] == "fuzzy"
     assert callable(default["layout"])
     window = default["layout"]("picker", True, True)
@@ -313,10 +344,17 @@ def test_picker_defaults_to_a_fuzzy_filter_and_can_be_replaced():
     assert any(child["kind"] == "inputbar" for child in window["children"])
     assert "marker" in json.dumps(window)
 
-    kb.picker(multi=True, prompt="pick> ", match=rk.substring(), search=["label", "value"])
+    kb.picker(
+        behaviors=[bh.Multi()],
+        prompt="pick> ",
+        match=rk.substring(),
+        search=["label", "value"],
+    )
     configured = _registry.wire()["picker"]
     assert configured["prompt"] == "pick> "
-    assert configured["multi"] == ("tab", "shift-tab")
+    assert configured["behaviors"] == [
+        {"kind": "multi", "select": "tab", "deselect": "shift-tab"}
+    ]
     assert configured["search"] == ["label", "value"]
     assert configured["ranking"]["match"] == {"kind": "substring"}
     with pytest.raises(ValueError, match="more than once"):

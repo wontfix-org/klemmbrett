@@ -12,6 +12,8 @@ A provider may also define:
 - `on_clipboard(text)`: called with every new clipboard text.
 - `default_match` and `default_rank`: the `ranking` matcher and rankers a
   widget showing it uses unless it sets `match=` or `rank=`.
+- `default_behaviors`: list behaviors such as `RunCommands()`, used unless
+  the widget sets `behaviors=`.
 
 Call `changed()` on a provider when its records change: every open popup
 showing it, directly or through a `View` or `Merge`, reloads, and
@@ -30,7 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime, audio, desktop, directory
+from . import _core, _runtime, audio, behaviors, desktop, directory
 from .preview import FilePreview, file_preview, file_preview_pane, preview_file
 from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
@@ -65,10 +67,12 @@ _on_changed: Callable[[Provider], None] | None = None
 class Provider:
     """Base class for providers. Override `records()`; `select` and
     `on_clipboard` are optional, and `default_match` and `default_rank` set
-    how widgets showing it match and rank by default."""
+    how widgets showing it match and rank by default. `default_behaviors`
+    is used when the widget leaves `behaviors` unset."""
 
     default_match: rk.Matcher | None = None
     default_rank: rk.Rank | None = None
+    default_behaviors: tuple[behaviors.Behavior, ...] = ()
 
     def records(self) -> Iterable[RecordLike]:
         raise NotImplementedError
@@ -200,7 +204,7 @@ class Executables(_Native):
 
     default_match = rk.fuzzy()
     default_rank = rk.frecency() + rk.learned()
-    run_query = True
+    default_behaviors = (behaviors.RunCommands(),)
 
     def _open(self) -> _core.NativeSource:
         return _core.NativeSource.executables()
@@ -558,8 +562,10 @@ class View(Provider):
         return defaults(self.source)[1]
 
     @property
-    def run_query(self) -> bool:
-        return bool(getattr(self.source, "run_query", False))
+    def default_behaviors(  # type: ignore[override]
+        self,
+    ) -> tuple[behaviors.Behavior, ...]:
+        return tuple(getattr(self.source, "default_behaviors", ()) or ())
 
     def _sources(self) -> tuple[Provider, ...]:
         return (self.source,)
@@ -609,6 +615,16 @@ class Merge(Provider):
     @property
     def default_rank(self) -> rk.Rank | None:  # type: ignore[override]
         return _agreed(defaults(source)[1] for source in self.sources)
+
+    @property
+    def default_behaviors(  # type: ignore[override]
+        self,
+    ) -> tuple[behaviors.Behavior, ...]:
+        agreed = _agreed(
+            tuple(getattr(source, "default_behaviors", ()) or ())
+            for source in self.sources
+        )
+        return agreed or ()
 
     def _sources(self) -> tuple[Provider, ...]:
         return self.sources

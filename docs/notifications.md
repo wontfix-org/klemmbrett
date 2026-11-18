@@ -15,7 +15,7 @@ through a routing function that decides what happens to it:
 
 ```python
 import klemmbrett as kb
-from klemmbrett import layouts, ui
+from klemmbrett import behaviors as bh, layouts, ui
 from klemmbrett import notifications as notify
 
 work = notify.Stash("work")
@@ -44,7 +44,7 @@ kb.widget(
     layout=ui.Window(ui.InputBar(ui.Prompt(), ui.Entry()), ui.ListView(row), location="center"),
     search=["summary", "body", "app_name"],
 )
-kb.widget("work", work.unread, layout=layouts.filter, multi=True)
+kb.widget("work", work.unread, layout=layouts.filter, behaviors=[bh.Multi()])
 ```
 
 Without a route, every notification is shown. When the route raises, or

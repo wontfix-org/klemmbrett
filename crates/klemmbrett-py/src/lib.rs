@@ -6,6 +6,7 @@
 //! `{"kind", "style", "children", "text"}`, and records are
 //! `(key, label, value, data)` tuples whose `data` is JSON-like.
 
+use klemmbrett::behavior::BehaviorSpec;
 use klemmbrett::cli::{self, Invocation, Provision};
 use klemmbrett::journal;
 use klemmbrett::notifications::{CloseReason, Notification, NotificationConfig};
@@ -13,9 +14,9 @@ use klemmbrett::secret::{AgentKind, AgentSpec};
 use klemmbrett::{
     cmyk, hsl, hwb, parse_color, provision, resolve_config_path, systemd, ui, AppConfig, CallError,
     ClipboardHistorySource, DataPath, Edges, ExecutablesSource, FileFormat, FileSource, Handlers,
-    KeySpec, Launch, Layout, LayoutBuilder, LayoutContext, LayoutSpec, Location, MultiSelect, Node,
-    NodeKind, Orientation, Props, Ranking, Record, RecordSource, Rgba, Runtime, State, Style,
-    Theme, ThemeSpec, WaylandWindowsSource, Widget, WidgetDef, Widgets,
+    KeySpec, Launch, Layout, LayoutBuilder, LayoutContext, LayoutSpec, Location, Node, NodeKind,
+    Orientation, Props, Ranking, Record, RecordSource, Rgba, Runtime, State, Style, Theme,
+    ThemeSpec, WaylandWindowsSource, Widget, WidgetDef, Widgets,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -744,18 +745,45 @@ fn launch(value: Option<Bound<'_, PyAny>>) -> PyResult<Launch> {
     Ok(Launch::Wrapper(wrapper))
 }
 
-fn multi(value: Option<Bound<'_, PyAny>>, widget: &str) -> PyResult<Option<MultiSelect>> {
+fn behaviors(value: Option<Bound<'_, PyAny>>) -> PyResult<Vec<BehaviorSpec>> {
     let Some(value) = value else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
-    let (select, deselect): (String, String) = value.extract()?;
-    let key = |spec: &str| {
-        KeySpec::parse(spec).map_err(|err| value_error(format!("widget {widget:?}: {err}")))
-    };
-    Ok(Some(MultiSelect {
-        select: key(&select)?,
-        deselect: key(&deselect)?,
-    }))
+    let items: Vec<Bound<'_, PyDict>> = value
+        .extract()
+        .map_err(|_| value_error("behaviors must be a list"))?;
+    let mut specs = Vec::new();
+    for item in items {
+        let kind: String = match item.get_item("kind")? {
+            Some(kind) => kind.extract()?,
+            None => return Err(value_error("behavior without a kind")),
+        };
+        let text = |field: &str| -> PyResult<String> {
+            match item.get_item(field)? {
+                Some(value) => value.extract().map_err(|_| {
+                    value_error(format!(
+                        "behavior {kind:?}: {field} must be a key such as \"tab\""
+                    ))
+                }),
+                None => Err(value_error(format!("behavior {kind:?} needs {field}"))),
+            }
+        };
+        let key = |spec: String| KeySpec::parse(&spec).map_err(|err| value_error(err));
+        // "multi" is tab / shift-tab. "run_commands" is shift-delete / shift-enter.
+        // "nope" and "shift-" are rejected and the widget name is added by the caller.
+        match kind.as_str() {
+            "multi" => specs.push(BehaviorSpec::Multi {
+                select: key(text("select")?)?,
+                deselect: key(text("deselect")?)?,
+            }),
+            "run_commands" => specs.push(BehaviorSpec::RunCommands {
+                forget: key(text("forget")?)?,
+                terminal: key(text("terminal")?)?,
+            }),
+            other => return Err(value_error(format!("unknown behavior {other:?}"))),
+        }
+    }
+    Ok(specs)
 }
 
 fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
@@ -785,7 +813,7 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
         ),
         None => None,
     };
-    def.set_multi(multi(item(dict, "multi")?, &name)?);
+    def.behaviors = behaviors(item(dict, "behaviors")?).map_err(context)?;
     def.highlight = match item(dict, "highlight")? {
         Some(value) => value.extract()?,
         None => false,
@@ -801,9 +829,6 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
     if let Some(ranking) = item(dict, "ranking")? {
         def.ranking = Ranking::from_json(&to_json(&ranking)?)
             .map_err(|err| value_error(format!("widget {name:?}: {err}")))?;
-    }
-    if let Some(run_query) = item(dict, "run_query")? {
-        def.set_run_commands(run_query.extract()?);
     }
     if let Some(agent) = item(dict, "agent")? {
         let agent = agent.cast::<PyDict>()?;
@@ -943,7 +968,7 @@ fn picker_config(value: &Bound<'_, PyAny>) -> PyResult<klemmbrett::config::Picke
         ),
         None => None,
     };
-    def.set_multi(multi(item(dict, "multi")?, "picker")?);
+    def.behaviors = behaviors(item(dict, "behaviors")?).map_err(context)?;
     if let Some(search) = item(dict, "search")? {
         def.search = search
             .extract::<Vec<String>>()?

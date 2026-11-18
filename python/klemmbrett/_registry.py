@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _core, _runtime, notifications, providers, secrets
+from . import behaviors as bh
 from . import ranking as rk
 from ._record import Record, from_wire, to_record
 from . import layouts
@@ -129,9 +130,7 @@ class Picker:
         layout: Layout | None = None,
         theme: str | Theme | None = None,
         location: str | None = None,
-        multi: bool = False,
-        select: str | None = None,
-        deselect: str | None = None,
+        behaviors: Sequence[bh.Behavior] | None = None,
         search: Sequence[str] | None = None,
         match: rk.Matcher | None = None,
         rank: rk.Rank | None = None,
@@ -150,10 +149,6 @@ class Picker:
             raise TypeError("picker: search must be a list of paths such as 'sender.name'")
         if theme is not None:
             _runtime.theme_wire(theme)
-        if multi or select or deselect:
-            multi_keys: tuple[str, str] | None = (select or "tab", deselect or "shift-tab")
-        else:
-            multi_keys = None
         if match is None:
             match = rk.fuzzy()
         if not isinstance(match, rk.Matcher):
@@ -167,7 +162,7 @@ class Picker:
         self.layout = layout
         self.theme = theme
         self.location = location
-        self.multi = multi_keys
+        self.behaviors = bh.normalize("picker", behaviors or ())
         self.search = list(search or ())
         self.match = match
         self.rank = rank
@@ -180,7 +175,7 @@ class Picker:
             "layout": _layout(self.layout),
             "theme": None if self.theme is None else _runtime.theme_wire(self.theme),
             "location": self.location,
-            "multi": self.multi,
+            "behaviors": [behavior._spec() for behavior in self.behaviors],
             "search": self.search,
             "ranking": rk.wire(self.match, self.rank, self.prefer),
             "prompt": self.prompt,
@@ -192,9 +187,7 @@ def picker(
     layout: Layout | None = None,
     theme: str | Theme | None = None,
     location: str | None = None,
-    multi: bool = False,
-    select: str | None = None,
-    deselect: str | None = None,
+    behaviors: Sequence[bh.Behavior] | None = None,
     search: Sequence[str] | None = None,
     match: rk.Matcher | None = None,
     rank: rk.Rank | None = None,
@@ -207,7 +200,7 @@ def picker(
     command, and the picked values are printed. `layout` defaults to
     `layouts.filter` and `match` to `ranking.fuzzy()`. `prompt` is the
     label in front of the filter; left out, a blank prompt becomes `"> "`.
-    `multi`, `select`, `deselect`, `search`, `rank`, `prefer`, `theme`, and
+    `behaviors`, `search`, `rank`, `prefer`, `theme`, and
     `location` mean the same as on `kb.widget`. Calling this twice is an
     error. Without it, those defaults are used.
     """
@@ -217,9 +210,7 @@ def picker(
         layout=layout,
         theme=theme,
         location=location,
-        multi=multi,
-        select=select,
-        deselect=deselect,
+        behaviors=behaviors,
         search=search,
         match=match,
         rank=rank,
@@ -246,16 +237,13 @@ class Widget:
         layout: Layout | None,
         theme: str | Theme | None,
         location: str | None,
-        multi: bool,
-        select: str | None,
-        deselect: str | None,
+        behaviors: Sequence[bh.Behavior] | None,
         on_select: Handler | None,
         on_highlight: Handler | None,
         search: Sequence[str] | None = None,
         match: rk.Matcher | None = _PROVIDER_DEFAULT,
         rank: rk.Rank | None = _PROVIDER_DEFAULT,
         prefer: str = "blend",
-        run_query: bool | None = None,
     ) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ValueError("widget name must be a non-empty string")
@@ -266,11 +254,10 @@ class Widget:
                 for what, given in (
                     ("on_select", on_select is not None),
                     ("on_highlight", on_highlight is not None),
-                    ("multi", bool(multi or select or deselect)),
+                    ("behaviors", behaviors is not None),
                     ("search", bool(search)),
                     ("match", match is not _PROVIDER_DEFAULT),
                     ("rank", rank is not _PROVIDER_DEFAULT),
-                    ("run_query", run_query is True),
                 )
                 if given
             ]
@@ -290,10 +277,6 @@ class Widget:
             )
         if theme is not None:
             _runtime.theme_wire(theme)
-        if multi or select or deselect:
-            multi_keys: tuple[str, str] | None = (select or "tab", deselect or "shift-tab")
-        else:
-            multi_keys = None
         self.name = name
         self.provider = providers.as_provider(provider)
         suggested_match, suggested_rank = providers.defaults(self.provider)
@@ -309,11 +292,9 @@ class Widget:
             raise TypeError(f"widget {name!r}: rank must be rankers such as rk.frecency(), got {rank!r}")
         if prefer not in rk.PREFER:
             raise ValueError(f"widget {name!r}: prefer must be one of {', '.join(rk.PREFER)}")
-        if run_query is None:
-            run_query = bool(getattr(self.provider, "run_query", False))
-        elif not isinstance(run_query, bool):
-            raise TypeError(
-                f"widget {name!r}: run_query must be true or false, got {run_query!r}"
+        if behaviors is None:
+            behaviors = tuple(
+                getattr(self.provider, "default_behaviors", ()) or ()
             )
         self.match = match
         self.rank = rank
@@ -321,9 +302,8 @@ class Widget:
         self.layout = layout
         self.theme = theme
         self.location = location
-        self.multi = multi_keys
+        self.behaviors = bh.normalize(f"widget {name!r}", behaviors)
         self.search = list(search or ())
-        self.run_query = run_query
         self._on_select = _handler(on_select, "on_select")
         self._on_highlight = _handler(on_highlight, "on_highlight")
         self._shown: dict[str, Record] = {}
@@ -347,7 +327,9 @@ class Widget:
         with _runtime.handling(self.name):
             if self._on_select is not None:
                 self._on_select(record)
-            elif self.run_query and providers._launches_directly(record):
+            elif _runs_commands(self.behaviors) and providers._launches_directly(
+                record
+            ):
                 providers.launch_executable(record)
             elif callable(select := getattr(self.provider, "select", None)):
                 select(record)
@@ -390,13 +372,16 @@ class Widget:
             "layout": _layout(self.layout),
             "theme": None if self.theme is None else _runtime.theme_wire(self.theme),
             "location": self.location,
-            "multi": self.multi,
+            "behaviors": [behavior._spec() for behavior in self.behaviors],
             "highlight": self._on_highlight is not None,
             "search": self.search,
             "ranking": rk.wire(self.match, self.rank, self.prefer),
             "agent": None if self.agent is None else self.agent._wire(),
-            "run_query": self.run_query,
         }
+
+
+def _runs_commands(items: Sequence[bh.Behavior]) -> bool:
+    return any(isinstance(item, bh.RunCommands) for item in items)
 
 
 def _handler(function: Handler | None, what: str) -> Handler | None:
@@ -412,16 +397,13 @@ def widget(
     layout: Layout | None = None,
     theme: str | Theme | None = None,
     location: str | None = None,
-    multi: bool = False,
-    select: str | None = None,
-    deselect: str | None = None,
+    behaviors: Sequence[bh.Behavior] | None = None,
     on_select: Handler | None = None,
     on_highlight: Handler | None = None,
     search: Sequence[str] | None = None,
     match: rk.Matcher | None = _PROVIDER_DEFAULT,
     rank: rk.Rank | None = _PROVIDER_DEFAULT,
     prefer: str = "blend",
-    run_query: bool | None = None,
 ) -> Widget:
     """Declares a popup widget.
 
@@ -430,7 +412,9 @@ def widget(
       Defaults to `layouts.menu`.
     - `theme`: replaces the configured theme for this widget.
     - `location`: where the popup opens, overriding the layout's choice.
-    - `multi`: mark rows with Tab / Shift-Tab (or `select` / `deselect` keys).
+    - `behaviors`: list behaviors such as `behaviors.Multi()` and
+      `behaviors.RunCommands()`. `None` uses the provider's
+      `default_behaviors`. `[]` turns them off.
     - `on_select`, `on_highlight`: functions of a `Record`.
     - `search`: what typing filters on, as paths such as `"label"` or
       `"sender.name"`. Defaults to the label.
@@ -439,8 +423,6 @@ def widget(
     - `rank`: how past picks order rows, such as `ranking.frecency()`. `None`
       keeps the provider's order. Left out, the provider's default applies.
     - `prefer`: `"blend"`, `"match"`, or `"usage"`; see docs/ranking.md.
-    - `run_query`: offer typed text as a command and remember accepted lines.
-      Left out, the provider's choice applies (`Executables` turns it on).
     """
     if name in registry.widgets:
         raise ValueError(f"widget {name!r} is configured more than once")
@@ -457,16 +439,13 @@ def widget(
         layout=layout,
         theme=theme,
         location=location,
-        multi=multi,
-        select=select,
-        deselect=deselect,
+        behaviors=behaviors,
         on_select=on_select,
         on_highlight=on_highlight,
         search=search,
         match=match,
         rank=rank,
         prefer=prefer,
-        run_query=run_query,
     )
     registry.widgets[name] = created
     return created

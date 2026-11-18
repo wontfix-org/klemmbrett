@@ -89,8 +89,8 @@ kb.widget("askpass", secrets.Askpass(), layout=lambda ctx: layouts.secret(ctx, m
 Answers go back to the asker only. They never reach Python, `klemmbrett
 watch` and other subscribers, handlers, history, usage, or the journal, and
 the popup wipes what was typed once it is sent. That is why agent
-widgets take no `on_select`, `on_highlight`, `multi`, `search`, `match`, or
-`rank`.
+widgets take no `on_select`, `on_highlight`, `behaviors`, `search`,
+`match`, or `rank`.
 
 While a password prompt is open, `Show` and `Prompt` are turned away
 (`Busy`), so nothing can replace it. Questions arriving meanwhile wait their
