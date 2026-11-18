@@ -63,7 +63,9 @@ def configure(
     - `label_max`: characters shown per row before the label is shortened.
     - `launch`: how `kb.launch` starts programs: `"auto"` (a systemd scope when
       running as a unit, else a double fork), `"posix"`, `"systemd-run"`, or a
-      wrapper command list such as `["uwsm", "app", "--"]`.
+      wrapper command list such as `["uwsm", "app", "--"]`. Posix and
+      systemd-run log output only if the program dies within about a second.
+      A wrapper is not watched.
     - `theme`: a palette name, a `Theme`, or `None` for the built-in look.
     - `overrides`: applied over every widget's theme, and kept by `set_theme`.
     - `session`: subscribe to the logind session. Left unset, klemmbrett probes

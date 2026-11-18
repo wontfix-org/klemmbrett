@@ -63,7 +63,12 @@ def paste() -> str:
 
 
 def launch(argv: Sequence[str | os.PathLike[str]]) -> None:
-    """Starts a detached program the way the `launch` setting says."""
+    """Starts a detached program the way the `launch` setting says.
+
+    Returns once the program has been exec'd. Output is logged only when
+    that process exits non-zero, or dies on a signal, within about a
+    second. A wrapper command is not watched.
+    """
     if isinstance(argv, str | bytes):
         raise TypeError("launch: pass the command as a list, e.g. ['xdg-open', url]")
     backend.launch_command([os.fspath(part) for part in argv])

@@ -134,7 +134,7 @@ them outside the daemon raises `RuntimeError`.
 | --- | --- |
 | `kb.copy(text)` | Sets the clipboard and primary selection, and records history |
 | `kb.paste()` | The current clipboard text, read on the sync thread |
-| `kb.launch(argv)` | Starts a detached program the way the `launch` setting says |
+| `kb.launch(argv)` | Starts a detached program the way the `launch` setting says. Output is logged only if it dies within about a second |
 | `kb.activate_window(key)` | Focuses a `WaylandWindows` record's window |
 | `kb.set_theme(theme)` | Switches the palette: a name, `"default"`, or a `Theme` |
 | `kb.show(widget, records=None, pointer=None)` | Opens a widget |
@@ -146,6 +146,13 @@ them outside the daemon raises `RuntimeError`.
 command at info. Stderr left on the default stream is captured, logged at
 info, and returned on the result. `stderr=` or `capture_output` keeps the
 caller's own capture.
+
+`kb.launch` returns once the program has been exec'd. It does not wait for
+the program to finish. Output is kept only when that process exits non-zero,
+or is killed by a signal, within about a second of the exec; the text goes
+to the daemon log. A program that stays up, or that exits 0, is not logged,
+and neither is anything it prints later. A `launch` wrapper is handed off
+without this watch.
 
 `kb.notify` replaces `notify-send`. When `notifications.serve` is on, the
 notification goes through your routing like any other; otherwise it goes to

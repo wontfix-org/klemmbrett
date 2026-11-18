@@ -221,7 +221,10 @@ stderr left uncaptured. `kb.launch` starts detached programs. With
 `launch="auto"`, that is `systemd-run --user --scope` when klemmbrett runs
 as a systemd unit, and a POSIX double fork otherwise. `"posix"`,
 `"systemd-run"`, or a wrapper list such as `["uwsm", "app", "--"]` override
-it.
+it. If the program exits non-zero or dies on a signal within about a
+second, its output is logged. Later output is discarded, as is the output
+of a program that keeps running. A wrapper is not watched: it returns as
+soon as it has handed the program off.
 
 The logind session is probed at startup (`active`, `idle`, `locked`, and its
 state). When logind has no session, klemmbrett logs a warning and continues.

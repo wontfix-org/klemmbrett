@@ -16,7 +16,7 @@ use crate::events;
 use crate::executables;
 use crate::history::shorten_label;
 use crate::journal;
-use crate::launch::{spawn_detached, ResolvedLaunch};
+use crate::launch::ResolvedLaunch;
 use crate::layout::LayoutSpec;
 use crate::layout::{
     expand, expand_record, expand_record_full, Layout, LayoutContext, Node, NodeKind,
@@ -134,7 +134,7 @@ impl Runtime {
     /// Starts a detached process the way the `launch` setting says.
     pub fn launch(&self, argv: &[String]) -> Result<(), String> {
         let parts: Vec<&str> = argv.iter().map(String::as_str).collect();
-        spawn_detached(&self.launch.argv(&parts))
+        self.launch.spawn(&parts)
     }
 
     /// Focuses a toplevel by the key a `WaylandWindows` provider reported.
