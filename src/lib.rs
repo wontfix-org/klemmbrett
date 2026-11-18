@@ -194,6 +194,7 @@ impl<B: Backend> ClipboardSync<B> {
 
 pub mod ask_password;
 pub mod askpass;
+pub mod behavior;
 pub mod cli;
 mod clipboard_history;
 pub mod config;
@@ -210,9 +211,11 @@ mod outputs;
 pub mod pinentry;
 pub mod polkit;
 mod popup;
+mod popup_shell;
 pub mod provision;
 pub mod rank;
 mod richtext;
+mod secret_popup;
 pub use richtext::syntax_name;
 pub mod secret;
 pub mod session;

@@ -51,7 +51,7 @@ impl Fixture {
                 Record::new("beta"),
             ]))),
         );
-        picker.multi = None;
+        picker.behaviors.clear();
         let widgets = vec![picker, WidgetDef::new("bare", None)];
         let handlers: Arc<dyn Handlers> = Arc::new(Stashes);
         let toasts = Arc::new(Mutex::new(Vec::new()));

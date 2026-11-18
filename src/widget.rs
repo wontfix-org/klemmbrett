@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::behavior::BehaviorSpec;
 use crate::config::MultiSelect;
 use crate::data::{display, DataPath};
 use crate::executables::executables_on_path;
@@ -382,7 +383,8 @@ pub struct WidgetDef {
     /// Replaces the file-wide palette for this widget only.
     pub theme: Option<ThemeSpec>,
     pub location: Option<Location>,
-    pub multi: Option<MultiSelect>,
+    /// Filled from the `multi` wire key until behaviors are configured directly.
+    pub behaviors: Vec<BehaviorSpec>,
     /// Whether highlight events are worth sending to the handlers.
     pub highlight: bool,
     /// What the filter matches. Empty means the label.
@@ -403,12 +405,24 @@ impl WidgetDef {
             layout: LayoutSpec::Default,
             theme: None,
             location: None,
-            multi: None,
+            behaviors: Vec::new(),
             highlight: false,
             search: Vec::new(),
             ranking: Ranking::default(),
             agent: None,
             run_query: false,
+        }
+    }
+
+    /// Replaces any multi-select behavior. `None` turns it off. The wire key
+    /// is still `multi`, a pair of key names such as `("tab", "shift-tab")`.
+    pub fn set_multi(&mut self, multi: Option<MultiSelect>) {
+        self.behaviors.retain(|spec| !spec.marks_rows());
+        if let Some(multi) = multi {
+            self.behaviors.push(BehaviorSpec::Multi {
+                select: multi.select,
+                deselect: multi.deselect,
+            });
         }
     }
 }
@@ -538,8 +552,19 @@ impl Widgets {
         self.get(name).is_some_and(|def| def.source.is_none())
     }
 
-    pub fn multi(&self, name: &str) -> Option<&MultiSelect> {
-        self.get(name).and_then(|def| def.multi.as_ref())
+    pub fn multi(&self, name: &str) -> Option<MultiSelect> {
+        let def = self.get(name)?;
+        for spec in &def.behaviors {
+            match spec {
+                BehaviorSpec::Multi { select, deselect } => {
+                    return Some(MultiSelect {
+                        select: select.clone(),
+                        deselect: deselect.clone(),
+                    });
+                }
+            }
+        }
+        None
     }
 
     pub fn records(&self, name: &str) -> Result<Vec<Record>, String> {

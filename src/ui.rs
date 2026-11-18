@@ -10,7 +10,8 @@
 //! protocol's supported way to focus a surface that was not opened from user
 //! input, so the rows and their key handling live here instead.
 
-use crate::config::{AppConfig, MultiSelect, PICKER_PROMPT};
+use crate::behavior::{install, AppCall, Behavior, BehaviorSpec, Effects, Flow, KeyPress};
+use crate::config::{AppConfig, PICKER_PROMPT};
 use crate::data::DataPath;
 use crate::events;
 use crate::executables;
@@ -24,26 +25,28 @@ use crate::layout::{
 use crate::notifications::{
     self, CloseReason, Notification, NotificationCenter, NotifyRequest, ToastCmd,
 };
+use crate::popup_shell::{PopupContent, PopupShell};
 use crate::rank::{self, Priors, Ranking};
 use crate::secret::{
     self, AgentKind, AskError, Mode, SecretAsker, SecretReply, SecretRequest, SecretRoutes,
     SecretTicket,
 };
+use crate::secret_popup::{SecretPopup, SecretSession};
 use crate::usage::{self, UsageStore};
 use crate::varlink::{self, PickOptions, ShowRequest};
 use crate::widget::{fetch_scored, Handlers, WidgetDef, Widgets};
 use crate::windows::WindowList;
 use crate::{
-    accelerator_for, activation_records, focused_display_index, history_candidate,
-    index_for_accelerator, output_layout, place_at_location, resize_at_location, toggle_record,
-    ArboardBackend, Backend, ClipboardSync, Edges, Location, Orientation, OutputGeom, Record,
-    Selection, Style, Theme, ThemeSpec, POLL_INTERVAL,
+    accelerator_for, focused_display_index, history_candidate, index_for_accelerator,
+    output_layout, place_at_location, resize_at_location, ArboardBackend, Backend, ClipboardSync,
+    Edges, Location, Orientation, OutputGeom, Record, Selection, Style, Theme, ThemeSpec,
+    POLL_INTERVAL,
 };
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
     canvas, div, point, prelude::*, px, rgb, rgb_to_hsla, rgba, size, uniform_list, AnyElement,
-    App, Bounds, Context, Corners, DisplayId, Entity, FocusHandle, Focusable, FontStyle,
-    FontWeight, HighlightStyle, KeyDownEvent, LinuxWindowBackground, MouseButton, Pixels, QuitMode,
+    App, Bounds, Context, Corners, DisplayId, Entity, Focusable, FontStyle, FontWeight,
+    HighlightStyle, KeyDownEvent, LinuxWindowBackground, MouseButton, Pixels, QuitMode,
     RenderImage, ScrollStrategy, Styled, StyledText, UnderlineStyle, UniformListScrollHandle,
     WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
 };
@@ -52,8 +55,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
-use zeroize::Zeroizing;
-
 const TRAY_ICON_NAME: &str = "edit-paste";
 const TRAY_ICON_SIZES: [i32; 4] = [16, 22, 24, 32];
 
@@ -84,10 +85,10 @@ pub(crate) enum UiCmd {
 /// A secret question waiting for, or shown in, the popup.
 #[derive(Debug)]
 pub(crate) struct PendingSecret {
-    id: u64,
-    widget: String,
-    request: SecretRequest,
-    reply: mpsc::Sender<SecretReply>,
+    pub(crate) id: u64,
+    pub(crate) widget: String,
+    pub(crate) request: SecretRequest,
+    pub(crate) reply: mpsc::Sender<SecretReply>,
 }
 
 enum ClipCmd {
@@ -443,11 +444,11 @@ fn spawn_clipboard<B: Backend + Send + 'static>(
     tx
 }
 
-struct Klemmbrett {
+pub(crate) struct Klemmbrett {
     widgets: Widgets,
     handlers: Arc<dyn Handlers>,
     label_max: usize,
-    popup: Option<WindowHandle<PopupView>>,
+    popup: Option<WindowHandle<PopupShell>>,
     /// Bumped by every open request so a slow provider cannot replace a newer popup.
     show_seq: u64,
     center: Option<Arc<NotificationCenter>>,
@@ -599,20 +600,16 @@ impl Klemmbrett {
             self.secret_closed(id, cx);
             return;
         };
-        let shown = Shown {
-            widget: pending.widget.clone(),
-            multi: None,
-            search: Vec::new(),
-            ranking: Ranking::default(),
-            query: String::new(),
-            priors: Priors::default(),
-            live: false,
-            reply: None,
-            secret: Some(SecretSession::new(pending)),
-            run_query: false,
-        };
-        if let Some(shown) = self.reuse_popup(&entries, &placement, shown, cx) {
-            self.open_popup(entries, placement, Some(shown), cx);
+        let widget = pending.widget.clone();
+        let session = SecretSession::new(pending);
+        if let Some(session) = self.reuse_secret(&entries, &placement, widget.clone(), session, cx)
+        {
+            self.open_shell(placement, true, cx, move |app, placement, _window, cx| {
+                let _ = app;
+                PopupContent::Secret(
+                    cx.new(|cx| SecretPopup::new(widget, session, entries, &placement, cx)),
+                )
+            });
             if self.popup.is_none() {
                 self.secret_closed(id, cx);
             }
@@ -620,7 +617,7 @@ impl Klemmbrett {
     }
 
     /// The question `id` was answered or cancelled; show the next one.
-    fn secret_closed(&mut self, id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn secret_closed(&mut self, id: u64, cx: &mut Context<Self>) {
         if self.secret_active == Some(id) {
             self.secret_active = None;
         }
@@ -639,9 +636,7 @@ impl Klemmbrett {
         }
         let shown = self.popup.filter(|handle| {
             handle
-                .update(cx, |view, _, _| {
-                    view.secret.as_ref().map(|session| session.id)
-                })
+                .update(cx, |shell, _, cx| shell.secret_id(cx))
                 .ok()
                 .flatten()
                 == Some(id)
@@ -654,9 +649,9 @@ impl Klemmbrett {
         // Hiding the popup updates this entity, so it has to wait until
         // the current update ends.
         cx.defer(move |cx| {
-            if let Err(err) = handle.update(cx, |view, window, cx| {
-                if view.secret.as_ref().is_some_and(|session| session.id == id) {
-                    view.hide(window, cx);
+            if let Err(err) = handle.update(cx, |shell, window, cx| {
+                if shell.secret_id(cx) == Some(id) {
+                    shell.close(window, cx);
                 }
             }) {
                 journal::error(&format!("failed to withdraw a secret question: {err}"));
@@ -766,9 +761,7 @@ impl Klemmbrett {
         let Some(handle) = self.popup else {
             return;
         };
-        let name = match handle.update(cx, |view, _, _| {
-            (view.visible && view.live).then(|| view.widget_name.clone())
-        }) {
+        let name = match handle.update(cx, |shell, _, cx| shell.live_widget(cx)) {
             Ok(Some(name)) => name,
             Ok(None) => return,
             Err(err) => {
@@ -802,10 +795,8 @@ impl Klemmbrett {
                     }
                 };
                 if let Some(handle) = this.popup {
-                    if let Err(err) = handle.update(cx, |view, _window, cx| {
-                        if view.visible && view.widget_name == name {
-                            view.replace_entries(entries, priors, cx);
-                        }
+                    if let Err(err) = handle.update(cx, |shell, _window, cx| {
+                        shell.replace_entries(&name, entries, priors, cx);
                     }) {
                         journal::error(&format!("failed to replace popup entries: {err}"));
                     }
@@ -963,7 +954,7 @@ impl Klemmbrett {
         let Some(handle) = self.popup else {
             return;
         };
-        let name = match handle.update(cx, |view, _, _| view.widget_name.clone()) {
+        let name = match handle.update(cx, |shell, _, cx| shell.widget_name(cx)) {
             Ok(name) => name,
             Err(err) => {
                 journal::error(&format!("failed to read the open popup: {err}"));
@@ -971,19 +962,20 @@ impl Klemmbrett {
             }
         };
         let theme = self.theme_for(&name);
-        if let Err(err) = handle.update(cx, |view, _, cx| {
-            view.restyle(theme);
-            cx.notify();
-        }) {
+        if let Err(err) = handle.update(cx, |shell, _, cx| shell.restyle(theme, cx)) {
             journal::error(&format!("failed to restyle the popup: {err}"));
         }
     }
 
-    fn drop_popup_handle(&mut self) {
+    pub(crate) fn drop_popup_handle(&mut self) {
         self.popup = None;
     }
 
-    fn prewarm_popup(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn popup_open(&self) -> bool {
+        self.popup.is_some()
+    }
+
+    pub(crate) fn prewarm_popup(&mut self, cx: &mut Context<Self>) {
         let theme = self.widgets.default_theme().clone();
         let layout = Arc::new(Layout::menu(false));
         let Some(placement) = popup_placement(
@@ -997,7 +989,9 @@ impl Klemmbrett {
         ) else {
             return;
         };
-        self.open_popup(Vec::new(), placement, None, cx);
+        self.open_shell(placement, false, cx, move |app, placement, _window, cx| {
+            PopupContent::List(cx.new(|cx| ListPopup::new(app, Vec::new(), placement, None, cx)))
+        });
     }
 
     fn show_widget_menu(
@@ -1018,7 +1012,7 @@ impl Klemmbrett {
         let (def, query, prompt) = match pick {
             Some(options) => {
                 let mut def = self.picker.clone();
-                def.multi = MultiSelect::resolve(def.multi.take(), options.multi);
+                BehaviorSpec::apply_picker_choice(&mut def.behaviors, options.multi);
                 let prompt = options.prompt.or_else(|| self.picker_prompt.clone());
                 (def, options.query, Some(prompt))
             }
@@ -1043,7 +1037,7 @@ impl Klemmbrett {
         let live = records.is_none();
         let face = ShowFace {
             widget: def.name.clone(),
-            multi: def.multi.clone(),
+            behaviors: def.behaviors.clone(),
             search: def.search.clone(),
             ranking: def.ranking.clone(),
             query,
@@ -1053,7 +1047,7 @@ impl Klemmbrett {
         };
         let ctx = LayoutContext {
             widget: face.widget.clone(),
-            multi: face.multi.is_some(),
+            multi: face.behaviors.iter().any(|spec| spec.marks_rows()),
             prompt: reply.is_some(),
         };
         let usage = self.usage.clone();
@@ -1128,18 +1122,21 @@ impl Klemmbrett {
         };
         let shown = Shown {
             widget: face.widget,
-            multi: face.multi,
+            behaviors: face.behaviors,
             search: face.search,
             ranking: face.ranking,
             query: face.query,
             priors,
             live,
             reply,
-            secret: None,
             run_query: face.run_query,
         };
         if let Some(shown) = self.reuse_popup(&entries, &placement, shown, cx) {
-            self.open_popup(entries, placement, Some(shown), cx);
+            self.open_shell(placement, true, cx, move |app, placement, _window, cx| {
+                PopupContent::List(
+                    cx.new(|cx| ListPopup::new(app, entries, placement, Some(shown), cx)),
+                )
+            });
         }
     }
 
@@ -1156,19 +1153,35 @@ impl Klemmbrett {
             return Some(shown);
         };
         let mut shown = Some(shown);
-        match handle.update(cx, |view, window, cx| {
-            if view.display_id != placement.display_id {
-                view.finish_prompt(Ok(Vec::new()));
+        match handle.update(cx, |shell, window, cx| {
+            if shell.display_id() != placement.display_id {
+                shell.dismiss_content(cx);
                 return false;
             }
             window.resize(placement.output_size);
-            view.reload(
-                entries.to_vec(),
-                placement,
-                shown.take().expect("shown"),
-                cx,
-            );
-            view.reveal(window, cx);
+            if let Some(list) = shell.list() {
+                list.update(cx, |list, cx| {
+                    list.reload(
+                        entries.to_vec(),
+                        placement,
+                        shown.take().expect("shown"),
+                        cx,
+                    );
+                });
+            } else {
+                let app = shell.app();
+                let list = cx.new(|cx| {
+                    ListPopup::new(
+                        app,
+                        entries.to_vec(),
+                        PopupPlacement::clone(placement),
+                        shown.take(),
+                        cx,
+                    )
+                });
+                shell.replace(PopupContent::List(list), cx);
+            }
+            shell.reveal(window, cx);
             true
         }) {
             Ok(true) => None,
@@ -1187,24 +1200,76 @@ impl Klemmbrett {
         }
     }
 
-    fn open_popup(
+    /// Puts `session` in the open window when it is on the same display.
+    /// Returns the session when the caller still has to open a window.
+    fn reuse_secret(
         &mut self,
-        entries: Vec<Record>,
-        placement: PopupPlacement,
-        shown: Option<Shown>,
+        entries: &[Record],
+        placement: &PopupPlacement,
+        widget: String,
+        session: SecretSession,
         cx: &mut Context<Self>,
+    ) -> Option<SecretSession> {
+        let Some(handle) = self.popup else {
+            return Some(session);
+        };
+        let mut session = Some(session);
+        match handle.update(cx, |shell, window, cx| {
+            if shell.display_id() != placement.display_id {
+                shell.dismiss_content(cx);
+                return false;
+            }
+            window.resize(placement.output_size);
+            let entries = entries.to_vec();
+            let secret = cx.new(|cx| {
+                SecretPopup::new(
+                    widget,
+                    session.take().expect("session"),
+                    entries,
+                    placement,
+                    cx,
+                )
+            });
+            shell.replace(PopupContent::Secret(secret), cx);
+            shell.reveal(window, cx);
+            true
+        }) {
+            Ok(true) => None,
+            Ok(false) => {
+                if let Err(err) = handle.update(cx, |_, window, _| window.remove_window()) {
+                    journal::error(&format!("failed to remove the popup window: {err}"));
+                }
+                self.popup = None;
+                session
+            }
+            Err(err) => {
+                journal::error(&format!("failed to reuse the popup: {err}"));
+                self.popup = None;
+                session
+            }
+        }
+    }
+
+    fn open_shell(
+        &mut self,
+        placement: PopupPlacement,
+        visible: bool,
+        cx: &mut Context<Self>,
+        build: impl FnOnce(Entity<Klemmbrett>, PopupPlacement, &mut Window, &mut App) -> PopupContent
+            + 'static,
     ) {
         let app = cx.entity();
-        let visible = shown.is_some();
+        let display_id = placement.display_id;
         let options = overlay_options(&placement, visible);
         match cx.open_window(options, move |window, cx| {
-            let view = cx.new(|cx| PopupView::new(app, entries, placement, shown, cx));
+            let content = build(app.clone(), placement, window, cx);
+            let shell = cx.new(|cx| PopupShell::new(app, content, display_id, visible, cx));
             if visible {
-                let focus = view.read(cx).focus_handle.clone();
+                let focus = shell.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
                 window.activate();
             }
-            view
+            shell
         }) {
             Ok(handle) => self.popup = Some(handle),
             Err(err) => {
@@ -1219,7 +1284,7 @@ impl Klemmbrett {
 /// What an open needs after its records have been read.
 struct ShowFace {
     widget: String,
-    multi: Option<MultiSelect>,
+    behaviors: Vec<BehaviorSpec>,
     search: Vec<DataPath>,
     ranking: Ranking,
     query: String,
@@ -1231,7 +1296,7 @@ struct ShowFace {
 /// What a visible popup was opened for.
 struct Shown {
     widget: String,
-    multi: Option<MultiSelect>,
+    behaviors: Vec<BehaviorSpec>,
     search: Vec<DataPath>,
     ranking: Ranking,
     query: String,
@@ -1239,42 +1304,8 @@ struct Shown {
     /// The rows come from the provider, so a refresh may reload them.
     live: bool,
     reply: Option<Reply>,
-    secret: Option<SecretSession>,
     /// Typed text that is not a row can be run, and accepted lines come back.
     run_query: bool,
-}
-
-/// A secret question on screen and what has been typed for it.
-struct SecretSession {
-    id: u64,
-    request: SecretRequest,
-    reply: Option<mpsc::Sender<SecretReply>>,
-    typed: Zeroizing<String>,
-}
-
-impl SecretSession {
-    fn new(pending: PendingSecret) -> Self {
-        Self {
-            id: pending.id,
-            request: pending.request,
-            reply: Some(pending.reply),
-            typed: Zeroizing::new(String::with_capacity(256)),
-        }
-    }
-
-    fn answer(&mut self, reply: SecretReply) {
-        if let Some(sender) = self.reply.take() {
-            if sender.send(reply).is_err() {
-                journal::info("dropped a secret answer; the asker is gone");
-            }
-        }
-    }
-}
-
-impl Drop for SecretSession {
-    fn drop(&mut self) {
-        self.answer(SecretReply::Cancelled);
-    }
 }
 
 /// Opens the usage store when a widget ranks by past picks.
@@ -1323,6 +1354,9 @@ fn load_entries(
         };
         executables::merge_commands(&mut entries, &commands);
     }
+    for (index, spec) in def.behaviors.iter().enumerate() {
+        spec.clone().build(index).on_load(&def.name, &mut entries);
+    }
     let priors = Priors::load(&def.ranking, &def.name, &python, usage, usage::now_secs());
     Ok((entries, priors))
 }
@@ -1335,14 +1369,15 @@ fn finish_prompt(reply: Option<Reply>, result: Result<Vec<String>, String>) {
     }
 }
 
-struct PopupPlacement {
-    display_id: DisplayId,
-    output_size: gpui::Size<Pixels>,
-    card: Bounds<Pixels>,
-    label_max: usize,
-    theme: Theme,
-    layout: Arc<Layout>,
-    location: Location,
+#[derive(Clone)]
+pub(crate) struct PopupPlacement {
+    pub(crate) display_id: DisplayId,
+    pub(crate) output_size: gpui::Size<Pixels>,
+    pub(crate) card: Bounds<Pixels>,
+    pub(crate) label_max: usize,
+    pub(crate) theme: Theme,
+    pub(crate) layout: Arc<Layout>,
+    pub(crate) location: Location,
 }
 
 fn popup_placement(
@@ -1449,104 +1484,108 @@ fn pixels_i32(value: Pixels) -> i32 {
     f32::from(value).round() as i32
 }
 
-struct PopupView {
-    focus_handle: FocusHandle,
+pub(crate) struct ListPopup {
+    /// The window this list is drawn in. Set once the shell exists.
+    shell: Option<WeakEntity<PopupShell>>,
     app: Entity<Klemmbrett>,
-    entries: Vec<Record>,
-    selected: usize,
+    state: crate::behavior::ListState,
+    behaviors: Vec<std::sync::Arc<dyn Behavior>>,
     label_max: usize,
     theme: Theme,
     layout: Arc<Layout>,
     widget_name: String,
-    multi: Option<MultiSelect>,
     search: Vec<DataPath>,
     ranking: Ranking,
     priors: Priors,
-    /// Indices into `entries` that match `query`, in the order shown.
-    order: Vec<usize>,
     live: bool,
-    query: String,
-    display_id: DisplayId,
     card: Bounds<Pixels>,
     location: Location,
     output_size: gpui::Size<Pixels>,
-    visible: bool,
-    seen_active: bool,
     scroll: UniformListScrollHandle,
-    checked: Vec<Record>,
     /// Key of the row highlight handlers last ran for (or the row the popup opened on).
     highlighted: Option<String>,
     reply: Option<Reply>,
-    /// Set while the popup asks a secret question instead of showing rows.
-    secret: Option<SecretSession>,
     /// Typed text that is not a row can be run, and accepted lines come back.
     run_query: bool,
 }
 
-impl PopupView {
+impl ListPopup {
     fn new(
         app: Entity<Klemmbrett>,
         entries: Vec<Record>,
         placement: PopupPlacement,
         shown: Option<Shown>,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Self {
-        let visible = shown.is_some();
         let Shown {
             widget,
-            multi,
+            behaviors,
             search,
             ranking,
             query,
             priors,
             live,
             reply,
-            secret,
             run_query,
         } = shown.unwrap_or(Shown {
             widget: String::new(),
-            multi: None,
+            behaviors: Vec::new(),
             search: Vec::new(),
             ranking: Ranking::default(),
             query: String::new(),
             priors: Priors::default(),
             live: false,
             reply: None,
-            secret: None,
             run_query: false,
         });
+        let (behaviors, state) = install(&behaviors, entries, query);
         let mut view = Self {
-            focus_handle: cx.focus_handle(),
+            shell: None,
             app,
-            entries,
-            selected: 0,
+            state,
+            behaviors,
             label_max: placement.label_max,
             theme: placement.theme,
             layout: placement.layout,
             widget_name: widget,
-            multi,
             search,
             ranking,
             priors,
-            order: Vec::new(),
             live,
-            query,
-            display_id: placement.display_id,
             card: placement.card,
             location: placement.location,
             output_size: placement.output_size,
-            visible,
-            seen_active: false,
             scroll: UniformListScrollHandle::new(),
-            checked: Vec::new(),
             highlighted: None,
             reply,
-            secret,
             run_query,
         };
         view.refilter();
         view.highlighted = view.first_key();
         view
+    }
+
+    /// The window this list is drawn in. Called once, when the shell is built.
+    pub(crate) fn attach(&mut self, shell: WeakEntity<PopupShell>) {
+        self.shell = Some(shell);
+    }
+
+    pub(crate) fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    pub(crate) fn widget_name(&self) -> &str {
+        &self.widget_name
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.live
+    }
+
+    /// Answers a waiting prompt with nothing. A list has no secret question.
+    pub(crate) fn dismiss(&mut self) -> Option<u64> {
+        self.finish_prompt(Ok(Vec::new()));
+        None
     }
 
     fn reload(
@@ -1558,7 +1597,9 @@ impl PopupView {
     ) {
         self.finish_prompt(Ok(Vec::new()));
         self.reply = shown.reply;
-        self.entries = entries;
+        let (behaviors, state) = install(&shown.behaviors, entries, shown.query);
+        self.behaviors = behaviors;
+        self.state = state;
         self.card = placement.card;
         self.location = placement.location;
         self.output_size = placement.output_size;
@@ -1566,71 +1607,85 @@ impl PopupView {
         self.layout = placement.layout.clone();
         self.label_max = placement.label_max;
         self.widget_name = shown.widget;
-        self.multi = shown.multi;
         self.search = shown.search;
         self.ranking = shown.ranking;
         self.priors = shown.priors;
         self.live = shown.live;
-        self.secret = shown.secret;
         self.run_query = shown.run_query;
-        self.query = shown.query;
         self.refilter();
         self.highlighted = self.first_key();
-        self.selected = 0;
-        self.checked.clear();
+        self.state.selected = 0;
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
 
     /// The rows matching the query, in the order they are shown.
     fn visible_entries(&self) -> Vec<&Record> {
-        self.order
+        self.state.visible()
+    }
+
+    fn mark_slot(&self) -> Option<usize> {
+        self.behaviors
             .iter()
-            .map(|index| &self.entries[*index])
-            .collect()
+            .enumerate()
+            .find_map(|(index, behavior)| behavior.marks_rows().then_some(index))
+    }
+
+    fn marks(&self) -> &[Record] {
+        let Some(index) = self.mark_slot() else {
+            return &[];
+        };
+        self.state
+            .slot::<Vec<Record>>(index)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Matches and orders the rows again; call after the query, the rows,
     /// or the priors change. Without an input bar the query stays empty.
     /// A run widget also keeps a row for text that is not already a label.
     fn refilter(&mut self) {
-        let before = self.entries.len();
-        if self.secret.is_none() {
-            executables::sync_query_command(&mut self.entries, &self.query, self.run_query);
+        let before = self.state.entries.len();
+        executables::sync_query_command(&mut self.state.entries, &self.state.query, self.run_query);
+        for behavior in &self.behaviors {
+            behavior.on_query(&mut self.state);
         }
-        self.order = rank::order(
-            &self.entries,
-            &self.query,
+        self.state.order = rank::order(
+            &self.state.entries,
+            &self.state.query,
             &self.ranking,
             &self.search,
             &self.priors,
         );
-        if self.entries.len() != before {
+        if self.state.entries.len() != before {
             self.resize_card();
         }
     }
 
     fn first_key(&self) -> Option<String> {
-        self.order
+        self.state
+            .order
             .first()
-            .map(|index| self.entries[*index].key.clone())
+            .map(|index| self.state.entries[*index].key.clone())
     }
 
     /// New rows from the provider while the popup is open. The row under the
     /// cursor stays selected when it still exists, and marks on rows that
     /// still exist are kept (with their new contents).
-    fn replace_entries(&mut self, entries: Vec<Record>, priors: Priors, cx: &mut Context<Self>) {
+    pub(crate) fn replace_entries(
+        &mut self,
+        entries: Vec<Record>,
+        priors: Priors,
+        cx: &mut Context<Self>,
+    ) {
         let current = self
             .visible_entries()
-            .get(self.selected)
+            .get(self.state.selected)
             .map(|record| record.key.clone());
-        self.checked = self
-            .checked
-            .iter()
-            .filter_map(|marked| entries.iter().find(|record| record.key == marked.key))
-            .cloned()
-            .collect();
-        self.entries = entries;
+        self.state.entries = entries;
+        if let Some(slot) = self.mark_slot() {
+            self.state.retain_marks(slot);
+        }
         self.priors = priors;
         self.refilter();
         if let Some(index) = current.and_then(|key| {
@@ -1638,26 +1693,17 @@ impl PopupView {
                 .iter()
                 .position(|record| record.key == key)
         }) {
-            self.selected = index;
+            self.state.selected = index;
         }
         self.clamp_selection();
         self.resize_card();
         self.scroll
-            .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+            .scroll_to_item(self.state.selected, ScrollStrategy::Nearest);
         self.sync_highlight(cx);
         cx.notify();
     }
 
-    fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.visible = true;
-        self.seen_active = false;
-        window.set_visible(true);
-        window.focus(&self.focus_handle, cx);
-        window.activate();
-        cx.notify();
-    }
-
-    fn finish_prompt(&mut self, result: Result<Vec<String>, String>) {
+    pub(crate) fn finish_prompt(&mut self, result: Result<Vec<String>, String>) {
         if let Some(reply) = self.reply.take() {
             if reply.send(result).is_err() {
                 journal::info("dropped a prompt reply; the waiter is gone");
@@ -1665,171 +1711,94 @@ impl PopupView {
         }
     }
 
-    fn hide(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.visible {
-            return;
-        }
-        self.finish_prompt(Ok(Vec::new()));
-        // Dropping the session cancels the question unless it was answered.
-        let secret = self.secret.take().map(|session| session.id);
-        self.visible = false;
-        self.seen_active = false;
-        // Layer-shell remap after a null-buffer unmap is broken in GPUI-CE:
-        // prepare_to_map is xdg-only, so set_visible(true) never attaches a
-        // buffer again. Destroy this surface and build a fresh hidden one.
-        window.remove_window();
-        let app = self.app.clone();
-        app.update(cx, |klemmbrett, _cx| klemmbrett.drop_popup_handle());
-        cx.defer(move |cx| {
-            app.update(cx, |klemmbrett, cx| {
-                if klemmbrett.popup.is_none() {
-                    klemmbrett.prewarm_popup(cx);
-                }
-                if let Some(id) = secret {
-                    klemmbrett.secret_closed(id, cx);
-                }
-            });
-        });
-    }
-
-    /// Keys while a secret question is shown. Nothing typed here leaves the
-    /// session except as the answer.
-    fn on_secret_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let mods = &event.keystroke.modifiers;
-        let chosen = self.order.get(self.selected).copied();
-        let Some(session) = self.secret.as_mut() else {
-            return;
-        };
-        cx.stop_propagation();
-        match key {
-            "escape" => self.hide(window, cx),
-            "enter" => {
-                let reply = match &session.request.mode {
-                    Mode::Secret => {
-                        SecretReply::Secret(Zeroizing::new(std::mem::take(&mut *session.typed)))
-                    }
-                    Mode::Confirm | Mode::Message => SecretReply::Confirmed,
-                    Mode::Choose(_) => match chosen {
-                        Some(index) => SecretReply::Chose(index),
-                        None => return,
-                    },
-                };
-                session.answer(reply);
-                self.hide(window, cx);
-            }
-            "up" => self.move_selection(-1, cx),
-            "down" => self.move_selection(1, cx),
-            "backspace" => {
-                session.typed.pop();
-                cx.notify();
-            }
-            "u" if mods.control => {
-                session.typed.clear();
-                cx.notify();
-            }
-            _ if session.request.mode == Mode::Secret
-                && !(mods.control || mods.alt || mods.platform) =>
-            {
-                if let Some(ch) = typed_filter_char(event) {
-                    session.typed.push(ch);
-                    cx.notify();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn on_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.secret.is_some() {
-            self.on_secret_key(event, window, cx);
-            return;
-        }
+    /// `true` asks the shell to close the window. Closing from here would
+    /// borrow the shell again: this runs inside the shell's key handler.
+    pub(crate) fn on_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
         let filter = self.layout.has_inputbar();
         if self.layout.has_listview() && !mods.platform {
-            if let Some(multi) = &self.multi {
-                if multi
-                    .select
-                    .matches(key, mods.shift, mods.control, mods.alt)
-                {
-                    self.toggle_and_move(1, cx);
-                    cx.stop_propagation();
-                    return;
+            let press = KeyPress {
+                key: key.to_owned(),
+                shift: mods.shift,
+                control: mods.control,
+                alt: mods.alt,
+                platform: mods.platform,
+            };
+            let mut fx = Effects::default();
+            let mut consumed = false;
+            for behavior in &self.behaviors {
+                if behavior.on_key(&press, &mut self.state, &mut fx) == Flow::Consume {
+                    consumed = true;
+                    break;
                 }
-                if multi
-                    .deselect
-                    .matches(key, mods.shift, mods.control, mods.alt)
-                {
-                    self.toggle_and_move(-1, cx);
-                    cx.stop_propagation();
-                    return;
-                }
+            }
+            if consumed {
+                let close = self.apply_effects(&mut fx, window, cx);
+                cx.stop_propagation();
+                return close;
             }
         }
         match key {
             "escape" => {
-                self.hide(window, cx);
                 cx.stop_propagation();
-                return;
+                return true;
             }
             "enter" => {
-                self.confirm(window, cx, mods.shift);
                 cx.stop_propagation();
-                return;
+                return self.confirm(window, cx, mods.shift);
             }
             "delete"
-                if self.run_query
-                    && mods.shift
-                    && !mods.control
-                    && !mods.alt
-                    && !mods.platform =>
+                if self.run_query && mods.shift && !mods.control && !mods.alt && !mods.platform =>
             {
-                self.forget_selected(cx);
+                self.forget_selected(window, cx);
                 cx.stop_propagation();
-                return;
+                return false;
             }
             "space" if !filter => {
-                self.activate(self.selected, false, window, cx);
                 cx.stop_propagation();
-                return;
+                return self.activate(self.state.selected, false, window, cx);
             }
             "up" => {
                 self.move_selection(-1, cx);
                 cx.stop_propagation();
-                return;
+                return false;
             }
             "down" => {
                 self.move_selection(1, cx);
                 cx.stop_propagation();
-                return;
+                return false;
             }
             "backspace" if filter => {
-                self.query.pop();
+                self.state.query.pop();
                 self.refilter();
                 self.clamp_selection();
                 self.sync_highlight(cx);
                 cx.notify();
                 cx.stop_propagation();
-                return;
+                return false;
             }
             _ => {}
         }
 
         if mods.control || mods.alt || mods.platform {
-            return;
+            return false;
         }
         if filter {
             if let Some(ch) = typed_filter_char(event) {
-                self.query.push(ch);
+                self.state.query.push(ch);
                 self.refilter();
                 self.clamp_selection();
                 self.sync_highlight(cx);
                 cx.notify();
                 cx.stop_propagation();
             }
-            return;
+            return false;
         }
         let typed = event
             .keystroke
@@ -1838,32 +1807,61 @@ impl PopupView {
             .and_then(|s| s.chars().next())
             .or_else(|| key.chars().next());
         if let Some(ch) = typed {
-            if let Some(index) = index_for_accelerator(ch, self.entries.len()) {
-                self.activate(index, false, window, cx);
+            if let Some(index) = index_for_accelerator(ch, self.state.entries.len()) {
                 cx.stop_propagation();
+                return self.activate(index, false, window, cx);
             }
         }
+        false
     }
 
     fn clamp_selection(&mut self) {
         let count = self.visible_entries().len();
         if count == 0 {
-            self.selected = 0;
+            self.state.selected = 0;
         } else {
-            self.selected = self.selected.min(count - 1);
+            self.state.selected = self.state.selected.min(count - 1);
         }
     }
 
     fn move_selection(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let count = self.visible_entries().len() as i32;
-        if count == 0 {
-            return;
-        }
-        self.selected = (self.selected as i32 + delta).rem_euclid(count) as usize;
+        self.state.move_selection(delta);
         self.scroll
-            .scroll_to_item(self.selected, ScrollStrategy::Nearest);
+            .scroll_to_item(self.state.selected, ScrollStrategy::Nearest);
         self.sync_highlight(cx);
         cx.notify();
+    }
+
+    /// Refilter, scroll, and run daemon calls queued by a behavior.
+    fn apply_effects(
+        &mut self,
+        fx: &mut Effects,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let applied = fx.apply(&mut self.state);
+        if applied.refilter {
+            self.refilter();
+            self.clamp_selection();
+            self.resize_card();
+        }
+        for call in applied.calls {
+            match call {
+                AppCall::ForgetCommand { widget, command } => {
+                    self.app
+                        .update(cx, |app, cx| app.forget_command(&widget, command, cx));
+                }
+            }
+        }
+        let _ = applied.refresh;
+        self.scroll
+            .scroll_to_item(self.state.selected, ScrollStrategy::Nearest);
+        self.sync_highlight(cx);
+        cx.notify();
+        if let Some(records) = applied.submit {
+            return self.submit_records(records, window, cx) || applied.close;
+        }
+        applied.close
     }
 
     /// Tells the widget's highlight handler when the selected row changes.
@@ -1871,7 +1869,7 @@ impl PopupView {
     fn sync_highlight(&mut self, cx: &mut Context<Self>) {
         let Some(record) = self
             .visible_entries()
-            .get(self.selected)
+            .get(self.state.selected)
             .map(|record| (*record).clone())
         else {
             return;
@@ -1880,7 +1878,7 @@ impl PopupView {
             return;
         }
         self.highlighted = Some(record.key.clone());
-        if self.reply.is_some() || self.secret.is_some() {
+        if self.reply.is_some() {
             return;
         }
         let widget = self.widget_name.clone();
@@ -1888,7 +1886,7 @@ impl PopupView {
             .update(cx, |app, _cx| app.highlight(&widget, record));
     }
 
-    fn restyle(&mut self, theme: Theme) {
+    pub(crate) fn restyle(&mut self, theme: Theme) {
         if theme == self.theme {
             return;
         }
@@ -1899,9 +1897,9 @@ impl PopupView {
     /// Fits the card to the theme and row count, anchored where it was opened.
     fn resize_card(&mut self) {
         let theme = &self.theme;
-        let (width, height) = self
-            .layout
-            .card_size(theme, self.entries.len(), self.label_max);
+        let (width, height) =
+            self.layout
+                .card_size(theme, self.state.entries.len(), self.label_max);
         let old = self.card;
         let (x, y) = resize_at_location(
             self.location,
@@ -1916,47 +1914,48 @@ impl PopupView {
         self.card = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
     }
 
-    fn toggle_and_move(&mut self, delta: i32, cx: &mut Context<Self>) {
-        let Some(record) = self
-            .visible_entries()
-            .get(self.selected)
-            .map(|record| (*record).clone())
-        else {
-            return;
-        };
-        toggle_record(&mut self.checked, &record);
-        self.move_selection(delta, cx);
-        cx.notify();
-    }
-
-    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>, in_terminal: bool) {
+    fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>, in_terminal: bool) -> bool {
         if !self.layout.has_listview() {
-            let text = self.query.clone();
-            self.submit_records(vec![Record::new(text)], window, cx);
-            return;
+            let text = self.state.query.clone();
+            return self.submit_records(vec![Record::new(text)], window, cx);
         }
-        if self.multi.is_some() {
-            let visible = self.visible_entries();
-            let current = visible.get(self.selected).copied();
-            let mut records: Vec<Record> = activation_records(&self.checked, current)
+        let mut records: Vec<Record> = self
+            .visible_entries()
+            .get(self.state.selected)
+            .map(|record| (*record).clone())
+            .into_iter()
+            .collect();
+        let mut fx = Effects::default();
+        for behavior in &self.behaviors {
+            behavior.on_submit(&self.state, &mut records, &mut fx);
+        }
+        if in_terminal && self.run_query {
+            records = records
                 .into_iter()
-                .cloned()
+                .map(executables::apply_terminal)
                 .collect();
-            if in_terminal && self.run_query {
-                records = records.into_iter().map(executables::apply_terminal).collect();
-            }
-            self.submit_records(records, window, cx);
-            return;
         }
-        self.activate(self.selected, in_terminal, window, cx);
+        let applied = fx.apply(&mut self.state);
+        for call in applied.calls {
+            match call {
+                AppCall::ForgetCommand { widget, command } => {
+                    self.app
+                        .update(cx, |app, cx| app.forget_command(&widget, command, cx));
+                }
+            }
+        }
+        if applied.refilter {
+            self.refilter();
+        }
+        self.submit_records(records, window, cx) || applied.close
     }
 
     /// Drops the highlighted remembered command. A `PATH` row and the row for
     /// text that has not been accepted yet stay.
-    fn forget_selected(&mut self, cx: &mut Context<Self>) {
+    fn forget_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let forgotten = {
             let visible = self.visible_entries();
-            let Some(record) = visible.get(self.selected) else {
+            let Some(record) = visible.get(self.state.selected) else {
                 return;
             };
             if !executables::is_remembered(record) {
@@ -1965,16 +1964,13 @@ impl PopupView {
             (record.key.clone(), record.value.clone())
         };
         let (key, command) = forgotten;
-        let widget = self.widget_name.clone();
-        self.entries.retain(|entry| entry.key != key);
-        self.checked.retain(|entry| entry.key != key);
-        self.refilter();
-        self.clamp_selection();
-        self.resize_card();
-        self.sync_highlight(cx);
-        self.app
-            .update(cx, |app, cx| app.forget_command(&widget, command, cx));
-        cx.notify();
+        let mut fx = Effects::default();
+        fx.remove_keys.push(key);
+        fx.calls.push(AppCall::ForgetCommand {
+            widget: self.widget_name.clone(),
+            command,
+        });
+        let _ = self.apply_effects(&mut fx, window, cx);
     }
 
     fn activate(
@@ -1983,44 +1979,36 @@ impl PopupView {
         in_terminal: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if let Some(session) = self.secret.as_mut() {
-            if let (Mode::Choose(_), Some(chosen)) = (&session.request.mode, self.order.get(index))
-            {
-                session.answer(SecretReply::Chose(*chosen));
-                self.hide(window, cx);
-            }
-            return;
-        }
+    ) -> bool {
         let Some(mut record) = self
             .visible_entries()
             .get(index)
             .map(|record| (*record).clone())
         else {
-            return;
+            return false;
         };
         if in_terminal && self.run_query {
             record = executables::apply_terminal(record);
         }
-        self.submit_records(vec![record], window, cx);
+        self.submit_records(vec![record], window, cx)
     }
 
     fn submit_records(
         &mut self,
         records: Vec<Record>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if records.is_empty() || self.secret.is_some() {
-            return;
+    ) -> bool {
+        if records.is_empty() {
+            return false;
         }
         if self.layout.has_listview() {
             let widget = self.widget_name.clone();
             let keys = records.iter().map(|record| record.key.clone()).collect();
-            let query = self.query.clone();
+            let query = self.state.query.clone();
             let ranking = self.ranking.clone();
             let commands = if self.run_query && self.reply.is_none() {
-                executables::commands_to_remember(&self.entries, &records)
+                executables::commands_to_remember(&self.state.entries, &records)
             } else {
                 Vec::new()
             };
@@ -2036,7 +2024,7 @@ impl PopupView {
             let widget = self.widget_name.clone();
             self.app.update(cx, |app, _cx| app.select(&widget, records));
         }
-        self.hide(window, cx);
+        true
     }
 
     fn rows(&self, visible: &[&Record], cx: &mut Context<Self>) -> AnyElement {
@@ -2062,10 +2050,10 @@ impl PopupView {
                 record: (*record).clone(),
                 label_max: self.label_max,
                 accelerator: show_accelerators.then(|| accelerator_for(index)).flatten(),
-                marked: self.checked.iter().any(|item| item.key == record.key),
+                marked: self.marks().iter().any(|item| item.key == record.key),
             })
             .collect();
-        let selected = self.selected;
+        let selected = self.state.selected;
         let view = cx.weak_entity();
         uniform_list("popup-rows", rows.len(), move |range, _window, _cx| {
             range
@@ -2088,137 +2076,155 @@ impl PopupView {
     }
 }
 
-impl Drop for PopupView {
+impl Drop for ListPopup {
     fn drop(&mut self) {
         self.finish_prompt(Ok(Vec::new()));
     }
 }
 
-impl Focusable for PopupView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl Render for PopupView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.visible {
-            if window.is_window_active() {
-                self.seen_active = true;
-            } else if self.seen_active {
-                self.hide(window, cx);
-            }
-        }
-
+impl Render for ListPopup {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme.clone();
         let layout = self.layout.clone();
         let visible: Vec<Record> = self.visible_entries().into_iter().cloned().collect();
-        let mut rows = layout
+        let rows = layout
             .has_listview()
             .then(|| self.rows(&visible.iter().collect::<Vec<_>>(), cx));
-
-        let card = self.card;
-        let window_style = layout.window_style(&theme);
-        let font_size = window_style.font_size.unwrap_or(14.0);
-        let mut card_el = apply_box(
-            div()
-                .id("klemmbrett-popup")
-                .absolute()
-                .left(card.origin.x)
-                .top(card.origin.y)
-                .w(card.size.width)
-                .h(card.size.height)
-                .overflow_hidden()
-                .text_size(px(font_size))
-                .line_height(px(layout.row_extent(&theme)))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-            &window_style,
-        );
-        let mut owned = vec![
+        let owned = vec![
             ("widget".to_owned(), self.widget_name.clone()),
-            ("query".to_owned(), self.query.clone()),
+            ("query".to_owned(), self.state.query.clone()),
             ("count".to_owned(), visible.len().to_string()),
         ];
-        if let Some(session) = &self.secret {
-            owned.extend(session.request.fields());
-        }
-        let chrome = Chrome {
-            theme: &theme,
-            fields: owned
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.as_str()))
-                .collect(),
+        let chrome = ListChrome {
             widget: &self.widget_name,
-            query: &self.query,
-            secret: self.secret.as_ref(),
+            query: &self.state.query,
         };
-        if layout.has_preview() {
-            let highlighted = visible.get(self.selected).cloned();
-            let mut left = div()
-                .h_full()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .overflow_hidden();
-            for child in &layout.root().children {
-                if matches!(child.kind, NodeKind::Preview) {
-                    continue;
-                }
-                if let Some(element) = chrome.render(child, &window_style, &mut rows) {
-                    left = left.child(element);
-                }
-            }
-            let preview = layout.preview().expect("preview");
-            let pane = preview_pane(preview, highlighted.as_ref(), &theme, &window_style);
-            card_el = card_el.child(
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_row()
-                    .overflow_hidden()
-                    .child(left)
-                    .child(pane),
-            );
-        } else {
-            for child in &layout.root().children {
-                if let Some(element) = chrome.render(child, &window_style, &mut rows) {
-                    card_el = card_el.child(element);
-                }
-            }
-        }
-        apply_box(
-            div()
-                .id("klemmbrett-overlay")
-                .track_focus(&self.focus_handle)
-                .size_full()
-                .relative(),
-            theme.overlay(),
+        let fields: Vec<(&str, &str)> = owned
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        paint_popup_card(
+            self.card,
+            &theme,
+            &layout,
+            &fields,
+            &chrome,
+            rows,
+            visible.get(self.state.selected),
         )
-        .on_key_down(cx.listener(|this, event, window, cx| this.on_key(event, window, cx)))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _event, window, cx| this.hide(window, cx)),
-        )
-        .child(card_el)
     }
 }
 
-fn typed_filter_char(event: &KeyDownEvent) -> Option<char> {
+pub(crate) fn typed_filter_char(event: &KeyDownEvent) -> Option<char> {
     let ch = event.keystroke.key_char.as_deref()?.chars().next()?;
     (!ch.is_control()).then_some(ch)
 }
 
-/// Draws the nodes outside the rows: the input bar and window-level text.
-struct Chrome<'a> {
-    theme: &'a Theme,
-    fields: Vec<(&'a str, &'a str)>,
-    widget: &'a str,
-    query: &'a str,
-    secret: Option<&'a SecretSession>,
+/// Text the card draws that depends on which content is showing.
+pub(crate) trait PopupChrome {
+    fn prompt_text(&self, style_text: Option<&str>) -> String;
+    fn entry_text(&self, style_text: Option<&str>) -> String;
+    /// A secret card omits a text node whose template expanded to nothing.
+    fn hide_blank_text(&self) -> bool;
 }
 
-impl Chrome<'_> {
+struct ListChrome<'a> {
+    widget: &'a str,
+    query: &'a str,
+}
+
+impl PopupChrome for ListChrome<'_> {
+    fn prompt_text(&self, style_text: Option<&str>) -> String {
+        style_text
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.widget.to_owned())
+    }
+
+    fn entry_text(&self, _style_text: Option<&str>) -> String {
+        format!("{}│", self.query)
+    }
+
+    fn hide_blank_text(&self) -> bool {
+        false
+    }
+}
+
+/// The positioned card: chrome, rows, and the optional preview pane.
+pub(crate) fn paint_popup_card(
+    card: Bounds<Pixels>,
+    theme: &Theme,
+    layout: &Layout,
+    fields: &[(&str, &str)],
+    chrome_text: &impl PopupChrome,
+    mut rows: Option<AnyElement>,
+    preview_record: Option<&Record>,
+) -> impl IntoElement {
+    let window_style = layout.window_style(theme);
+    let font_size = window_style.font_size.unwrap_or(14.0);
+    let mut card_el = apply_box(
+        div()
+            .id("klemmbrett-popup")
+            .absolute()
+            .left(card.origin.x)
+            .top(card.origin.y)
+            .w(card.size.width)
+            .h(card.size.height)
+            .overflow_hidden()
+            .text_size(px(font_size))
+            .line_height(px(layout.row_extent(theme)))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+        &window_style,
+    );
+    let chrome = Chrome {
+        theme,
+        fields,
+        text: chrome_text,
+    };
+    if layout.has_preview() {
+        let mut left = div()
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .overflow_hidden();
+        for child in &layout.root().children {
+            if matches!(child.kind, NodeKind::Preview) {
+                continue;
+            }
+            if let Some(element) = chrome.render(child, &window_style, &mut rows) {
+                left = left.child(element);
+            }
+        }
+        let preview = layout.preview().expect("preview");
+        let pane = preview_pane(preview, preview_record, theme, &window_style);
+        card_el = card_el.child(
+            div()
+                .size_full()
+                .flex()
+                .flex_row()
+                .overflow_hidden()
+                .child(left)
+                .child(pane),
+        );
+    } else {
+        for child in &layout.root().children {
+            if let Some(element) = chrome.render(child, &window_style, &mut rows) {
+                card_el = card_el.child(element);
+            }
+        }
+    }
+    card_el
+}
+
+/// Draws the nodes outside the rows: the input bar and window-level text.
+struct Chrome<'a, T: PopupChrome + ?Sized> {
+    theme: &'a Theme,
+    fields: &'a [(&'a str, &'a str)],
+    text: &'a T,
+}
+
+impl<T: PopupChrome + ?Sized> Chrome<'_, T> {
     fn render(
         &self,
         node: &Node,
@@ -2246,36 +2252,18 @@ impl Chrome<'_> {
             }
             NodeKind::Prompt => {
                 let style = self.theme.prompt().with(&node.style);
-                let text = self
-                    .secret
-                    .and_then(|session| session.request.prompt.clone())
-                    .or_else(|| style.text.clone())
-                    .unwrap_or_else(|| self.widget.to_owned());
+                let text = self.text.prompt_text(style.text.as_deref());
                 apply_box(div().flex_none().whitespace_nowrap().child(text), &style).into_any()
             }
             NodeKind::Entry => {
                 let style = self.theme.entry().with(&node.style);
-                let text = match self.secret {
-                    Some(session) => {
-                        let shown = secret::entry_text(
-                            &session.request,
-                            &session.typed,
-                            style.text.as_deref(),
-                        );
-                        if session.request.mode == Mode::Secret {
-                            format!("{shown}│")
-                        } else {
-                            shown
-                        }
-                    }
-                    None => format!("{}│", self.query),
-                };
+                let text = self.text.entry_text(style.text.as_deref());
                 apply_box(div().flex_1().min_w_0().truncate().child(text), &style).into_any()
             }
             NodeKind::Text(template) | NodeKind::RichText { template, .. } => {
                 let style = Style::plain(parent, Orientation::Vertical).with(&node.style);
-                let text = expand(template, &self.fields);
-                if self.secret.is_some() && text.trim().is_empty() {
+                let text = expand(template, self.fields);
+                if self.text.hide_blank_text() && text.trim().is_empty() {
                     return None;
                 }
                 text_box(&style).child(text).into_any()
@@ -2296,25 +2284,38 @@ impl Chrome<'_> {
     }
 }
 
-struct RowData {
-    record: Record,
-    label_max: usize,
-    accelerator: Option<char>,
-    marked: bool,
+pub(crate) struct RowData {
+    pub(crate) record: Record,
+    pub(crate) label_max: usize,
+    pub(crate) accelerator: Option<char>,
+    pub(crate) marked: bool,
 }
 
 fn activate_row(
-    view: WeakEntity<PopupView>,
+    view: WeakEntity<ListPopup>,
     index: usize,
 ) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
     move |_, window, cx| {
-        if let Err(err) = view.update(cx, |this, cx| this.activate(index, false, window, cx)) {
-            journal::error(&format!("failed to activate popup row {index}: {err}"));
-        }
+        let mut parent = None;
+        let close = view.update(cx, |this, cx| {
+            parent = this.shell.clone();
+            this.activate(index, false, window, cx)
+        });
+        let Ok(true) = close else {
+            if let Err(err) = close {
+                journal::error(&format!("failed to activate popup row {index}: {err}"));
+            }
+            return;
+        };
+        // The row handler borrowed the list. Close the shell only after that ends.
+        let Some(shell) = parent.and_then(|shell| shell.upgrade()) else {
+            return;
+        };
+        shell.update(cx, |shell, cx| shell.close(window, cx));
     }
 }
 
-fn popup_row(
+pub(crate) fn popup_row(
     index: usize,
     data: &RowData,
     selected: bool,
@@ -2588,7 +2589,7 @@ fn container(style: &Style, parent: &Style) -> gpui::Div {
     }
 }
 
-fn apply_box<E: Styled>(element: E, style: &Style) -> E {
+pub(crate) fn apply_box<E: Styled>(element: E, style: &Style) -> E {
     let mut element = apply_padding(element, style.padding)
         .bg(paint(style.background))
         .border_color(paint(style.border_color))

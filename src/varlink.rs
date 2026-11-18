@@ -396,7 +396,7 @@ impl Server {
                 json!({
                     "name": def.name,
                     "provider": def.source.is_some(),
-                    "multi": def.multi.is_some(),
+                    "multi": def.behaviors.iter().any(|spec| spec.marks_rows()),
                 })
             })
             .collect();

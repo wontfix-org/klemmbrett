@@ -785,7 +785,7 @@ fn widget_def(value: &Bound<'_, PyAny>) -> PyResult<WidgetDef> {
         ),
         None => None,
     };
-    def.multi = multi(item(dict, "multi")?, &name)?;
+    def.set_multi(multi(item(dict, "multi")?, &name)?);
     def.highlight = match item(dict, "highlight")? {
         Some(value) => value.extract()?,
         None => false,
@@ -943,7 +943,7 @@ fn picker_config(value: &Bound<'_, PyAny>) -> PyResult<klemmbrett::config::Picke
         ),
         None => None,
     };
-    def.multi = multi(item(dict, "multi")?, "picker")?;
+    def.set_multi(multi(item(dict, "multi")?, "picker")?);
     if let Some(search) = item(dict, "search")? {
         def.search = search
             .extract::<Vec<String>>()?
