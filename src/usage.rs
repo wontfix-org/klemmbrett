@@ -401,9 +401,7 @@ mod tests {
 
     #[test]
     fn remembered_commands_keep_the_newest_and_can_be_forgotten() {
-        let mut store = UsageStore::open_in_memory()
-            .unwrap()
-            .with_command_limit(2);
+        let mut store = UsageStore::open_in_memory().unwrap().with_command_limit(2);
         store
             .remember_command("run", "  loginctl lock-session ", 1)
             .unwrap();

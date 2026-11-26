@@ -93,7 +93,10 @@ fn resolve_language(language: &str, path: Option<&str>) -> Option<String> {
 pub fn syntax_name(path: &str, first_line: &str) -> Option<String> {
     let (set, _) = engine();
     let path = std::path::Path::new(path);
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
     let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
     let syntax = set
         .find_syntax_by_extension(file_name)

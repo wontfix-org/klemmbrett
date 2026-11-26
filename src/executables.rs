@@ -214,7 +214,9 @@ mod tests {
         sync_query_command(&mut entries, "foot -e htop", true);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries.last().unwrap().label, "foot -e htop");
-        assert!(!entries.iter().any(|record| record.label.contains("lock-session")));
+        assert!(!entries
+            .iter()
+            .any(|record| record.label.contains("lock-session")));
     }
 
     #[test]
@@ -244,7 +246,10 @@ mod tests {
         let picked = [path.clone(), typed.clone(), again, flatpak.clone(), typed];
         assert_eq!(
             commands_to_remember(&[path, flatpak.clone()], &picked),
-            vec!["firefox --private".to_string(), "flatpak run org.foo".to_string()]
+            vec![
+                "firefox --private".to_string(),
+                "flatpak run org.foo".to_string()
+            ]
         );
     }
 
@@ -258,7 +263,8 @@ mod tests {
         assert_eq!(command.data["terminal"], serde_json::json!(true));
         assert_eq!(command.data["command"], serde_json::json!(true));
 
-        let app = Record::new("firefox.desktop").with_data(serde_json::json!({"argv": ["firefox"]}));
+        let app =
+            Record::new("firefox.desktop").with_data(serde_json::json!({"argv": ["firefox"]}));
         assert_eq!(apply_terminal(app.clone()).data, app.data);
     }
 
