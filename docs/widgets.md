@@ -103,6 +103,7 @@ The first of these that applies runs:
 | `Applications()` | launch the desktop entry | Desktop files; `Terminal=true` needs `kb.configure(terminal=...)` |
 | `AudioSinks()` | make it the default sink | PulseAudio and PipeWire sinks |
 | `AudioSources()` | make it the default source | PulseAudio and PipeWire sources |
+| `NetworkConnections()` | turn it on or off | NetworkManager profiles from `nmcli` |
 | `Directory(path).flat()` | copy the file's text | Every file under `path`, labeled with its relative path |
 | `Directory(path).browse()` | step into a folder, or copy a file's text | One folder, plus `..` below the root |
 | `WaylandWindows()` | `kb.activate_window(key)` | Open toplevels via `zwlr_foreign_toplevel_manager_v1`; data has `title` and `app_id` |
@@ -289,6 +290,31 @@ row makes it the default sink or source. When PulseAudio is PipeWire's own
 server and `wpctl` returned devices, the PulseAudio copies are left out.
 A device from both otherwise keeps its backend in the label. `data` has
 `backend`, `kind`, `name`, `description`, `id`, and `default`.
+
+### NetworkConnections
+
+```python
+kb.widget("network", providers.NetworkConnections(), layout=layouts.filter)
+```
+
+`nmcli connection show` lists saved NetworkManager profiles. Picking one
+turns it off when it is active (`nmcli connection down`) and on when it is
+not (`nmcli connection up`). The label looks like `Home (wifi, on)` or
+`Office (vpn, off)`. Active profiles are ordered first. The default rank
+can still put a profile you toggle often above the others.
+
+`data` has `name`, `uuid`, `type`, `kind`, `device`, and `active`. `type`
+is what `nmcli` prints (`802-11-wireless`, `vpn`, `wireguard`). `kind` is
+the short word in the label (`wifi`, `ethernet`, `mobile` for `gsm` and
+`cdma`; other types are shown as `nmcli` prints them). `device` is empty
+when nothing is using the profile. `active` is true when it is on.
+
+Turning a profile off blocks that profile from autoconnecting. The radio
+stays as it was, so another profile on the same device that has autoconnect
+set can still come up. Bringing a profile up waits until NetworkManager
+finishes, about 90 seconds unless it finishes sooner, and may ask
+PolicyKit. When `nmcli` is missing, or NetworkManager is not running, the
+list is empty.
 
 ### Directory
 

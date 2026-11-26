@@ -32,7 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import _core, _runtime, audio, behaviors, desktop, directory
+from . import _core, _runtime, audio, behaviors, desktop, directory, network
 from .preview import FilePreview, file_preview, file_preview_pane, preview_file
 from . import ranking as rk
 from ._record import Record, RecordLike, to_record, with_schema
@@ -45,6 +45,7 @@ __all__ = [
     "Applications",
     "AudioSinks",
     "AudioSources",
+    "NetworkConnections",
     "Directory",
     "FilePreview",
     "file_preview",
@@ -274,6 +275,24 @@ class AudioSources(Provider):
 
     def select(self, record: Record) -> None:
         audio.activate(record, _runtime.run)
+
+
+class NetworkConnections(Provider):
+    """NetworkManager profiles from ``nmcli``. Selecting turns one on or off.
+
+    An active profile is deactivated and an inactive one is activated. The
+    label looks like ``Home (wifi, on)``. The radio stays as it was, so
+    another profile on that device may still autoconnect.
+    """
+
+    default_match = rk.fuzzy()
+    default_rank = rk.frecency() + rk.learned()
+
+    def records(self) -> list[Record]:
+        return network.connections()
+
+    def select(self, record: Record) -> None:
+        network.toggle(record, _runtime.run)
 
 
 def _copy_file(path: str) -> None:
