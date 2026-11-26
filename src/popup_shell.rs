@@ -11,7 +11,7 @@ use crate::{Record, Theme};
 use gpui::prelude::*;
 use gpui::{
     div, App, Context, DisplayId, Entity, FocusHandle, Focusable, IntoElement, KeyDownEvent,
-    MouseButton, Window,
+    MouseButton, Pixels, Window,
 };
 
 pub(crate) enum PopupContent {
@@ -192,6 +192,24 @@ impl PopupShell {
         self.content.dismiss(cx)
     }
 
+    /// Resizes the surface to `output` and keeps the card inside it.
+    pub(crate) fn fit_output(
+        &mut self,
+        output: gpui::Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.resize(output);
+        match &self.content {
+            PopupContent::List(list) => {
+                list.update(cx, |list, cx| list.fit_output(output, cx));
+            }
+            PopupContent::Secret(secret) => {
+                secret.update(cx, |secret, cx| secret.fit_output(output, cx));
+            }
+        }
+    }
+
     /// Dismisses the content, destroys the surface, and asks for a fresh hidden one.
     pub(crate) fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.visible {
@@ -203,8 +221,9 @@ impl PopupShell {
         // Layer-shell remap after a null-buffer unmap is broken in GPUI-CE:
         // prepare_to_map is xdg-only, so set_visible(true) never attaches a
         // buffer again. Destroy this surface and build a fresh hidden one.
-        window.remove_window();
         let app = self.app.clone();
+        app.update(cx, |klemmbrett, _cx| klemmbrett.expect_popup_close());
+        window.remove_window();
         app.update(cx, |klemmbrett, _cx| klemmbrett.drop_popup_handle());
         cx.defer(move |cx| {
             app.update(cx, |klemmbrett, cx| {

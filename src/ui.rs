@@ -46,10 +46,11 @@ use crate::{
 use gpui::layer_shell::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions};
 use gpui::{
     canvas, div, point, prelude::*, px, rgb, rgb_to_hsla, rgba, size, uniform_list, AnyElement,
-    App, Bounds, Context, Corners, DisplayId, Entity, Focusable, FontStyle, FontWeight,
-    HighlightStyle, KeyDownEvent, LinuxWindowBackground, MouseButton, Pixels, QuitMode,
-    RenderImage, ScrollStrategy, Styled, StyledText, UnderlineStyle, UniformListScrollHandle,
-    WeakEntity, Window, WindowBounds, WindowDecorations, WindowHandle, WindowKind, WindowOptions,
+    App, Bounds, Context, Corners, DisplayChanges, DisplayEvent, DisplayId, Entity, Focusable,
+    FontStyle, FontWeight, HighlightStyle, KeyDownEvent, LinuxWindowBackground, MouseButton,
+    Pixels, QuitMode, RenderImage, ScrollStrategy, Styled, StyledText, Subscription,
+    UnderlineStyle, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowDecorations,
+    WindowHandle, WindowId, WindowKind, WindowOptions,
 };
 use ksni::blocking::TrayMethods;
 use std::collections::{HashMap, VecDeque};
@@ -361,7 +362,23 @@ pub fn run(config: AppConfig, on_ready: impl FnOnce(Runtime)) -> Result<(), Stri
                 app.secret_open = secret_open;
                 app
             });
-            app.update(cx, |this, cx| this.prewarm_popup(cx));
+            app.update(cx, |this, cx| {
+                let watch = cx.entity().downgrade();
+                this.display_events = Some(cx.observe_displays(move |event, cx| {
+                    let Some(watch) = watch.upgrade() else {
+                        return;
+                    };
+                    watch.update(cx, |this, cx| this.on_display_event(event, cx));
+                }));
+                let watch = cx.entity().downgrade();
+                this.window_closes = Some(cx.on_window_closed(move |cx, id| {
+                    let Some(watch) = watch.upgrade() else {
+                        return;
+                    };
+                    watch.update(cx, |this, cx| this.on_window_closed(id, cx));
+                }));
+                this.prewarm_popup(cx);
+            });
 
             let dispatcher = app.clone();
             cx.spawn(async move |cx| {
@@ -467,6 +484,20 @@ pub(crate) struct Klemmbrett {
     /// The ad-hoc picker. It is not one of `widgets`.
     picker: WidgetDef,
     picker_prompt: Option<String>,
+    /// Toasts last shown. Kept so a closed notification surface can be opened
+    /// again on a display that is still connected.
+    toast_shown: Vec<Toast>,
+    /// Display the notification surface was opened on.
+    toast_display: Option<DisplayId>,
+    /// Set while klemmbrett itself is destroying the popup, so the close
+    /// callback does not open a second one on top of that.
+    popup_close_expected: bool,
+    /// Held so GPUI keeps delivering display and window-close events.
+    /// Dropping either one unsubscribes, which is why they stay on the app.
+    #[allow(dead_code)]
+    display_events: Option<Subscription>,
+    #[allow(dead_code)]
+    window_closes: Option<Subscription>,
 }
 
 impl Klemmbrett {
@@ -494,6 +525,199 @@ impl Klemmbrett {
             secret_open: Arc::new(AtomicBool::new(false)),
             picker,
             picker_prompt,
+            toast_shown: Vec::new(),
+            toast_display: None,
+            popup_close_expected: false,
+            display_events: None,
+            window_closes: None,
+        }
+    }
+
+    /// A display connected, disconnected, or changed size.
+    ///
+    /// Layer-shell surfaces stay bound to the `wl_output` they were opened on.
+    /// When that output is gone the compositor closes them, and a hidden popup
+    /// would otherwise keep a handle to the dead surface. Examples this
+    /// handles: the dock's `DP-9` disappearing, `DP-11` appearing in its
+    /// place, and the same `eDP-1` changing from `1920x1080` to `2880x1800`.
+    fn on_display_event(&mut self, event: DisplayEvent, cx: &mut Context<Self>) {
+        if self.popup_is_dead(cx) {
+            journal::info("popup surface was already gone after a display change");
+            self.popup = None;
+            if let Some(id) = self.secret_active {
+                self.secret_closed(id, cx);
+            }
+            self.prewarm_popup(cx);
+        }
+        match event {
+            DisplayEvent::Removed(id) => {
+                if self.popup_uses(id, cx) {
+                    journal::info("display disconnected; moving the popup to a connected one");
+                    self.abandon_popup(cx);
+                }
+                if self.toast_display == Some(id) {
+                    journal::info("display disconnected; moving notifications to a connected one");
+                    self.reopen_toasts(cx);
+                }
+            }
+            DisplayEvent::Added(_) => {
+                if self.popup.is_none() {
+                    journal::info("display connected; opening the popup");
+                    self.prewarm_popup(cx);
+                }
+                if self.toasts.is_none() && !self.toast_shown.is_empty() {
+                    journal::info("display connected; reopening notifications");
+                    self.open_saved_toasts(cx);
+                }
+            }
+            DisplayEvent::Changed { id, changes } => {
+                if changes.contains(DisplayChanges::BOUNDS) && self.popup_uses(id, cx) {
+                    self.fit_popup(id, cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The compositor closed a surface, for example after its output was removed.
+    fn on_window_closed(&mut self, id: WindowId, cx: &mut Context<Self>) {
+        if self.popup.is_some_and(|handle| handle.window_id() == id) {
+            self.popup = None;
+            if self.popup_close_expected {
+                self.popup_close_expected = false;
+            } else {
+                journal::info("popup surface closed; opening a fresh one");
+                if let Some(secret) = self.secret_active {
+                    self.secret_closed(secret, cx);
+                }
+                self.prewarm_popup(cx);
+            }
+        }
+        if self.toasts.is_some_and(|handle| handle.window_id() == id) {
+            journal::info("notification surface closed; reopening on a connected display");
+            self.toasts = None;
+            self.toast_display = None;
+            self.open_saved_toasts(cx);
+        }
+    }
+
+    fn popup_is_dead(&self, cx: &App) -> bool {
+        self.popup.is_some_and(|handle| handle.read(cx).is_err())
+    }
+
+    fn popup_uses(&self, id: DisplayId, cx: &App) -> bool {
+        self.popup
+            .is_some_and(|handle| handle.read(cx).is_ok_and(|shell| shell.display_id() == id))
+    }
+
+    /// Drops the popup, answers anything waiting on it, and opens a hidden one
+    /// on a display that is still connected.
+    fn abandon_popup(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = self.popup.take() else {
+            self.prewarm_popup(cx);
+            return;
+        };
+        self.popup_close_expected = true;
+        let dismissed = handle
+            .update(cx, |shell, window, cx| {
+                let secret = shell.dismiss_content(cx);
+                window.remove_window();
+                secret
+            })
+            .ok()
+            .flatten();
+        self.popup_close_expected = false;
+        let secret = dismissed.or(self.secret_active);
+        if let Some(id) = secret {
+            self.secret_closed(id, cx);
+        }
+        if self.popup.is_none() {
+            self.prewarm_popup(cx);
+        }
+    }
+
+    fn fit_popup(&mut self, id: DisplayId, cx: &mut Context<Self>) {
+        let Some(handle) = self.popup else {
+            return;
+        };
+        let Some(output) = cx
+            .displays()
+            .into_iter()
+            .find(|display| display.id() == id)
+            .map(|display| display.bounds().size)
+        else {
+            return;
+        };
+        if let Err(err) = handle.update(cx, |shell, window, cx| {
+            if shell.display_id() == id {
+                shell.fit_output(output, window, cx);
+            }
+        }) {
+            journal::warn(&format!(
+                "popup surface could not follow a display resize: {err}"
+            ));
+            self.popup = None;
+            self.prewarm_popup(cx);
+        }
+    }
+
+    fn remember_toast(&mut self, toast: Toast) {
+        match self
+            .toast_shown
+            .iter_mut()
+            .find(|shown| shown.notification.id == toast.notification.id)
+        {
+            Some(shown) => *shown = toast,
+            None => self.toast_shown.insert(0, toast),
+        }
+    }
+
+    /// Closes the notification surface and opens the saved toasts on a live display.
+    fn reopen_toasts(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.toasts.take() {
+            self.toast_display = None;
+            if let Err(err) = handle.update(cx, |_, window, _| window.remove_window()) {
+                journal::info(&format!("notification surface was already closed: {err}"));
+            }
+        }
+        self.open_saved_toasts(cx);
+    }
+
+    fn open_saved_toasts(&mut self, cx: &mut Context<Self>) {
+        if self.toasts.is_some() || self.toast_shown.is_empty() {
+            return;
+        }
+        let Some(center) = self.center.clone() else {
+            return;
+        };
+        let Some(display_id) = live_display(cx) else {
+            return;
+        };
+        let config = center.config().clone();
+        let theme = self.widgets.default_theme().clone();
+        let view = ToastView {
+            app: cx.entity(),
+            toasts: self.toast_shown.clone(),
+            theme,
+            max_visible: config.max_visible.max(1),
+            plates: Vec::new(),
+        };
+        let options = toast_options(
+            view.size(),
+            config.location,
+            view.theme.toast().margin,
+            display_id,
+        );
+        match cx.open_window(options, move |_window, cx| cx.new(|_cx| view)) {
+            Ok(handle) => {
+                self.toasts = Some(handle);
+                self.toast_display = Some(display_id);
+            }
+            Err(err) => {
+                journal::error(&format!("Failed to show a notification: {err}"));
+                self.toasts = None;
+                self.toast_display = None;
+            }
         }
     }
 
@@ -825,12 +1049,12 @@ impl Klemmbrett {
         let id = notification.id;
         let lifetime = notification.lifetime_ms(center.config().timeout_ms);
         let toast = Toast { notification, seq };
+        self.remember_toast(toast.clone());
         let theme = self.widgets.default_theme().clone();
-        let config = center.config().clone();
         let updated = if let Some(handle) = self.toasts {
             match handle.update(cx, |view, window, cx| {
-                view.theme = theme.clone();
-                view.upsert(toast.clone());
+                view.theme = theme;
+                view.upsert(toast);
                 window.resize(view.size());
                 cx.notify();
             }) {
@@ -844,22 +1068,9 @@ impl Klemmbrett {
             None
         };
         if updated.is_none() {
-            let app = cx.entity();
-            let view = ToastView {
-                app,
-                toasts: vec![toast],
-                theme,
-                max_visible: config.max_visible.max(1),
-                plates: Vec::new(),
-            };
-            let options = toast_options(view.size(), config.location, view.theme.toast().margin);
-            match cx.open_window(options, move |_window, cx| cx.new(|_cx| view)) {
-                Ok(handle) => self.toasts = Some(handle),
-                Err(err) => {
-                    journal::error(&format!("Failed to show a notification: {err}"));
-                    self.toasts = None;
-                }
-            }
+            self.toasts = None;
+            self.toast_display = None;
+            self.open_saved_toasts(cx);
         }
         if let Some(ms) = lifetime {
             let timer = cx
@@ -898,7 +1109,10 @@ impl Klemmbrett {
     /// Removes a toast. `reason` is what the sender hears; `None` when it
     /// asked for the close itself and already heard.
     fn close_toast(&mut self, id: u32, reason: Option<CloseReason>, cx: &mut Context<Self>) {
-        if let Some(handle) = self.toasts {
+        self.toast_shown.retain(|toast| toast.notification.id != id);
+        // Take the handle before destroying the surface. The close callback
+        // would otherwise see it and open the toasts again.
+        if let Some(handle) = self.toasts.take() {
             let emptied = handle.update(cx, |view, window, cx| {
                 view.toasts.retain(|toast| toast.notification.id != id);
                 if view.toasts.is_empty() {
@@ -910,11 +1124,13 @@ impl Klemmbrett {
                     false
                 }
             });
-            if let Err(err) = &emptied {
-                journal::error(&format!("failed to close toast {id}: {err}"));
-            }
-            if !matches!(emptied, Ok(false)) {
-                self.toasts = None;
+            match emptied {
+                Ok(false) => self.toasts = Some(handle),
+                Ok(true) => self.toast_display = None,
+                Err(err) => {
+                    journal::error(&format!("failed to close toast {id}: {err}"));
+                    self.toast_display = None;
+                }
             }
         }
         if let (Some(reason), Some(center)) = (reason, &self.center) {
@@ -970,6 +1186,12 @@ impl Klemmbrett {
 
     pub(crate) fn drop_popup_handle(&mut self) {
         self.popup = None;
+        self.popup_close_expected = false;
+    }
+
+    /// The next popup close is one we asked for. See [`Self::on_window_closed`].
+    pub(crate) fn expect_popup_close(&mut self) {
+        self.popup_close_expected = true;
     }
 
     pub(crate) fn popup_open(&self) -> bool {
@@ -1894,6 +2116,16 @@ impl ListPopup {
         self.card = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
     }
 
+    /// Keeps the card on screen after the output it sits on changes size.
+    pub(crate) fn fit_output(&mut self, output: gpui::Size<Pixels>, cx: &mut Context<Self>) {
+        if self.output_size == output {
+            return;
+        }
+        self.output_size = output;
+        self.resize_card();
+        cx.notify();
+    }
+
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.layout.has_listview() {
             let text = self.state.query.clone();
@@ -2664,7 +2896,18 @@ impl ToastView {
     }
 }
 
-fn toast_options(size: gpui::Size<Pixels>, location: Location, margin: Edges) -> WindowOptions {
+fn live_display(cx: &App) -> Option<DisplayId> {
+    cx.primary_display()
+        .map(|display| display.id())
+        .or_else(|| cx.displays().first().map(|display| display.id()))
+}
+
+fn toast_options(
+    size: gpui::Size<Pixels>,
+    location: Location,
+    margin: Edges,
+    display_id: DisplayId,
+) -> WindowOptions {
     let anchor = match location {
         Location::NorthWest => Anchor::TOP | Anchor::LEFT,
         Location::North => Anchor::TOP,
@@ -2701,6 +2944,7 @@ fn toast_options(size: gpui::Size<Pixels>, location: Location, margin: Edges) ->
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
+        display_id: Some(display_id),
         app_id: Some("klemmbrett".into()),
         window_decorations: Some(WindowDecorations::Client),
         linux_window_background: LinuxWindowBackground::Transparent,

@@ -2,6 +2,8 @@
 //!
 //! `wl_output.geometry` is often `(0, 0)` for every output. The desktop layout
 //! lives in this protocol instead, in the same space as a compositor pointer.
+//! The subscription stays up across hotplug. If the connection itself drops,
+//! the watcher opens a new one instead of leaving placement on a stale snapshot.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -117,10 +119,7 @@ fn watch(connection: Connection, queue: EventQueue<State>, state: State) -> Resu
     publish(&layout);
     std::thread::Builder::new()
         .name("klemmbrett-outputs".into())
-        .spawn(move || {
-            let _connection = connection;
-            follow(queue, state, layout);
-        })
+        .spawn(move || follow(connection, queue, state, layout))
         .map_err(|err| {
             clear_tracked();
             format!("failed to watch the output layout: {err}")
@@ -128,18 +127,60 @@ fn watch(connection: Connection, queue: EventQueue<State>, state: State) -> Resu
     Ok(())
 }
 
-fn follow(mut queue: EventQueue<State>, mut state: State, mut last: OutputLayout) {
+fn follow(
+    mut connection: Connection,
+    mut queue: EventQueue<State>,
+    mut state: State,
+    mut last: OutputLayout,
+) {
     loop {
         if let Err(err) = queue.blocking_dispatch(&mut state) {
-            journal::warn(&format!("output layout subscription ended: {err}"));
+            // Accepted dispatch errors: "I/O error: ..." when this socket is
+            // dropped, including a compositor restart during hotplug.
+            journal::warn(&format!(
+                "output layout subscription ended: {err}; reconnecting"
+            ));
             clear_tracked();
-            break;
+            drop(connection);
+            loop {
+                if let Some(resumed) = reconnect() {
+                    (connection, queue, state, last) = resumed;
+                    break;
+                }
+            }
+            continue;
         }
         let layout = state.layout();
         if layout != last {
             journal::info(&state.describe());
             publish(&layout);
             last = layout;
+        }
+    }
+}
+
+/// Waits, then opens a fresh output subscription.
+///
+/// `None` means try again. A missing `zxdg_output_v1` and a refused
+/// connection are both temporary while a compositor is coming up.
+fn reconnect() -> Option<(Connection, EventQueue<State>, State, OutputLayout)> {
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    match open() {
+        Ok((connection, queue, state)) if state.xdg_manager.is_some() => {
+            let last = state.layout();
+            journal::info(&format!("output layout reconnected; {}", state.describe()));
+            publish(&last);
+            Some((connection, queue, state, last))
+        }
+        Ok(_) => {
+            journal::warn("output layout subscription paused: zxdg_output_v1 is not available");
+            None
+        }
+        Err(err) => {
+            journal::warn(&format!(
+                "output layout subscription failed to reconnect: {err}"
+            ));
+            None
         }
     }
 }

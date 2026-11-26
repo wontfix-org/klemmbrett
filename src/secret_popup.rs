@@ -143,6 +143,16 @@ impl SecretPopup {
         );
     }
 
+    /// Keeps the card on screen after the output it sits on changes size.
+    pub(crate) fn fit_output(&mut self, output: gpui::Size<Pixels>, cx: &mut Context<Self>) {
+        if self.output_size == output {
+            return;
+        }
+        self.output_size = output;
+        self.resize_card();
+        cx.notify();
+    }
+
     /// `true` asks the shell to close. The answer is stored before that, so
     /// dropping the session does not cancel a question that was just answered.
     pub(crate) fn on_key(
